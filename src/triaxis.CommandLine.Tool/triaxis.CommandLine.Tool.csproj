@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>10</LangVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\triaxis.CommandLine.Core\triaxis.CommandLine.Core.csproj" />
+    <ProjectReference Include="..\triaxis.CommandLine.Serilog\triaxis.CommandLine.Serilog.csproj" />
+  </ItemGroup>
+
+</Project>

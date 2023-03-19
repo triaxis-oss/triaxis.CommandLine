@@ -1,0 +1,40 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "triaxis.CommandLine.Abstractions", "triaxis.CommandLine.Abstractions\triaxis.CommandLine.Abstractions.csproj", "{60574130-9FD5-4C26-B0FF-3141960AEC30}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "triaxis.CommandLine.Core", "triaxis.CommandLine.Core\triaxis.CommandLine.Core.csproj", "{261C2613-3752-4E89-AFA5-8724882C7534}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "triaxis.CommandLine.Serilog", "triaxis.CommandLine.Serilog\triaxis.CommandLine.Serilog.csproj", "{1835FAA7-0690-4EBF-B7EC-E00599D839B6}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "triaxis.CommandLine.Tool", "triaxis.CommandLine.Tool\triaxis.CommandLine.Tool.csproj", "{F85E6A03-2748-4FBA-82A3-C2D45679EDEC}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{60574130-9FD5-4C26-B0FF-3141960AEC30}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{60574130-9FD5-4C26-B0FF-3141960AEC30}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{60574130-9FD5-4C26-B0FF-3141960AEC30}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{60574130-9FD5-4C26-B0FF-3141960AEC30}.Release|Any CPU.Build.0 = Release|Any CPU
+		{261C2613-3752-4E89-AFA5-8724882C7534}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{261C2613-3752-4E89-AFA5-8724882C7534}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{261C2613-3752-4E89-AFA5-8724882C7534}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{261C2613-3752-4E89-AFA5-8724882C7534}.Release|Any CPU.Build.0 = Release|Any CPU
+		{1835FAA7-0690-4EBF-B7EC-E00599D839B6}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{1835FAA7-0690-4EBF-B7EC-E00599D839B6}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{1835FAA7-0690-4EBF-B7EC-E00599D839B6}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{1835FAA7-0690-4EBF-B7EC-E00599D839B6}.Release|Any CPU.Build.0 = Release|Any CPU
+		{F85E6A03-2748-4FBA-82A3-C2D45679EDEC}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{F85E6A03-2748-4FBA-82A3-C2D45679EDEC}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{F85E6A03-2748-4FBA-82A3-C2D45679EDEC}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{F85E6A03-2748-4FBA-82A3-C2D45679EDEC}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal
