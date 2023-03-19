@@ -19,6 +19,7 @@ class ToolBuilder : IToolBuilder
     private readonly RootCommand _root;
     private readonly CommandLineBuilder _clb;
     private readonly CommandNode _tree;
+    private bool _useHost = true;
     private bool _useDefaults = true;
 
     public ToolBuilder(string[] args)
@@ -28,7 +29,7 @@ class ToolBuilder : IToolBuilder
         _host = Host.CreateDefaultBuilder();
         _clb = new CommandLineBuilder(_root);
         _tree = new CommandNode(_root);
-        _clb.UseHost(_ => _host, ConfigureHost);
+        ConfigureHost(_host);
     }
 
     public string[] Arguments => _args;
@@ -67,9 +68,19 @@ class ToolBuilder : IToolBuilder
         }
     }
 
+    private void UseHost()
+    {
+        if (_useHost)
+        {
+            _useHost = false;
+            _clb.UseHost(_ => _host, null);
+        }
+    }
+
     public Parser Build()
     {
         UseDefaults();
+        UseHost();
         _tree.Realize();
         return _clb.Build();
     }

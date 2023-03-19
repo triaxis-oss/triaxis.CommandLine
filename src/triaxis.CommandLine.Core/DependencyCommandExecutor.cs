@@ -30,7 +30,7 @@ internal class DependencyCommandExecutor : ICommandExecutor
         _logger.LogTrace("Creating command of type {CommandType}...", command);
         var instance = _serviceProvider.GetRequiredService(command);
 
-        var (d, output) = CreateDelegate(instance, command);
+        var (d, cancellable) = CreateDelegate(instance, command);
 
         _propertyInjector.InjectProperties(instance);
 
@@ -62,22 +62,39 @@ internal class DependencyCommandExecutor : ICommandExecutor
             }
         }
 
-        var task = d();
+        var cancellationToken = _context.GetCancellationToken();
+
+        if (!cancellable)
+        {
+            cancellationToken.Register(() => Environment.FailFast(null));
+        }
+
+        var task = d(cancellationToken);
         await task;
         return (task as Task<IInvocationResult>)?.Result;
     }
 
-    private (Func<Task>, bool) CreateDelegate(object instance, Type command)
+    private (Func<CancellationToken, Task>, bool) CreateDelegate(object instance, Type command)
     {
-        if (instance.GetType().GetMethod("ExecuteAsync", Type.EmptyTypes) is not MethodInfo mth)
+        if (instance.GetType().GetMethod("ExecuteAsync", Type.EmptyTypes) is MethodInfo mth)
+        {
+            if (Delegate.CreateDelegate(typeof(Func<Task>), instance, mth, false) is Func<Task> d)
+            {
+                _logger.LogTrace("Found delegate returning a Task: {TaskType}", mth.ReturnType);
+                return (ct => d(), false);
+            }
+        }
+        else if (instance.GetType().GetMethod("ExecuteAsync", new[] { typeof(CancellationToken) }) is MethodInfo mthCt)
+        {
+            if (Delegate.CreateDelegate(typeof(Func<CancellationToken, Task>), instance, mthCt, false) is Func<CancellationToken, Task> dCt)
+            {
+                _logger.LogTrace("Found cancellable delegate returning a Task: {TaskType}", mthCt.ReturnType);
+                return (dCt, true);
+            }
+        }
+        else
         {
             throw new InvalidProgramException($"Command type {command.FullName} does not implement the ExecuteAsync() method");
-        }
-
-        if (Delegate.CreateDelegate(typeof(Func<Task>), instance, mth, false) is Func<Task> d)
-        {
-            _logger.LogTrace("Found delegate returning a Task: {TaskType}", mth.ReturnType);
-            return (d, true);
         }
 
         throw new InvalidProgramException($"Failed to bind exec method for command {command.FullName}");
