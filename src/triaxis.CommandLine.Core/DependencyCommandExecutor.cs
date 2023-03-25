@@ -41,7 +41,7 @@ internal class DependencyCommandExecutor : ICommandExecutor
             var type = instance.GetType();
             foreach (var arg in cmd.Arguments.OfType<IMemberBoundSymbol>())
             {
-                if (arg.Member.DeclaringType?.IsAssignableFrom(type) == true)
+                if (arg.GetRootMember().DeclaringType?.IsAssignableFrom(type) == true)
                 {
                     if (cmdline.FindResultFor((Argument)arg) is { } res && res.Tokens.Any())
                     {
@@ -52,7 +52,7 @@ internal class DependencyCommandExecutor : ICommandExecutor
 
             foreach (var opt in cmd.Options.OfType<IMemberBoundSymbol>())
             {
-                if (opt.Member.DeclaringType?.IsAssignableFrom(type) == true)
+                if (opt.GetRootMember().DeclaringType?.IsAssignableFrom(type) == true)
                 {
                     if (cmdline.FindResultFor((Option)opt) is { } res && !res.IsImplicit)
                     {

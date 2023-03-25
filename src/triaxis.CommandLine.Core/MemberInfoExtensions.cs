@@ -12,6 +12,34 @@ static class MemberInfoExtensions
             _ => throw new NotSupportedException()
         };
 
+    public static object GetOrCreateValues(this MemberInfo[]? path, object target)
+    {
+        if (path is null)
+        {
+            return target;
+        }
+
+        foreach (var m in path)
+        {
+            var next = m.GetValue(target);
+            if (next is null)
+            {
+                m.SetValue(target, next = Activator.CreateInstance(m.GetValueType()));
+            }
+            target = next;
+        }
+
+        return target;
+    }
+
+    public static object GetValue(this MemberInfo member, object target) =>
+        member switch
+        {
+            FieldInfo fi => fi.GetValue(target),
+            PropertyInfo pi => pi.GetValue(target, null),
+            _ => throw new NotSupportedException(),
+        };
+
     public static void SetValue(this MemberInfo member, object target, object? value)
     {
         switch (member)

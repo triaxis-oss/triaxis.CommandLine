@@ -1,7 +1,7 @@
 namespace triaxis.CommandLine;
 
 [AttributeUsage(AttributeTargets.Property | AttributeTargets.Field)]
-public class ArgumentAttribute : Attribute
+public class ArgumentAttribute : CommandlineAttribute
 {
     public ArgumentAttribute()
     {
@@ -12,10 +12,6 @@ public class ArgumentAttribute : Attribute
         Name = name;
         Description = description;
     }
-
-    public string? Name { get; set; }
-    public string? Description { get; set; }
-    public int Order { get; set; } = 0;
 
     private bool? _required;
     public bool Required

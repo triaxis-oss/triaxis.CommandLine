@@ -6,15 +6,17 @@ using System.Reflection;
 
 public class MemberOption<T> : Option<T>, IMemberBoundSymbol
 {
-    public MemberOption(MemberInfo member, OptionAttribute attribute)
+    public MemberOption(MemberInfo member, OptionAttribute attribute, MemberInfo[] path)
         : base(GetNameAndAliases(member, attribute), attribute.Description)
     {
         Member = member;
         Description = attribute.Description;
         IsRequired = attribute.Required;
+        Path = path;
     }
 
     public MemberInfo Member { get; }
+    public MemberInfo[]? Path { get; }
 
     private static string[] GetNameAndAliases(MemberInfo member, OptionAttribute opt)
     {
@@ -34,11 +36,11 @@ public class MemberOption<T> : Option<T>, IMemberBoundSymbol
 
     public void SetValue(object target, ArgumentResult parseResult)
     {
-        Member.SetValue(target, parseResult.GetValueOrDefault<T>());
+        Member.SetValue(Path.GetOrCreateValues(target), parseResult.GetValueOrDefault<T>());
     }
 
     public void SetValue(object target, OptionResult parseResult)
     {
-        Member.SetValue(target, parseResult.GetValueOrDefault<T>());
+        Member.SetValue(Path.GetOrCreateValues(target), parseResult.GetValueOrDefault<T>());
     }
 }

@@ -1,7 +1,7 @@
 namespace triaxis.CommandLine;
 
 [AttributeUsage(AttributeTargets.Property | AttributeTargets.Field)]
-public class OptionAttribute : Attribute
+public class OptionAttribute : CommandlineAttribute
 {
     public OptionAttribute()
     {
@@ -13,9 +13,6 @@ public class OptionAttribute : Attribute
         Aliases = aliases;
     }
 
-    public string? Name { get; set; }
     public string[]? Aliases { get; set; }
-    public string? Description { get; set; }
     public bool Required { get; set; }
-    public double Order { get; set; } = 0;
 }

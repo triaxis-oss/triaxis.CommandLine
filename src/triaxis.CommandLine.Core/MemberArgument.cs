@@ -6,11 +6,12 @@ using System.Reflection;
 
 class MemberArgument<T> : Argument<T>, IMemberBoundSymbol
 {
-    public MemberArgument(MemberInfo member, ArgumentAttribute attribute)
+    public MemberArgument(MemberInfo member, ArgumentAttribute attribute, MemberInfo[] path)
         : base(attribute.Name ?? member.Name)
     {
         Member = member;
         Description = attribute.Description;
+        Path = path;
 
         if (attribute.RequiredIsSet)
         {
@@ -26,14 +27,15 @@ class MemberArgument<T> : Argument<T>, IMemberBoundSymbol
     }
 
     public MemberInfo Member { get; }
+    public MemberInfo[]? Path { get; }
 
     public void SetValue(object target, ArgumentResult parseResult)
     {
-        Member.SetValue(target, parseResult.GetValueOrDefault<T>());
+        Member.SetValue(Path.GetOrCreateValues(target), parseResult.GetValueOrDefault<T>());
     }
 
     public void SetValue(object target, OptionResult parseResult)
     {
-        Member.SetValue(target, parseResult.GetValueOrDefault<T>());
+        Member.SetValue(Path.GetOrCreateValues(target), parseResult.GetValueOrDefault<T>());
     }
 }

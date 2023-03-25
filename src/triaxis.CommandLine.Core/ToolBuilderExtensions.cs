@@ -16,13 +16,6 @@ public static class ToolBuilderExtensions
 
     public static IToolBuilder AddCommandsFromAssembly(this IToolBuilder builder, Assembly assembly)
     {
-        static Type UnwrapNullable(Type type)
-            => Nullable.GetUnderlyingType(type) ?? type;
-        static Argument NewMemberArgument(MemberInfo mi, ArgumentAttribute attr)
-            => (Argument)Activator.CreateInstance(typeof(MemberArgument<>).MakeGenericType(UnwrapNullable(mi.GetValueType())), mi, attr)!;
-        static Option NewMemberOption(MemberInfo mi, OptionAttribute attr)
-            => (Option)Activator.CreateInstance(typeof(MemberOption<>).MakeGenericType(UnwrapNullable(mi.GetValueType())), mi, attr)!;
-
         Command CommandFromAttribute(CommandAttribute attr, Type? type = null)
         {
             var cmd = builder.GetCommand(attr.Path);
@@ -39,6 +32,40 @@ public static class ToolBuilderExtensions
             return cmd;
         }
 
+
+        static void ProcessMemberAttributes(Command cmd, Type type, MemberInfo[]? path = null)
+        {
+            var members = type.GetMembers(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+
+            foreach (var (m, attr) in
+                from m in members
+                from aa in m.GetCustomAttributes()
+                let cla = aa as CommandlineAttribute
+                where cla is not null
+                orderby cla.Order, cla.Name, m.Name
+                select (m, cla))
+            {
+                var memberType = m.GetValueType();
+                memberType = Nullable.GetUnderlyingType(memberType) ?? memberType;
+
+                switch (attr)
+                {
+                    case ArgumentAttribute aa:
+                        cmd.AddArgument((Argument)Activator.CreateInstance(typeof(MemberArgument<>).MakeGenericType(memberType), m, attr, path));
+                        break;
+                    case OptionAttribute oa:
+                        cmd.AddOption((Option)Activator.CreateInstance(typeof(MemberOption<>).MakeGenericType(memberType), m, attr, path));
+                        break;
+                    case OptionsAttribute:
+                        var optsPath = path;
+                        Array.Resize(ref optsPath, (optsPath?.Length ?? 0) + 1);
+                        optsPath[^1] = m;
+                        ProcessMemberAttributes(cmd, memberType, optsPath);
+                        break;
+                }
+            }
+        }
+
         foreach (var attr in assembly.GetCustomAttributes<CommandAttribute>())
         {
             CommandFromAttribute(attr);
@@ -51,25 +78,8 @@ public static class ToolBuilderExtensions
             foreach (var attr in type.GetCustomAttributes<CommandAttribute>())
             {
                 var cmd = CommandFromAttribute(attr, type);
-                var members = type.GetMembers(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
 
-                foreach (var arg in
-                    from m in members
-                    from aa in m.GetCustomAttributes<ArgumentAttribute>()
-                    orderby aa.Order, aa.Name, m.Name
-                    select NewMemberArgument(m, aa))
-                {
-                    cmd.AddArgument(arg);
-                }
-
-                foreach (var opt in
-                    from m in members
-                    from oa in m.GetCustomAttributes<OptionAttribute>()
-                    orderby oa.Order, oa.Name, m.Name
-                    select NewMemberOption(m, oa))
-                {
-                    cmd.AddOption(opt);
-                }
+                ProcessMemberAttributes(cmd, type);
 
                 cmd.Handler = new DependencyCommandHandler(type, attr);
                 types.Add(type);
