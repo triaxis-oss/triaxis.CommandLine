@@ -7,7 +7,12 @@ public class OptionAttribute : CommandlineAttribute
     {
     }
 
-    public OptionAttribute(string? name = null, params string[] aliases)
+    public OptionAttribute(string? name)
+    {
+        Name = name;
+    }
+
+    public OptionAttribute(string? name, params string[] aliases)
     {
         Name = name;
         Aliases = aliases;
