@@ -22,9 +22,9 @@ class ToolBuilder : IToolBuilder
     private bool _useHost = true;
     private bool _useDefaults = true;
 
-    public ToolBuilder(string[] args)
+    public ToolBuilder(IEnumerable<string> args)
     {
-        _args = args;
+        _args = args.ToArray();
         _root = new RootCommand();
         _host = Host.CreateDefaultBuilder();
         _clb = new CommandLineBuilder(_root);

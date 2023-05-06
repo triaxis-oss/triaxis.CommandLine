@@ -5,15 +5,21 @@
     <Description>A set of opinionated extensions built on top of System.CommandLine for quick commandline tool project setup</Description>
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
     <EmbedUntrackedSources>true</EmbedUntrackedSources>
-    <PackageVersion>1.0.5-beta4.22272.1</PackageVersion>
+    <PackageVersion>1.0.6-beta4.22272.1</PackageVersion>
     <PackageLicenseFile>LICENSE.txt</PackageLicenseFile>
+    <PackageIcon>icon.png</PackageIcon>
     <IncludeSymbols>true</IncludeSymbols>
     <SymbolPackageFormat>snupkg</SymbolPackageFormat>
   </PropertyGroup>
 
   <ItemGroup>
     <None Include="../../LICENSE.txt" Pack="true" PackagePath="$(PackageLicenseFile)" />
+    <None Include="$(BaseIntermediateOutputPath)/icon.png" Pack="true" PackagePath="$(PackageIcon)" />
   </ItemGroup>
+
+  <Target Name="DownloadPackageIcon" BeforeTargets="GenerateNuspec">
+    <DownloadFile SourceUrl="https://raw.githubusercontent.com/triaxis-oss/content/main/icon.png" DestinationFolder="$(BaseIntermediateOutputPath)" />
+  </Target>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.SourceLink.GitHub" PrivateAssets="all" />
