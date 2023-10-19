@@ -27,7 +27,7 @@ public static class HostBuilderContextExtensions
         }
     }
 
-    public static void ObserverContextProperty<T>(this HostBuilderContext context, Action<T> notify)
+    public static void ObserveContextProperty<T>(this HostBuilderContext context, Action<T> notify)
     {
         if (context.TryGetContextProperty<T>(out var val))
         {

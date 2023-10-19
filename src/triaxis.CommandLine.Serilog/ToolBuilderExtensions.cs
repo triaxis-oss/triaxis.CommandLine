@@ -31,7 +31,7 @@ public static class ToolBuilderExtensions
 
             logger.MinimumLevel.ControlledBy(levelSwitch);
 
-            context.ObserverContextProperty<LogLevel>(level =>
+            context.ObserveContextProperty<LogLevel>(level =>
             {
                 levelSwitch.MinimumLevel = LevelConvert.ToSerilogLevel(level);
             });
