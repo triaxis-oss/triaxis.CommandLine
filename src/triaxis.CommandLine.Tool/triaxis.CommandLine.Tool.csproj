@@ -10,6 +10,7 @@
   <ItemGroup>
     <ProjectReference Include="..\triaxis.CommandLine.Core\triaxis.CommandLine.Core.csproj" />
     <ProjectReference Include="..\triaxis.CommandLine.Serilog\triaxis.CommandLine.Serilog.csproj" />
+    <ProjectReference Include="..\triaxis.CommandLine.ObjectOutput\triaxis.CommandLine.ObjectOutput.csproj" />
   </ItemGroup>
 
 </Project>

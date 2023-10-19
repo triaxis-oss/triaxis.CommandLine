@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>10</LangVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\triaxis.CommandLine.Abstractions\triaxis.CommandLine.Abstractions.csproj" />
+    <ProjectReference Include="..\triaxis.CommandLine.ObjectOutput.Abstractions\triaxis.CommandLine.ObjectOutput.Abstractions.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="YamlDotNet" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="triaxis.CommandLine.ObjectOutput.Tests" />
+  </ItemGroup>
+
+</Project>

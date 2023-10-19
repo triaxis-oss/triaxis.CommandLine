@@ -23,6 +23,7 @@ class ToolBuilder : IToolBuilder
     private readonly List<InvocationMiddleware> _middlewares;
     private bool _useHost = true;
     private bool _useDefaults = true;
+    private bool _useCommandFinalizer = true;
 
     public ToolBuilder(IEnumerable<string> args)
     {
@@ -86,10 +87,28 @@ class ToolBuilder : IToolBuilder
         }
     }
 
+    private void UseCommandFinalizer()
+    {
+        if (_useCommandFinalizer)
+        {
+            _useCommandFinalizer = false;
+            _clb.AddMiddleware(async (context, next) =>
+            {
+                await next(context);
+
+                if (context.InvocationResult is ICommandInvocationResult cir)
+                {
+                    await cir.EnsureCompleteAsync(context.GetCancellationToken());
+                }
+            });
+        }
+    }
+
     public Parser Build()
     {
         UseDefaults();
         UseHost();
+        UseCommandFinalizer();
         foreach (var mw in _middlewares)
         {
             _clb.AddMiddleware(mw);
