@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using System.CommandLine;
 using System.CommandLine.Builder;
 using System.CommandLine.Hosting;
+using System.CommandLine.Invocation;
 using System.CommandLine.Parsing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -19,6 +20,7 @@ class ToolBuilder : IToolBuilder
     private readonly RootCommand _root;
     private readonly CommandLineBuilder _clb;
     private readonly CommandNode _tree;
+    private readonly List<InvocationMiddleware> _middlewares;
     private bool _useHost = true;
     private bool _useDefaults = true;
 
@@ -29,6 +31,7 @@ class ToolBuilder : IToolBuilder
         _host = Host.CreateDefaultBuilder();
         _clb = new CommandLineBuilder(_root);
         _tree = new CommandNode(_root);
+        _middlewares = new();
         ConfigureHost(_host);
     }
 
@@ -59,6 +62,12 @@ class ToolBuilder : IToolBuilder
         });
     }
 
+    public IToolBuilder AddMiddleware(InvocationMiddleware middleware)
+    {
+        _middlewares.Add(middleware);
+        return this;
+    }
+
     private void UseDefaults()
     {
         if (_useDefaults)
@@ -81,6 +90,10 @@ class ToolBuilder : IToolBuilder
     {
         UseDefaults();
         UseHost();
+        foreach (var mw in _middlewares)
+        {
+            _clb.AddMiddleware(mw);
+        }
         _tree.Realize();
         return _clb.Build();
     }
