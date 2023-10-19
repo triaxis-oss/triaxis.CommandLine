@@ -5,6 +5,7 @@ using System.CommandLine.Hosting;
 using System.CommandLine.Parsing;
 using System.ComponentModel;
 using System.Reflection;
+using System.Threading.Tasks;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
@@ -47,5 +48,10 @@ public static class ToolBuilderExtensions
     public static int Run(this IToolBuilder builder)
     {
         return builder.Build().Invoke(builder.Arguments);
+    }
+
+    public static Task<int> RunAsync(this IToolBuilder builder)
+    {
+        return builder.Build().InvokeAsync(builder.Arguments);
     }
 }
