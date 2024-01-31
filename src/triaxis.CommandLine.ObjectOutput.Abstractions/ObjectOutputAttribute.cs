@@ -3,7 +3,16 @@ namespace triaxis.CommandLine.ObjectOutput;
 [AttributeUsage(AttributeTargets.Property)]
 public class ObjectOutputAttribute : Attribute
 {
-    public ObjectOutputAttribute(double? order = null, ObjectFieldVisibility? visibility = null)
+    public ObjectOutputAttribute()
+    {
+    }
+
+    public ObjectOutputAttribute(double order)
+    {
+        Order = order;
+    }
+
+    public ObjectOutputAttribute(double order, ObjectFieldVisibility visibility)
     {
         Order = order;
         Visibility = visibility;

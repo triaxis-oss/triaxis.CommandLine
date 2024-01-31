@@ -40,6 +40,15 @@ public static class ToolBuilderObjectOutputExtensions
                     _ => sp.GetRequiredService<TableObjectFormatterProvider>(),
                 };
             });
+
+            services.Configure<TableOutputOptions>(config =>
+            {
+                var fmt = builder.GetInvocationContext().ParseResult.GetValueForOption(optOutput);
+                if (fmt == ObjectOutputFormat.Wide)
+                {
+                    config.Wide = true;
+                }
+            });
         });
         return builder;
     }

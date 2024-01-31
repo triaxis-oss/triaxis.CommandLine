@@ -2,7 +2,11 @@ namespace ObjectOutput;
 
 public class Weather
 {
-    public record Forecast(string City, decimal Temperature);
+    public record Forecast(string City, decimal Temperature)
+    {
+        [ObjectOutput(1, ObjectFieldVisibility.Extended)]
+        public decimal TemperatureF => Temperature * 9 / 5 + 32;
+    }
 
     public IEnumerable<Forecast> GetForecasts()
     {
