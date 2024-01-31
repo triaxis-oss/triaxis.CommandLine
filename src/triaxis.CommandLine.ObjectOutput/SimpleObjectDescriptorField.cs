@@ -8,11 +8,13 @@ class SimpleObjectDescriptorField<TValue> : IObjectField, IObjectField<TValue>
 
     public SimpleObjectDescriptorField(PropertyDescriptor pd, IPropertyGetter<TValue> accessor)
     {
+        var attr = pd.Attributes[typeof(ObjectOutputAttribute)] as ObjectOutputAttribute;
+
         Name = pd.Name;
         Title = pd.DisplayName;
-        Visibility = pd.IsBrowsable ? ObjectFieldVisibility.Standard : ObjectFieldVisibility.Extended;
+        Visibility = attr?.Visibility ?? (pd.IsBrowsable ? ObjectFieldVisibility.Standard : ObjectFieldVisibility.Extended);
         Converter = pd.Converter;
-        Order = (pd.Attributes[typeof(ObjectOutputOrderAttribute)] as ObjectOutputOrderAttribute)?.Order ?? 0;
+        Order = attr?.Order ?? 0;
         Accessor = accessor;
     }
 
