@@ -1,6 +1,4 @@
-using System.Text;
-
-namespace triaxis.CommandLine;
+namespace triaxis.CommandLine.Invocation;
 
 static class TypeExtensions
 {

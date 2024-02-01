@@ -22,6 +22,7 @@ public static class ToolBuilderObjectOutputExtensions
         builder.ConfigureServices((context, services) =>
         {
             services.TryAddTransient(typeof(IObjectOutputHandler<>), typeof(DefaultObjectOutputHandler<>));
+            services.TryAddTransient<IObjectOutputHandler, DynamicObjectOutputHandler>();
             services.TryAddSingleton(typeof(IObjectDescriptorProvider<>), typeof(DefaultObjectDescriptorProvider<>));
 
             services.TryAddTransient<TableObjectFormatterProvider>();

@@ -12,6 +12,7 @@ using Microsoft.Extensions.Options;
 class TableObjectFormatterProvider : IObjectFormatterProvider
 {
     private readonly TableOutputOptions _options;
+    private static int _tableOutputCount;   // TODO: this should be probably tracked per output stream?
 
     public TableObjectFormatterProvider(IOptions<TableOutputOptions> options)
     {
@@ -144,6 +145,12 @@ class TableObjectFormatterProvider : IObjectFormatterProvider
 
         public ValueTask DisposeAsync()
         {
+            if (Interlocked.Increment(ref _tableOutputCount) > 1)
+            {
+                // separate the tables
+                _output.WriteLine();
+            }
+
             int i = 0;
             foreach (var val in _values)
             {

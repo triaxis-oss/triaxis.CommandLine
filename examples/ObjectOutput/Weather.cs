@@ -65,3 +65,19 @@ public class AsyncTask : Weather
         return GetForecasts();
     }
 }
+
+[Command("multiple", Description = "Outputs multiple sets")]
+public class Multiple : Weather
+{
+    [Inject]
+    private readonly IObjectOutputHandler _output = null!;
+
+    public async Task ExecuteAsync()
+    {
+        for (int i = 0; i < 10; i++)
+        {
+            await Task.Delay(1000);
+            await _output.ProcessOutputAsync(GetForecasts().ToCommandInvocationResult(), default);
+        }
+    }
+}

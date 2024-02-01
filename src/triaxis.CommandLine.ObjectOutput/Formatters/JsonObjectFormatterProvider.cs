@@ -52,6 +52,7 @@ class JsonObjectFormatterProvider : IObjectFormatterProvider
             {
                 _output.Write(']');
             }
+            _output.WriteLine();
             return default;
         }
     }

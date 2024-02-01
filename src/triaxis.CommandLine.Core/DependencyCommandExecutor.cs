@@ -76,7 +76,7 @@ internal class DependencyCommandExecutor : ICommandExecutor
             return await task;
         }
 
-        return CommandInvocationResult.Create(instance, result, resultType);
+        return Invocation.CommandInvocationResult.Create(result, resultType);
     }
 
     private (Func<CancellationToken, object>, bool, Type) CreateDelegate(object instance, Type command)

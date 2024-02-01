@@ -17,6 +17,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "triaxis.CommandLine.ObjectO
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "triaxis.CommandLine.ObjectOutput.Tests", "triaxis.CommandLine.ObjectOutput.Tests\triaxis.CommandLine.ObjectOutput.Tests.csproj", "{4267928A-0722-493D-835B-47C3F12CC1E3}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "triaxis.CommandLine.Invocation", "triaxis.CommandLine.Invocation\triaxis.CommandLine.Invocation.csproj", "{D69DE26E-E236-490B-A9FB-B6BBB5E3B977}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -54,5 +56,9 @@ Global
 		{4267928A-0722-493D-835B-47C3F12CC1E3}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{4267928A-0722-493D-835B-47C3F12CC1E3}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{4267928A-0722-493D-835B-47C3F12CC1E3}.Release|Any CPU.Build.0 = Release|Any CPU
+		{D69DE26E-E236-490B-A9FB-B6BBB5E3B977}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D69DE26E-E236-490B-A9FB-B6BBB5E3B977}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D69DE26E-E236-490B-A9FB-B6BBB5E3B977}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D69DE26E-E236-490B-A9FB-B6BBB5E3B977}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal
