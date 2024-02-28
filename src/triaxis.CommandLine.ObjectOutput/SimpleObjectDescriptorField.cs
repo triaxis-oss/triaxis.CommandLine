@@ -3,7 +3,7 @@ namespace triaxis.CommandLine.ObjectOutput;
 using System.ComponentModel;
 using triaxis.Reflection;
 
-class SimpleObjectDescriptorField<TValue> : IObjectField, IObjectField<TValue>
+class SimpleObjectDescriptorField<TValue> : IObjectField, IObjectField<TValue>, IObjectFieldOrdering
 {
 
     public SimpleObjectDescriptorField(PropertyDescriptor pd, IPropertyGetter<TValue> accessor)
@@ -12,13 +12,15 @@ class SimpleObjectDescriptorField<TValue> : IObjectField, IObjectField<TValue>
 
         Name = pd.Name;
         Title = pd.DisplayName;
+        Before = attr?.Before;
+        After = attr?.After;
         Visibility = attr?.Visibility ?? (pd.IsBrowsable ? ObjectFieldVisibility.Standard : ObjectFieldVisibility.Extended);
         Converter = pd.Converter;
-        Order = attr?.Order ?? 0;
         Accessor = accessor;
     }
 
-    public double Order { get; }
+    public string? Before { get; }
+    public string? After { get; }
 
     public string Title { get; }
 

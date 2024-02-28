@@ -13,19 +13,20 @@ sealed class SimpleObjectDescriptor<T> : IObjectDescriptor
 
     private SimpleObjectDescriptor()
     {
-        var pds = TypeDescriptor.GetProperties(typeof(T));
         var pis = typeof(T).GetProperties(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance).ToLookup(pi => pi.Name);
-        var fields = new IObjectField[pds.Count];
-        Fields = fields;
-        for (int i = 0; i < fields.Length; i++)
-        {
-            var pd = pds[i];
-            var accessor = pis[pd.Name].FirstOrDefault(pi => pi.PropertyType == pd.PropertyType) is { } pi ?
-                pi.GetGetter() :
-                Activator.CreateInstance(typeof(PropertyDescriptorGetter<>).MakeGenericType(pd.PropertyType), pd);
+        var pds = TypeDescriptor.GetProperties(typeof(T));
 
-            fields[i] = (IObjectField)Activator.CreateInstance(typeof(SimpleObjectDescriptorField<>).MakeGenericType(pd.PropertyType), pd, accessor);
-        }
+        Fields = pds.Cast<PropertyDescriptor>()
+            .Select(pd => (pd, pi: pis[pd.Name].FirstOrDefault(pi => pi.PropertyType == pd.PropertyType)))
+            .OrderBy(pair => pair.pi?.MetadataToken ?? int.MaxValue)    // declaration order first, custom properties last
+            .ThenBy(pair => pair.pd.Name, StringComparer.OrdinalIgnoreCase)
+            .Select(pair =>
+            {
+                var (pd, pi) = pair;
+                var accessor = pi?.GetGetter() ?? Activator.CreateInstance(typeof(PropertyDescriptorGetter<>).MakeGenericType(pd.PropertyType), pd);
+                return (IObjectField)Activator.CreateInstance(typeof(SimpleObjectDescriptorField<>).MakeGenericType(pd.PropertyType), pd, accessor);
+            })
+            .Ordered();
     }
 
     public IReadOnlyList<IObjectField> Fields { get; }

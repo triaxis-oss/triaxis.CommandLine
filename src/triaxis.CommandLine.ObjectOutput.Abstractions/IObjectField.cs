@@ -5,7 +5,6 @@ using triaxis.Reflection;
 
 public interface IObjectField
 {
-    double Order { get; }
     string Title { get; }
     string Name { get; }
     ObjectFieldVisibility Visibility { get; }

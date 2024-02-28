@@ -32,7 +32,7 @@ class JsonObjectFormatterProvider : IObjectFormatterProvider
 
         public ValueTask OutputElementAsync(T value)
         {
-            var val = value is null ? null : new Dictionary<string, object?>(_descriptor!.Fields.Ordered().GetValues(value));
+            var val = value is null ? null : new Dictionary<string, object?>(_descriptor!.Fields.GetValues(value));
             if (_separator is { } sep)
             {
                 _output.Write(sep);

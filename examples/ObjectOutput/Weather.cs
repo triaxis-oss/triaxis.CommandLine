@@ -4,13 +4,31 @@ public class Weather
 {
     public record Forecast(string City, decimal Temperature)
     {
-        [ObjectOutput(1, ObjectFieldVisibility.Extended)]
+        [ObjectOutput(ObjectFieldVisibility.Extended)]
         public decimal TemperatureF => Temperature * 9 / 5 + 32;
+    }
+
+    public class Extension
+    {
+        public Extension(Forecast forecast)
+        {
+            ReverseCity = string.Create(forecast.City.Length, forecast.City, (span, s) =>
+                {
+                    s.CopyTo(span);
+                    span.Reverse();
+                });
+            NegativeTemperature = -forecast.Temperature;
+        }
+
+        [ObjectOutput(After = nameof(Forecast.City))]
+        public string ReverseCity { get; }
+        [ObjectOutput(After = nameof(Forecast.Temperature))]
+        public decimal NegativeTemperature { get; }
     }
 
     public IEnumerable<Forecast> GetForecasts()
     {
-        decimal RandomTemp() { return Random.Shared.Next(5, 35) / 10m; }
+        decimal RandomTemp() { return Random.Shared.Next(50, 350) / 10m; }
 
         return new Forecast[]
         {
@@ -80,4 +98,11 @@ public class Multiple : Weather
             await _output.ProcessOutputAsync(GetForecasts().ToCommandInvocationResult(), default);
         }
     }
+}
+
+[Command("tuple", Description = "Tuple output example, with some extra fields")]
+public class Tuple : Weather
+{
+    public IEnumerable<(Forecast, Extension)> Execute()
+        => GetForecasts().Select(f => (f, new Extension(f)));
 }

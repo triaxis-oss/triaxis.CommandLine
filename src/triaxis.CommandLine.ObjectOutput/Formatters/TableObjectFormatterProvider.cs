@@ -109,7 +109,6 @@ class TableObjectFormatterProvider : IObjectFormatterProvider
         {
             _columns = descriptor.Fields
                 .Filter(wide ? ObjectFieldVisibility.Extended : ObjectFieldVisibility.Standard)
-                .Ordered()
                 .Select(f => new Column(f))
                 .ToArray();
             _output = output;

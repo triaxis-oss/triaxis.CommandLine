@@ -7,17 +7,12 @@ public class ObjectOutputAttribute : Attribute
     {
     }
 
-    public ObjectOutputAttribute(double order)
+    public ObjectOutputAttribute(ObjectFieldVisibility visibility)
     {
-        Order = order;
-    }
-
-    public ObjectOutputAttribute(double order, ObjectFieldVisibility visibility)
-    {
-        Order = order;
         Visibility = visibility;
     }
 
-    public double? Order { get; set; }
+    public string? Before { get; set; }
+    public string? After { get; set; }
     public ObjectFieldVisibility? Visibility { get; set; }
 }
