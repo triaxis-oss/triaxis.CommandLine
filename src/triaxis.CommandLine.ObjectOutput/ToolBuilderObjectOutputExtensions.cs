@@ -29,6 +29,7 @@ public static class ToolBuilderObjectOutputExtensions
             services.TryAddTransient<YamlObjectFormatterProvider>();
             services.TryAddTransient<JsonObjectFormatterProvider>();
             services.TryAddTransient<RawObjectFormatterProvider>();
+            services.TryAddTransient<DiscardObjectFormatterProvider>();
 
             services.TryAddTransient<IObjectFormatterProvider>(sp =>
             {
@@ -38,6 +39,7 @@ public static class ToolBuilderObjectOutputExtensions
                     ObjectOutputFormat.Yaml => sp.GetRequiredService<YamlObjectFormatterProvider>(),
                     ObjectOutputFormat.Json => sp.GetRequiredService<JsonObjectFormatterProvider>(),
                     ObjectOutputFormat.Raw => sp.GetRequiredService<RawObjectFormatterProvider>(),
+                    ObjectOutputFormat.None => sp.GetRequiredService<DiscardObjectFormatterProvider>(),
                     _ => sp.GetRequiredService<TableObjectFormatterProvider>(),
                 };
             });

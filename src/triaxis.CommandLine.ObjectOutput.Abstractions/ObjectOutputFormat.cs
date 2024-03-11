@@ -6,5 +6,6 @@ public enum ObjectOutputFormat
     Wide,
     Yaml,
     Json,
-    Raw
+    Raw,
+    None,
 }
