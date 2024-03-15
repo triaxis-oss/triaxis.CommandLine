@@ -9,6 +9,7 @@ using Serilog;
 using Serilog.Core;
 using Serilog.Events;
 using Serilog.Extensions.Logging;
+using Serilog.Sinks.SystemConsole.Themes;
 
 public static class ToolBuilderExtensions
 {
@@ -25,7 +26,9 @@ public static class ToolBuilderExtensions
                 // fallback configuration
                 logger.WriteTo.Console(
                     outputTemplate: "[{Timestamp:HH:mm:ss.fff} {Level:u3}] {SourceContext}: {Message:lj}{NewLine}{Exception}",
-                    standardErrorFromLevel: LogEventLevel.Verbose
+                    standardErrorFromLevel: LogEventLevel.Verbose,
+                    applyThemeToRedirectedOutput: Console.IsErrorRedirected ? false : true,
+                    theme: AnsiConsoleTheme.Literate
                 );
             }
 

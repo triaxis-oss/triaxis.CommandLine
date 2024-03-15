@@ -5,7 +5,7 @@
     <Description>A set of opinionated extensions built on top of System.CommandLine for quick commandline tool project setup</Description>
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
     <EmbedUntrackedSources>true</EmbedUntrackedSources>
-    <PackageVersion>1.2.1-beta4.22272.1</PackageVersion>
+    <PackageVersion>1.2.2-beta4.22272.1</PackageVersion>
     <PackageLicenseFile>LICENSE.txt</PackageLicenseFile>
     <PackageIcon>icon.png</PackageIcon>
     <IncludeSymbols>true</IncludeSymbols>
