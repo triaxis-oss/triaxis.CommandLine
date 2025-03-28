@@ -97,7 +97,7 @@ class TableObjectFormatterProvider : IObjectFormatterProvider
         }
     }
 
-    private static readonly string s_pad = new(' ', 80);
+    private static readonly char[] s_pad = new string(' ', 80).ToCharArray();
 
     class Table<T> : IObjectFormatter<T>, IAsyncDisposable
     {
@@ -137,7 +137,7 @@ class TableObjectFormatterProvider : IObjectFormatterProvider
             while (length > 0)
             {
                 int n = length < s_pad.Length ? length : s_pad.Length;
-                _output.Write(s_pad.AsSpan(0, n));
+                _output.Write(s_pad, 0, n);
                 length -= n;
             }
         }

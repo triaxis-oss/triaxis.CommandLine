@@ -50,9 +50,14 @@ public class DefaultObjectOutputHandler<T> : IObjectOutputHandler<T>
             {
                 await disposable.DisposeAsync();
             }
-            if (output is not null)
+            if (output is IAsyncDisposable outputDisposable)
             {
-                await output.DisposeAsync();
+                await outputDisposable.DisposeAsync();
+            }
+            else if (output is not null)
+            {
+                await output.FlushAsync();
+                output.Dispose();
             }
         }
     }

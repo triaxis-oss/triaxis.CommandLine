@@ -1,3 +1,5 @@
+#if NETSTANDARD2_1_OR_GREATER
+
 namespace triaxis.CommandLine.ObjectOutput;
 
 using System.Collections.Generic;
@@ -27,3 +29,5 @@ sealed class TupleObjectDescriptor<T> : IObjectDescriptor
             )).Ordered();
     }
 }
+
+#endif

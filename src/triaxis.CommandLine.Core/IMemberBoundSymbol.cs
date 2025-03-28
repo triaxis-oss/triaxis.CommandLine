@@ -9,6 +9,4 @@ interface IMemberBoundSymbol
     MemberInfo[]? Path { get; }
     void SetValue(object target, ArgumentResult parseResult);
     void SetValue(object target, OptionResult parseResult);
-
-    MemberInfo GetRootMember() => Path?.FirstOrDefault() ?? Member;
 }

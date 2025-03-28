@@ -44,7 +44,7 @@ class YamlObjectFormatterProvider : IObjectFormatterProvider
 
         public ValueTask OutputElementAsync(T value)
         {
-            var val = value is null ? null : new Dictionary<string, object?>(_descriptor.Fields.GetValues(value));
+            var val = value is null ? null : _descriptor.Fields.GetValuesDictionary(value);
             _serializer.Serialize(_output, _collection ? new[] { val } : val);
             return default;
         }

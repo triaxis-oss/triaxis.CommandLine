@@ -49,4 +49,9 @@ static class MemberInfoExtensions
             default: throw new NotSupportedException();
         };
     }
+
+    public static MemberInfo GetRootMember(this IMemberBoundSymbol sym)
+    {
+        return sym.Path?.FirstOrDefault() ?? sym.Member;
+    }
 }

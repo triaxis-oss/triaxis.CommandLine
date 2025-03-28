@@ -23,16 +23,16 @@ public ref struct WordSplitter
     {
         while (span.Length > 0 && (GetMask(span[0]) & MASK_ANY) == 0)
         {
-            span = span[1..];
+            span = span.Slice(1);
         }
         return span;
     }
 
     private static ReadOnlySpan<char> TrimEnd(ReadOnlySpan<char> span)
     {
-        while (span.Length > 0 && (GetMask(span[^1]) & MASK_ANY) == 0)
+        while (span.Length > 0 && (GetMask(span[span.Length - 1]) & MASK_ANY) == 0)
         {
-            span = span[..^1];
+            span = span.Slice(0, span.Length - 1);
         }
         return span;
     }
@@ -67,12 +67,12 @@ public ref struct WordSplitter
                         var cat = char.GetUnicodeCategory(res[i]);
                         if (cat == UnicodeCategory.LowercaseLetter)
                         {
-                            res = res[..(i - 1)];
+                            res = res.Slice(0, i - 1);
                             break;
                         }
                         if (cat != UnicodeCategory.UppercaseLetter)
                         {
-                            res = res[..i];
+                            res = res.Slice(0, i);
                             break;
                         }
                     }
@@ -84,7 +84,7 @@ public ref struct WordSplitter
                     {
                         if (char.GetUnicodeCategory(res[i]) != UnicodeCategory.LowercaseLetter)
                         {
-                            res = res[..i];
+                            res = res.Slice(0, i);
                             break;
                         }
                     }
@@ -92,7 +92,7 @@ public ref struct WordSplitter
 
                 default:
                     // cut off at non-letter
-                    res = res[..1];
+                    res = res.Slice(0, 1);
                     break;
             }
         }
@@ -103,13 +103,13 @@ public ref struct WordSplitter
             {
                 if (char.GetUnicodeCategory(res[i]) != first)
                 {
-                    res = res[..i];
+                    res = res.Slice(0, i);
                     break;
                 }
             }
         }
 
-        _span = TrimStart(_span[res.Length..]);
+        _span = TrimStart(_span.Slice(res.Length));
         return res;
     }
 }

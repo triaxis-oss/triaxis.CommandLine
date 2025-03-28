@@ -1,6 +1,7 @@
 namespace triaxis.CommandLine.ObjectOutput;
 
 using System.Diagnostics;
+using System.Text;
 using triaxis.CommandLine.ObjectOutput.Helpers;
 
 static class PrivateExtensions
@@ -84,6 +85,21 @@ static class PrivateExtensions
         where T : IObjectField
         => fields.Select(f => new KeyValuePair<string, object?>(f.Name, f.Accessor.Get(target)));
 
+    public static IDictionary<string, object?> GetValuesDictionary<T>(this IEnumerable<T> fields, object target)
+        where T : IObjectField
+    {
+#if NETSTANDARD2_0
+        var dic = new Dictionary<string, object?>();
+        foreach (var kvp in fields.GetValues(target))
+        {
+            dic.Add(kvp.Key, kvp.Value);
+        }
+        return dic;
+#else
+        return new Dictionary<string, object?>(fields.GetValues(target));
+#endif
+    }
+
     public static string ToTableTitle(this string s)
     {
         if (s.Length == 0)
@@ -91,13 +107,26 @@ static class PrivateExtensions
             return s;
         }
 
-        var ws = new WordSplitter(s);
+        var ws = new WordSplitter(s.AsSpan());
         int len = -1;
         while (ws.NextWord() is { } word && !word.IsEmpty)
         {
             len += 1 + word.Length;
         }
 
+#if NETSTANDARD2_0
+        var sb = new StringBuilder(len);
+        while (ws.NextWord() is {} word && !word.IsEmpty)
+        {
+            if (sb.Length > 0)
+            {
+                sb.Append(' ');
+            }
+            sb.Append(word.ToString().ToUpperInvariant());
+        }
+
+        return sb.ToString();
+#else
         return string.Create(len, s, (span, src) =>
         {
             var ws = new WordSplitter(src);
@@ -112,5 +141,6 @@ static class PrivateExtensions
                 }
             }
         });
+#endif
     }
 }

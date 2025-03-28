@@ -59,7 +59,7 @@ public static class ToolBuilderExtensions
                     case OptionsAttribute:
                         var optsPath = path;
                         Array.Resize(ref optsPath, (optsPath?.Length ?? 0) + 1);
-                        optsPath[^1] = m;
+                        optsPath[optsPath.Length - 1] = m;
                         ProcessMemberAttributes(cmd, memberType, optsPath);
                         break;
                 }
