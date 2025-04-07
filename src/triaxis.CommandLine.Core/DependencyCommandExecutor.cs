@@ -11,17 +11,20 @@ internal class DependencyCommandExecutor : ICommandExecutor
     private readonly IServiceProvider _serviceProvider;
     private readonly IPropertyInjector _propertyInjector;
     private readonly InvocationContext _context;
+    private readonly ILoggerFactory _loggerFactory;
     private readonly ILogger<DependencyCommandExecutor> _logger;
 
     public DependencyCommandExecutor(
         IServiceProvider serviceProvider,
         IPropertyInjector propertyInjector,
         InvocationContext context,
+        ILoggerFactory loggerFactory,
         ILogger<DependencyCommandExecutor> logger)
     {
         _serviceProvider = serviceProvider;
         _propertyInjector = propertyInjector;
         _context = context;
+        _loggerFactory = loggerFactory;
         _logger = logger;
     }
 
@@ -77,6 +80,22 @@ internal class DependencyCommandExecutor : ICommandExecutor
         }
 
         return Invocation.CommandInvocationResult.Create(result, resultType);
+    }
+
+    public bool HandleError(InvocationContext context, Exception exception)
+    {
+        // try to log the error under the command that was executed
+        var loggerType = (context.ParseResult.CommandResult.Command.Handler as DependencyCommandHandler)?.CommandType ?? GetType();
+        var logger = _loggerFactory.CreateLogger(loggerType);
+        if (exception is CommandErrorException ce)
+        {
+            logger.LogError(ce.Message, ce.MessageArguments);
+        }
+        else
+        {
+            logger.LogError(exception, "Error while executing command");
+        }
+        return true;
     }
 
     private (Func<CancellationToken, object>, bool, Type) CreateDelegate(object instance, Type command)

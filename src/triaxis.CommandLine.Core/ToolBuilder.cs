@@ -94,11 +94,23 @@ class ToolBuilder : IToolBuilder
             _useCommandFinalizer = false;
             _clb.AddMiddleware(async (context, next) =>
             {
-                await next(context);
-
-                if (context.InvocationResult is ICommandInvocationResult cir)
+                try
                 {
-                    await cir.EnsureCompleteAsync(context.GetCancellationToken());
+                    await next(context);
+
+                    if (context.InvocationResult is ICommandInvocationResult cir)
+                    {
+                        await cir.EnsureCompleteAsync(context.GetCancellationToken());
+                    }
+                }
+                catch (Exception e)
+                {
+                    context.ExitCode = -1;
+                    var host = context.GetHost();
+                    if (!host.Services.GetRequiredService<ICommandExecutor>().HandleError(context, e))
+                    {
+                        throw;
+                    }
                 }
             });
         }
