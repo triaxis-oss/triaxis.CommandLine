@@ -2,7 +2,7 @@ namespace triaxis.CommandLine.Invocation;
 
 public class AsyncEmptyCommandInvocationResult : CommandInvocationResult
 {
-    Task _task;
+    Task? _task;
 
     public AsyncEmptyCommandInvocationResult(Task task)
     {
@@ -11,6 +11,6 @@ public class AsyncEmptyCommandInvocationResult : CommandInvocationResult
 
     public override Task EnsureCompleteAsync(CancellationToken cancellationToken)
     {
-        return _task;
+        return Interlocked.Exchange(ref _task, null) ?? Task.CompletedTask;
     }
 }

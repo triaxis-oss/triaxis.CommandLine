@@ -2,7 +2,7 @@ namespace triaxis.CommandLine.Invocation;
 
 public class AsyncIEnumerableCommandInvocationResult<T> : CommandInvocationResult, ICommandInvocationResult<T>
 {
-    Task<IEnumerable<T>> _task;
+    Task<IEnumerable<T>>? _task;
 
     public AsyncIEnumerableCommandInvocationResult(Task<IEnumerable<T>> task)
     {
@@ -13,14 +13,17 @@ public class AsyncIEnumerableCommandInvocationResult<T> : CommandInvocationResul
 
     public override Task EnsureCompleteAsync(CancellationToken cancellationToken)
     {
-        return _task;
+        return Interlocked.Exchange(ref _task, null) ?? Task.CompletedTask;
     }
 
     public async Task EnumerateResultsAsync(Func<T, ValueTask> processElement, Func<ValueTask>? flushHint, CancellationToken cancellationToken)
     {
-        foreach (var e in await _task)
+        if (Interlocked.Exchange(ref _task, null) is { } task)
         {
-            await processElement(e);
+            foreach (var e in await task)
+            {
+                await processElement(e);
+            }
         }
     }
 }
