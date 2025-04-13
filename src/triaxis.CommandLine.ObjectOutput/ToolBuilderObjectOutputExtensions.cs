@@ -3,6 +3,7 @@ namespace triaxis.CommandLine;
 using System.CommandLine;
 using System.CommandLine.Hosting;
 using System.CommandLine.Invocation;
+using System.Data;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
@@ -22,6 +23,7 @@ public static class ToolBuilderObjectOutputExtensions
         builder.ConfigureServices((context, services) =>
         {
             services.TryAddTransient(typeof(IObjectOutputHandler<>), typeof(DefaultObjectOutputHandler<>));
+            services.TryAddTransient(typeof(IObjectOutputHandler<DataTable>), typeof(DataTableObjectOutputHandler));
             services.TryAddTransient<IObjectOutputHandler, DynamicObjectOutputHandler>();
             services.TryAddSingleton(typeof(IObjectDescriptorProvider<>), typeof(DefaultObjectDescriptorProvider<>));
 

@@ -4,12 +4,15 @@ using System.Data;
 
 class DataTableDescriptor : IObjectDescriptor
 {
-    private readonly DataTable _table;
-
     public DataTableDescriptor(DataTable table)
     {
-        _table = table;
+        Fields = table.Columns
+            .OfType<DataColumn>().Select(c => {
+                var t = typeof(DataColumnField<>).MakeGenericType(c.DataType);
+                return (IObjectField)Activator.CreateInstance(t, c);
+            })
+            .ToArray();
     }
 
-    public IReadOnlyList<IObjectField> Fields => throw new NotImplementedException();
+    public IReadOnlyList<IObjectField> Fields { get; }
 }

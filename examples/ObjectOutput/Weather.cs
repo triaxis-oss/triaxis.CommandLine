@@ -1,3 +1,5 @@
+using System.Data;
+
 namespace ObjectOutput;
 
 public class Weather
@@ -105,4 +107,40 @@ public class Tuple : Weather
 {
     public IEnumerable<(Forecast, Extension)> Execute()
         => GetForecasts().Select(f => (f, new Extension(f)));
+}
+
+[Command("table", Description = "DataTable output example")]
+public class DataTableOutput : Weather
+{
+    public DataTable Execute()
+    {
+        var dt = new DataTable();
+        dt.Columns.Add("City", typeof(string));
+        dt.Columns.Add("Temperature", typeof(decimal));
+        dt.Columns.Add("TemperatureF", typeof(decimal));
+        foreach (var fc in GetForecasts())
+        {
+            dt.Rows.Add(fc.City, fc.Temperature, fc.TemperatureF);
+        }
+        return dt;
+    }
+}
+
+[Command("asynctable", Description = "Async DataTable output example")]
+public class AsyncDataTableOutput : Weather
+{
+    public async Task<DataTable> Execute()
+    {
+        var dt = new DataTable();
+        dt.Columns.Add("City", typeof(string));
+        dt.Columns.Add("Temperature", typeof(decimal));
+        dt.Columns.Add("TemperatureF", typeof(decimal));
+        dt.Columns.Add("Other column");
+        foreach (var fc in GetForecasts())
+        {
+            dt.Rows.Add(fc.City, fc.Temperature, fc.TemperatureF);
+        }
+        await Task.Delay(100);
+        return dt;
+    }
 }
