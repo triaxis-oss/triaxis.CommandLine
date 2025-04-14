@@ -8,7 +8,12 @@ class DataTableDescriptor : IObjectDescriptor
     {
         Fields = table.Columns
             .OfType<DataColumn>().Select(c => {
-                var t = typeof(DataColumnField<>).MakeGenericType(c.DataType);
+                var type = c.DataType;
+                if (c.AllowDBNull && type.IsValueType)
+                {
+                    type = typeof(Nullable<>).MakeGenericType(type);
+                }
+                var t = typeof(DataColumnField<>).MakeGenericType(type);
                 return (IObjectField)Activator.CreateInstance(t, c);
             })
             .ToArray();

@@ -18,7 +18,7 @@ class DataColumnField<TValue> : IObjectField, IObjectField<TValue>, IPropertyGet
     public string Name => Column.ColumnName;
 
     public ObjectFieldVisibility Visibility => ObjectFieldVisibility.Standard;
-    public Type Type => Column.DataType;
+    public Type Type => typeof(TValue);
     public TypeConverter Converter => TypeDescriptor.GetConverter(Type);
     public IPropertyGetter Accessor => this;
 

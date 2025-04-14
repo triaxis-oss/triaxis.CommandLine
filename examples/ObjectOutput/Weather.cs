@@ -135,10 +135,10 @@ public class AsyncDataTableOutput : Weather
         dt.Columns.Add("City", typeof(string));
         dt.Columns.Add("Temperature", typeof(decimal));
         dt.Columns.Add("TemperatureF", typeof(decimal));
-        dt.Columns.Add("Other column");
-        foreach (var fc in GetForecasts())
+        dt.Columns.Add("Nullable", typeof(int)).AllowDBNull = true;
+        foreach (var (i, fc) in GetForecasts().Select((f, i) => (i, f)))
         {
-            dt.Rows.Add(fc.City, fc.Temperature, fc.TemperatureF);
+            dt.Rows.Add(fc.City, fc.Temperature, fc.TemperatureF, (i % 2 == 0) ? (i * 100) : null);
         }
         await Task.Delay(100);
         return dt;
