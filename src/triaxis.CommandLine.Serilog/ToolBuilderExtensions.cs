@@ -33,7 +33,7 @@ public static class ToolBuilderExtensions
                 logger.WriteTo.Console(
                     outputTemplate: "[{Timestamp:HH:mm:ss.fff} {Level:u3}] {" + contextProperty + "}: {Message:lj}{NewLine}{Exception}",
                     standardErrorFromLevel: LogEventLevel.Verbose,
-                    applyThemeToRedirectedOutput: Console.IsErrorRedirected ? false : true,
+                    applyThemeToRedirectedOutput: Console.IsErrorRedirected ? IsForceColorSet() : true,
                     theme: AnsiConsoleTheme.Literate
                 );
             }
@@ -47,5 +47,11 @@ public static class ToolBuilderExtensions
         });
 
         return builder;
+    }
+
+    private static bool IsForceColorSet()
+    {
+        var forceColor = Environment.GetEnvironmentVariable("FORCE_COLOR");
+        return forceColor is not null && (forceColor == "1" || forceColor.Equals("true", StringComparison.OrdinalIgnoreCase));
     }
 }
