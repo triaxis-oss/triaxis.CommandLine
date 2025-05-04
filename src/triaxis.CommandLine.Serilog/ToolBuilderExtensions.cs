@@ -29,12 +29,14 @@ public static class ToolBuilderExtensions
             if (!context.Configuration.GetSection("Serilog").Exists())
             {
                 var contextProperty = useShortContext ? "ShortContext" : "SourceContext";
+                bool sixteen = false;
+                bool theme = IsForceColorSet(ref sixteen) || !Console.IsErrorRedirected;
                 // fallback configuration
                 logger.WriteTo.Console(
                     outputTemplate: "[{Timestamp:HH:mm:ss.fff} {Level:u3}] {" + contextProperty + "}: {Message:lj}{NewLine}{Exception}",
                     standardErrorFromLevel: LogEventLevel.Verbose,
-                    applyThemeToRedirectedOutput: Console.IsErrorRedirected ? IsForceColorSet() : true,
-                    theme: AnsiConsoleTheme.Literate
+                    applyThemeToRedirectedOutput: theme,
+                    theme: sixteen ? AnsiConsoleTheme.Sixteen : AnsiConsoleTheme.Literate
                 );
             }
 
@@ -49,9 +51,10 @@ public static class ToolBuilderExtensions
         return builder;
     }
 
-    private static bool IsForceColorSet()
+    private static bool IsForceColorSet(ref bool sixteen)
     {
         var forceColor = Environment.GetEnvironmentVariable("FORCE_COLOR");
+        if (forceColor == "16") { sixteen = true; return true; }
         return forceColor is not null && (forceColor == "1" || forceColor.Equals("true", StringComparison.OrdinalIgnoreCase));
     }
 }
