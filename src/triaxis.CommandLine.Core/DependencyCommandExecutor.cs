@@ -100,9 +100,12 @@ internal class DependencyCommandExecutor : ICommandExecutor
     {
         // try to log the error under the command that was executed
         var handler = context.ParseResult.CommandResult.Command.Handler;
-        var loggerType = (handler as DependencyCommandHandler)?.CommandType
-            ?? (handler as GeneratedCommandHandler)?.CommandType
-            ?? GetType();
+        var loggerType = handler switch
+        {
+            DependencyCommandHandler dch => dch.CommandType,
+            GeneratedCommandHandler gch => gch.CommandType,
+            _ => GetType(),
+        };
         var logger = _loggerFactory.CreateLogger(loggerType);
         if (exception is CommandErrorException ce)
         {

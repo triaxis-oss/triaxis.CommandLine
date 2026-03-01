@@ -594,17 +594,23 @@ public sealed class CommandSourceGenerator : IIncrementalGenerator
         var varName = $"__mi_{idx}";
         if (m.IsField)
         {
+            // Member name is resolved from the Roslyn symbol, so it is always valid.
             sb.AppendLine($"{indent}var {varName} = typeof(global::{typeFqn})");
             sb.AppendLine($"{indent}    .GetField(\"{m.MemberName}\",");
             sb.AppendLine($"{indent}        global::System.Reflection.BindingFlags.Instance |");
-            sb.AppendLine($"{indent}        global::System.Reflection.BindingFlags.NonPublic)!;");
+            sb.AppendLine($"{indent}        global::System.Reflection.BindingFlags.NonPublic)");
+            sb.AppendLine($"{indent}    ?? throw new global::System.InvalidOperationException(");
+            sb.AppendLine($"{indent}        $\"Source-generated binder: field '{m.MemberName}' not found on {{typeof(global::{typeFqn}).FullName}}\");");
         }
         else
         {
+            // Member name is resolved from the Roslyn symbol, so it is always valid.
             sb.AppendLine($"{indent}var {varName} = typeof(global::{typeFqn})");
             sb.AppendLine($"{indent}    .GetProperty(\"{m.MemberName}\",");
             sb.AppendLine($"{indent}        global::System.Reflection.BindingFlags.Instance |");
-            sb.AppendLine($"{indent}        global::System.Reflection.BindingFlags.NonPublic)!;");
+            sb.AppendLine($"{indent}        global::System.Reflection.BindingFlags.NonPublic)");
+            sb.AppendLine($"{indent}    ?? throw new global::System.InvalidOperationException(");
+            sb.AppendLine($"{indent}        $\"Source-generated binder: property '{m.MemberName}' not found on {{typeof(global::{typeFqn}).FullName}}\");");
         }
     }
 
