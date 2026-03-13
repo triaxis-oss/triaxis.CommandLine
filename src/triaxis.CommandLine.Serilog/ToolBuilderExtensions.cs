@@ -13,7 +13,7 @@ using Serilog.Sinks.SystemConsole.Themes;
 
 public static class ToolBuilderExtensions
 {
-    public static IToolBuilder UseSerilog(this IToolBuilder builder, bool useShortContext = false)
+    public static IToolBuilder UseSerilog(this IToolBuilder builder, bool useShortContext = false, Action<HostBuilderContext, LoggerConfiguration>? configure = null)
     {
         var levelSwitch = new LoggingLevelSwitch();
 
@@ -26,7 +26,7 @@ public static class ToolBuilderExtensions
                 logger.Enrich.With(new ShortContextEnricher());
             }
 
-            if (!context.Configuration.GetSection("Serilog").Exists())
+            if (!context.Configuration.GetSection("Serilog:WriteTo").Exists())
             {
                 var contextProperty = useShortContext ? "ShortContext" : "SourceContext";
                 bool sixteen = false;
@@ -39,6 +39,8 @@ public static class ToolBuilderExtensions
                     theme: sixteen ? AnsiConsoleTheme.Sixteen : AnsiConsoleTheme.Literate
                 );
             }
+
+            configure?.Invoke(context, logger);
 
             logger.MinimumLevel.ControlledBy(levelSwitch);
 
