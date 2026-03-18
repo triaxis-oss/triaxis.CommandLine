@@ -9,11 +9,20 @@ public static class ToolBuilderExtensions
     public static IToolBuilder UseDefaults(this IToolBuilder builder,
         string? configOverridePath = null,
         string? environmentVariablePrefix = null,
-        Assembly? commandsAssembly = null)
+        Assembly? commandsAssembly = null,
+        Action<IToolBuilder>? commandRegistration = null)
     {
         builder.UseSerilog();
         builder.UseVerbosityOptions();
-        builder.AddCommandsFromAssembly(commandsAssembly ?? Assembly.GetCallingAssembly());
+
+        if (commandRegistration != null)
+        {
+            commandRegistration(builder);
+        }
+        else
+        {
+            builder.AddCommandsFromAssembly(commandsAssembly ?? Assembly.GetCallingAssembly());
+        }
 
         builder.ConfigureAppConfiguration((context, config) =>
         {

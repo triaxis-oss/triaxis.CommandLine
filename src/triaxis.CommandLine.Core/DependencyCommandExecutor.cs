@@ -1,6 +1,7 @@
 namespace triaxis.CommandLine;
 
 using System.CommandLine.Invocation;
+using System.CommandLine.Parsing;
 using System.Data;
 using System.Reflection;
 using Microsoft.Extensions.DependencyInjection;
@@ -28,7 +29,10 @@ internal class DependencyCommandExecutor : ICommandExecutor
         _logger = logger;
     }
 
-    public async Task<IInvocationResult?> ExecuteCommandAsync(Type command)
+    public Task<IInvocationResult?> ExecuteCommandAsync(Type command)
+        => ExecuteCommandAsync(command, null);
+
+    public async Task<IInvocationResult?> ExecuteCommandAsync(Type command, Action<object, ParseResult>? binder)
     {
         _logger.LogTrace("Creating command of type {CommandType}...", command);
         var instance = _serviceProvider.GetRequiredService(command);
@@ -38,28 +42,38 @@ internal class DependencyCommandExecutor : ICommandExecutor
         _propertyInjector.InjectProperties(instance);
 
         var cmdline = _context.ParseResult;
-        var cmd = cmdline.CommandResult.Command;
-        if (cmd != null)
+
+        if (binder != null)
         {
-            var type = instance.GetType();
-            foreach (var arg in cmd.Arguments.OfType<IMemberBoundSymbol>())
+            // Source-generated path: use the compiled binder delegate
+            binder(instance, cmdline);
+        }
+        else
+        {
+            // Reflection-based path: bind via IMemberBoundSymbol (legacy)
+            var cmd = cmdline.CommandResult.Command;
+            if (cmd != null)
             {
-                if (arg.GetRootMember().DeclaringType?.IsAssignableFrom(type) == true)
+                var type = instance.GetType();
+                foreach (var arg in cmd.Arguments.OfType<IMemberBoundSymbol>())
                 {
-                    if (cmdline.FindResultFor((Argument)arg) is { } res && res.Tokens.Any())
+                    if (arg.GetRootMember().DeclaringType?.IsAssignableFrom(type) == true)
                     {
-                        arg.SetValue(instance, res);
+                        if (cmdline.FindResultFor((Argument)arg) is { } res && res.Tokens.Any())
+                        {
+                            arg.SetValue(instance, res);
+                        }
                     }
                 }
-            }
 
-            foreach (var opt in cmd.Options.OfType<IMemberBoundSymbol>())
-            {
-                if (opt.GetRootMember().DeclaringType?.IsAssignableFrom(type) == true)
+                foreach (var opt in cmd.Options.OfType<IMemberBoundSymbol>())
                 {
-                    if (cmdline.FindResultFor((Option)opt) is { } res && !res.IsImplicit)
+                    if (opt.GetRootMember().DeclaringType?.IsAssignableFrom(type) == true)
                     {
-                        opt.SetValue(instance, res);
+                        if (cmdline.FindResultFor((Option)opt) is { } res && !res.IsImplicit)
+                        {
+                            opt.SetValue(instance, res);
+                        }
                     }
                 }
             }
@@ -85,7 +99,13 @@ internal class DependencyCommandExecutor : ICommandExecutor
     public bool HandleError(InvocationContext context, Exception exception)
     {
         // try to log the error under the command that was executed
-        var loggerType = (context.ParseResult.CommandResult.Command.Handler as DependencyCommandHandler)?.CommandType ?? GetType();
+        var handler = context.ParseResult.CommandResult.Command.Handler;
+        var loggerType = handler switch
+        {
+            DependencyCommandHandler dch => dch.CommandType,
+            GeneratedCommandHandler gch => gch.CommandType,
+            _ => GetType(),
+        };
         var logger = _loggerFactory.CreateLogger(loggerType);
         if (exception is CommandErrorException ce)
         {
