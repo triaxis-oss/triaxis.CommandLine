@@ -50,6 +50,12 @@ static class MemberInfoExtensions
         };
     }
 
+    public static bool IsMemberRequired(this MemberInfo member)
+    {
+        return member.GetCustomAttributes(false).Any(a =>
+            a.GetType().FullName == "System.Runtime.CompilerServices.RequiredMemberAttribute");
+    }
+
     public static MemberInfo GetRootMember(this IMemberBoundSymbol sym)
     {
         return sym.Path?.FirstOrDefault() ?? sym.Member;

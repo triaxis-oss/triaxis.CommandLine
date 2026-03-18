@@ -24,6 +24,10 @@ class MemberArgument<T> : Argument<T>, IMemberBoundSymbol
                 Arity = new ArgumentArity(0, Arity.MaximumNumberOfValues);
             }
         }
+        else if (member.IsMemberRequired() && Arity.MinimumNumberOfValues == 0)
+        {
+            Arity = new ArgumentArity(1, Arity.MaximumNumberOfValues);
+        }
     }
 
     public MemberInfo Member { get; }

@@ -11,7 +11,7 @@ public class MemberOption<T> : Option<T>, IMemberBoundSymbol
     {
         Member = member;
         Description = attribute.Description;
-        IsRequired = attribute.Required;
+        IsRequired = attribute.RequiredIsSet ? attribute.Required : member.IsMemberRequired();
         Path = path;
     }
 

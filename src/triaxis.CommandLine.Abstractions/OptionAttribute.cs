@@ -19,5 +19,13 @@ public class OptionAttribute : CommandlineAttribute
     }
 
     public string[]? Aliases { get; set; }
-    public bool Required { get; set; }
+
+    private bool? _required;
+    public bool Required
+    {
+        get => _required ?? false;
+        set => _required = value;
+    }
+
+    public bool RequiredIsSet => _required.HasValue;
 }
