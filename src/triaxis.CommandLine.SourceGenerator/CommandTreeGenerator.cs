@@ -20,15 +20,18 @@ public class CommandTreeGenerator : IIncrementalGenerator
             .Where(static m => m is not null)
             .Select(static (m, _) => m!);
 
-        // Collect all command models and generate the registration code
+        // Collect all command models and combine with assembly name
         var collected = commandClasses.Collect();
+        var assemblyName = context.CompilationProvider.Select(static (c, _) => c.AssemblyName ?? "");
+        var combined = collected.Combine(assemblyName);
 
-        context.RegisterSourceOutput(collected, static (spc, commands) =>
+        context.RegisterSourceOutput(combined, static (spc, pair) =>
         {
+            var (commands, asmName) = pair;
             if (commands.IsDefaultOrEmpty)
                 return;
 
-            var source = GenerateSource(commands);
+            var source = GenerateSource(commands, asmName);
             spc.AddSource("GeneratedCommandTree.g.cs", source);
         });
     }
@@ -318,7 +321,7 @@ public class CommandTreeGenerator : IIncrementalGenerator
         return type;
     }
 
-    private static string GenerateSource(ImmutableArray<CommandModel> commands)
+    private static string GenerateSource(ImmutableArray<CommandModel> commands, string assemblyName)
     {
         var sw = new StringWriter();
         var w = new IndentedTextWriter(sw);
@@ -332,6 +335,7 @@ public class CommandTreeGenerator : IIncrementalGenerator
         w.WriteLine("using System.CommandLine.Invocation;");
         w.WriteLine("using System.CommandLine.Parsing;");
         w.WriteLine("using System.Reflection;");
+        w.WriteLine("using System.Runtime.CompilerServices;");
         w.WriteLine("using System.Threading;");
         w.WriteLine("using System.Threading.Tasks;");
         w.WriteLine("using Microsoft.Extensions.DependencyInjection;");
@@ -341,12 +345,22 @@ public class CommandTreeGenerator : IIncrementalGenerator
         w.WriteLine("{");
         w.Indent++;
 
-        // Extension method
         w.WriteLine("internal static class GeneratedToolBuilderExtensions");
         w.WriteLine("{");
         w.Indent++;
 
-        w.WriteLine("public static IToolBuilder AddGeneratedCommands(this IToolBuilder builder)");
+        // Module initializer
+        w.WriteLine("[ModuleInitializer]");
+        w.WriteLine("internal static void Register()");
+        w.WriteLine("{");
+        w.Indent++;
+        w.WriteLine($"GeneratedCommandRegistration.Register({FormatString(assemblyName)}, AddGeneratedCommands);");
+        w.Indent--;
+        w.WriteLine("}");
+        w.WriteLine();
+
+        // Registration method (now private)
+        w.WriteLine("private static void AddGeneratedCommands(IToolBuilder builder)");
         w.WriteLine("{");
         w.Indent++;
         foreach (var cmd in commands)
@@ -364,8 +378,6 @@ public class CommandTreeGenerator : IIncrementalGenerator
         }
         w.Indent--;
         w.WriteLine("});");
-        w.WriteLine();
-        w.WriteLine("return builder;");
         w.Indent--;
         w.WriteLine("}");
         w.WriteLine();

@@ -16,6 +16,13 @@ public static class ToolBuilderExtensions
 
     public static IToolBuilder AddCommandsFromAssembly(this IToolBuilder builder, Assembly assembly)
     {
+        // Use source-generated registration if available, falling back to reflection
+        if (GeneratedCommandRegistration.TryGet(assembly.GetName().Name, out var registration))
+        {
+            registration(builder);
+            return builder;
+        }
+
         Command CommandFromAttribute(CommandAttribute attr, Type? type = null)
         {
             var cmd = builder.GetCommand(attr.Path);
