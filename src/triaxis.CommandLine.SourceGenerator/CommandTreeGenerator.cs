@@ -487,7 +487,7 @@ public class CommandTreeGenerator : IIncrementalGenerator
         foreach (var arg in args)
         {
             var fieldName = GetMemberFieldName(arg);
-            w.WriteLine($"_{fieldName} = new Argument<{arg.MemberTypeFqn}>({FormatString(arg.Name)});");
+            w.WriteLine($"_{fieldName} = new Argument<{arg.MemberTypeFqn}>({FormatString(arg.Name ?? arg.MemberName)});");
             if (arg.Description is not null)
                 w.WriteLine($"_{fieldName}.Description = {FormatString(arg.Description)};");
             if (arg.Required == false)
@@ -498,7 +498,7 @@ public class CommandTreeGenerator : IIncrementalGenerator
         foreach (var opt in opts)
         {
             var fieldName = GetMemberFieldName(opt);
-            var nameAndAliases = new List<string> { opt.Name };
+            var nameAndAliases = new List<string> { opt.Name ?? opt.MemberName };
             if (opt.Aliases is not null)
                 nameAndAliases.AddRange(opt.Aliases);
             w.WriteLine($"_{fieldName} = new Option<{opt.MemberTypeFqn}>({FormatStringArrayInline(nameAndAliases.ToArray())});");
