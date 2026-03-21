@@ -8,8 +8,8 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Hosting" />
     <PackageReference Include="System.CommandLine" />
-    <PackageReference Include="System.CommandLine.Hosting" />
     <PackageReference Include="System.Text.Json" />
   </ItemGroup>
 

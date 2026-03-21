@@ -1,15 +1,8 @@
 namespace triaxis.CommandLine.Invocation;
 
-using System.CommandLine.Invocation;
-
 public abstract class CommandInvocationResult : ICommandInvocationResult
 {
     public abstract Task EnsureCompleteAsync(CancellationToken cancellationToken);
-
-    public void Apply(InvocationContext context)
-    {
-        EnsureCompleteAsync(context.GetCancellationToken()).GetAwaiter().GetResult();
-    }
 
     public static ICommandInvocationResult Create(object result, Type resultType)
     {

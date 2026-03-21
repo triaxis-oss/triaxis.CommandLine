@@ -1,9 +1,9 @@
 namespace triaxis.CommandLine;
 
-using System.CommandLine.Invocation;
+using System.CommandLine;
 
 public interface ICommandExecutor
 {
-    Task<IInvocationResult?> ExecuteCommandAsync(Type command);
-    bool HandleError(InvocationContext context, Exception exception);
+    Task<ICommandInvocationResult?> ExecuteCommandAsync(Type command);
+    bool HandleError(ParseResult parseResult, Exception exception);
 }

@@ -42,7 +42,7 @@ class CommandNode
                 if (!child._added)
                 {
                     child._added = true;
-                    _command.AddCommand(child._command);
+                    _command.Subcommands.Add(child._command);
                 }
                 child.Realize();
             }

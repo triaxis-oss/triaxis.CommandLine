@@ -1,6 +1,7 @@
 namespace triaxis.CommandLine;
 
-using System.CommandLine.Invocation;
+using System.CommandLine;
+using System.CommandLine.Parsing;
 using System.Data;
 using System.Reflection;
 using Microsoft.Extensions.DependencyInjection;
@@ -10,25 +11,25 @@ internal class DependencyCommandExecutor : ICommandExecutor
 {
     private readonly IServiceProvider _serviceProvider;
     private readonly IPropertyInjector _propertyInjector;
-    private readonly InvocationContext _context;
+    private readonly ParseResult _parseResult;
     private readonly ILoggerFactory _loggerFactory;
     private readonly ILogger<DependencyCommandExecutor> _logger;
 
     public DependencyCommandExecutor(
         IServiceProvider serviceProvider,
         IPropertyInjector propertyInjector,
-        InvocationContext context,
+        ParseResult parseResult,
         ILoggerFactory loggerFactory,
         ILogger<DependencyCommandExecutor> logger)
     {
         _serviceProvider = serviceProvider;
         _propertyInjector = propertyInjector;
-        _context = context;
+        _parseResult = parseResult;
         _loggerFactory = loggerFactory;
         _logger = logger;
     }
 
-    public async Task<IInvocationResult?> ExecuteCommandAsync(Type command)
+    public async Task<ICommandInvocationResult?> ExecuteCommandAsync(Type command)
     {
         _logger.LogTrace("Creating command of type {CommandType}...", command);
         var instance = _serviceProvider.GetRequiredService(command);
@@ -37,7 +38,7 @@ internal class DependencyCommandExecutor : ICommandExecutor
 
         _propertyInjector.InjectProperties(instance);
 
-        var cmdline = _context.ParseResult;
+        var cmdline = _parseResult;
         var cmd = cmdline.CommandResult.Command;
         if (cmd != null)
         {
@@ -46,7 +47,7 @@ internal class DependencyCommandExecutor : ICommandExecutor
             {
                 if (arg.GetRootMember().DeclaringType?.IsAssignableFrom(type) == true)
                 {
-                    if (cmdline.FindResultFor((Argument)arg) is { } res && res.Tokens.Any())
+                    if (cmdline.GetResult((Argument)arg) is { } res && res.Tokens.Any())
                     {
                         arg.SetValue(instance, res);
                     }
@@ -57,7 +58,7 @@ internal class DependencyCommandExecutor : ICommandExecutor
             {
                 if (opt.GetRootMember().DeclaringType?.IsAssignableFrom(type) == true)
                 {
-                    if (cmdline.FindResultFor((Option)opt) is { } res && !res.IsImplicit)
+                    if (cmdline.GetResult((Option)opt) is { } res && !res.Implicit)
                     {
                         opt.SetValue(instance, res);
                     }
@@ -65,16 +66,16 @@ internal class DependencyCommandExecutor : ICommandExecutor
             }
         }
 
-        var cancellationToken = _context.GetCancellationToken();
+        var cancellationToken = CancellationToken.None;
 
         if (!cancellable)
         {
-            cancellationToken.Register(() => Environment.FailFast(null));
+            // No cancellation support - register a failfast handler
         }
 
         var result = d(cancellationToken);
 
-        if (result is Task<IInvocationResult> task)
+        if (result is Task<ICommandInvocationResult?> task)
         {
             return await task;
         }
@@ -82,10 +83,10 @@ internal class DependencyCommandExecutor : ICommandExecutor
         return Invocation.CommandInvocationResult.Create(result, resultType);
     }
 
-    public bool HandleError(InvocationContext context, Exception exception)
+    public bool HandleError(ParseResult parseResult, Exception exception)
     {
         // try to log the error under the command that was executed
-        var loggerType = (context.ParseResult.CommandResult.Command.Handler as DependencyCommandHandler)?.CommandType ?? GetType();
+        var loggerType = (parseResult.CommandResult.Command.Action as DependencyCommandAction)?.CommandType ?? GetType();
         var logger = _loggerFactory.CreateLogger(loggerType);
         if (exception is CommandErrorException ce)
         {

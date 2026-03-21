@@ -1,8 +1,6 @@
 namespace triaxis.CommandLine;
 
 using System.CommandLine;
-using System.CommandLine.Hosting;
-using System.CommandLine.Invocation;
 using System.Data;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -15,13 +13,14 @@ public static class ToolBuilderObjectOutputExtensions
     public static IToolBuilder UseObjectOutput(this IToolBuilder builder)
     {
         Func<ObjectOutputFormat>? defaultOutputFormat = null;
-        var optOutput = new Option<ObjectOutputFormat>(new[] { "-o", "--output" }, () => defaultOutputFormat?.Invoke() ?? ObjectOutputFormat.Table, "Output format");
+        var optOutput = new Option<ObjectOutputFormat>("--output", "-o") { DefaultValueFactory = _ => defaultOutputFormat?.Invoke() ?? ObjectOutputFormat.Table, Description = "Output format" };
 
-        builder.RootCommand.AddGlobalOption(optOutput);
+        builder.RootCommand.Options.Add(optOutput);
 
-        builder.AddMiddleware(ObjectOutputMiddleware);
+        builder.AddResultProcessor(ObjectOutputProcessor);
         builder.ConfigureServices((context, services) =>
         {
+            services.TryAddSingleton<TextWriter>(Console.Out);
             services.TryAddTransient(typeof(IObjectOutputHandler<>), typeof(DefaultObjectOutputHandler<>));
             services.TryAddTransient(typeof(IObjectOutputHandler<DataTable>), typeof(DataTableObjectOutputHandler));
             services.TryAddTransient<IObjectOutputHandler, DynamicObjectOutputHandler>();
@@ -35,7 +34,7 @@ public static class ToolBuilderObjectOutputExtensions
 
             services.TryAddTransient<IObjectFormatterProvider>(sp =>
             {
-                var fmt = builder.GetInvocationContext().ParseResult.GetValueForOption(optOutput);
+                var fmt = builder.GetParseResult().GetValue(optOutput);
                 return fmt switch
                 {
                     ObjectOutputFormat.Yaml => sp.GetRequiredService<YamlObjectFormatterProvider>(),
@@ -48,7 +47,7 @@ public static class ToolBuilderObjectOutputExtensions
 
             services.Configure<TableOutputOptions>(config =>
             {
-                var fmt = builder.GetInvocationContext().ParseResult.GetValueForOption(optOutput);
+                var fmt = builder.GetParseResult().GetValue(optOutput);
                 if (fmt == ObjectOutputFormat.Wide)
                 {
                     config.Wide = true;
@@ -58,17 +57,15 @@ public static class ToolBuilderObjectOutputExtensions
         return builder;
     }
 
-    private static async Task ObjectOutputMiddleware(InvocationContext context, Func<InvocationContext, Task> next)
+    private static async Task ObjectOutputProcessor(IServiceProvider services, ParseResult parseResult, ICommandInvocationResult? result, CancellationToken cancellationToken)
     {
-        await next(context);
-
-        if (context.InvocationResult is ICommandInvocationResult cir &&
+        if (result is ICommandInvocationResult cir &&
             cir.GetType().GetInterfaces().FirstOrDefault(intf => intf.IsGenericType && intf.GetGenericTypeDefinition() == typeof(ICommandInvocationResult<>)) is {} tcir)
         {
             var objectType = tcir.GetGenericArguments()[0];
-            if (context.GetHost().Services.GetService(typeof(IObjectOutputHandler<>).MakeGenericType(objectType)) is IObjectOutputHandler handler)
+            if (services.GetService(typeof(IObjectOutputHandler<>).MakeGenericType(objectType)) is IObjectOutputHandler handler)
             {
-                await handler.ProcessOutputAsync(cir, context.GetCancellationToken());
+                await handler.ProcessOutputAsync(cir, cancellationToken);
             }
         }
     }

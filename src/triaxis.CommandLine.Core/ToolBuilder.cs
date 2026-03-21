@@ -3,10 +3,6 @@ namespace triaxis.CommandLine;
 using System;
 using System.Collections.Generic;
 using System.CommandLine;
-using System.CommandLine.Builder;
-using System.CommandLine.Hosting;
-using System.CommandLine.Invocation;
-using System.CommandLine.Parsing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -18,27 +14,21 @@ class ToolBuilder : IToolBuilder
     private readonly string[] _args;
     private readonly IHostBuilder _host;
     private readonly RootCommand _root;
-    private readonly CommandLineBuilder _clb;
     private readonly CommandNode _tree;
-    private readonly List<InvocationMiddleware> _middlewares;
-    private bool _useHost = true;
-    private bool _useDefaults = true;
-    private bool _useCommandFinalizer = true;
+    private readonly List<CommandResultProcessor> _resultProcessors;
 
     public ToolBuilder(IEnumerable<string> args)
     {
         _args = args.ToArray();
         _root = new RootCommand();
         _host = Host.CreateDefaultBuilder();
-        _clb = new CommandLineBuilder(_root);
         _tree = new CommandNode(_root);
-        _middlewares = new();
+        _resultProcessors = new();
         ConfigureHost(_host);
     }
 
     public string[] Arguments => _args;
     public RootCommand RootCommand => _root;
-    public CommandLineBuilder CommandLine => _clb;
 
     public Command GetCommand(params string[] path) => _tree.GetCommand(path);
 
@@ -46,7 +36,6 @@ class ToolBuilder : IToolBuilder
     {
         host.ConfigureServices(services =>
         {
-            services.Configure<InvocationLifetimeOptions>(options => options.SuppressStatusMessages = true);
             services.AddTransient<ICommandExecutor, DependencyCommandExecutor>();
             services.AddSingleton<IPropertyInjector, DependencyPropertyInjector>();
         });
@@ -63,70 +52,80 @@ class ToolBuilder : IToolBuilder
         });
     }
 
-    public IToolBuilder AddMiddleware(InvocationMiddleware middleware)
+    public IToolBuilder AddResultProcessor(CommandResultProcessor processor)
     {
-        _middlewares.Add(middleware);
+        _resultProcessors.Add(processor);
         return this;
     }
 
-    private void UseDefaults()
+    public int Run()
     {
-        if (_useDefaults)
-        {
-            _useDefaults = false;
-            _clb.UseDefaults();
-        }
+        return RunAsync().GetAwaiter().GetResult();
     }
 
-    private void UseHost()
+    public async Task<int> RunAsync()
     {
-        if (_useHost)
-        {
-            _useHost = false;
-            _clb.UseHost(_ => _host, null);
-        }
-    }
-
-    private void UseCommandFinalizer()
-    {
-        if (_useCommandFinalizer)
-        {
-            _useCommandFinalizer = false;
-            _clb.AddMiddleware(async (context, next) =>
-            {
-                try
-                {
-                    await next(context);
-
-                    if (context.InvocationResult is ICommandInvocationResult cir)
-                    {
-                        await cir.EnsureCompleteAsync(context.GetCancellationToken());
-                    }
-                }
-                catch (Exception e)
-                {
-                    context.ExitCode = -1;
-                    var host = context.GetHost();
-                    if (!host.Services.GetRequiredService<ICommandExecutor>().HandleError(context, e))
-                    {
-                        throw;
-                    }
-                }
-            });
-        }
-    }
-
-    public Parser Build()
-    {
-        UseDefaults();
-        UseHost();
-        UseCommandFinalizer();
-        foreach (var mw in _middlewares)
-        {
-            _clb.AddMiddleware(mw);
-        }
         _tree.Realize();
-        return _clb.Build();
+
+        var parseResult = _root.Parse(_args);
+
+        // Store ParseResult for host configuration callbacks
+        _host.Properties[typeof(ParseResult)] = parseResult;
+
+        // Check if the matched command has our custom action
+        var action = parseResult.CommandResult.Command.Action;
+        if (action is DependencyCommandAction depAction)
+        {
+            // Register ParseResult in DI
+            _host.ConfigureServices(services =>
+            {
+                services.AddSingleton(parseResult);
+            });
+
+            var host = _host.Build();
+            await host.StartAsync();
+
+            try
+            {
+                var executor = host.Services.GetRequiredService<ICommandExecutor>();
+                var result = await executor.ExecuteCommandAsync(depAction.CommandType);
+
+                // Run result processors
+                using var cts = new CancellationTokenSource();
+                var ct = cts.Token;
+                foreach (var processor in _resultProcessors)
+                {
+                    await processor(host.Services, parseResult, result, ct);
+                }
+
+                // Finalize the result
+                if (result is ICommandInvocationResult cir)
+                {
+                    await cir.EnsureCompleteAsync(ct);
+                }
+
+                return 0;
+            }
+            catch (Exception e)
+            {
+                var executor = host.Services.GetRequiredService<ICommandExecutor>();
+                if (!executor.HandleError(parseResult, e))
+                {
+                    throw;
+                }
+                return -1;
+            }
+            finally
+            {
+                await host.StopAsync();
+                host.Dispose();
+            }
+        }
+        else
+        {
+            // Built-in action (help, version, parse error) - let System.CommandLine handle it
+            return parseResult.Invoke();
+        }
     }
 
     #region IHostBuilder implementation

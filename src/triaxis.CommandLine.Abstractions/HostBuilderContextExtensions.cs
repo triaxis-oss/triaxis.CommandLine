@@ -1,5 +1,6 @@
 namespace Microsoft.Extensions.Hosting;
 
+using System.CommandLine;
 using System.Diagnostics.CodeAnalysis;
 
 public static class HostBuilderContextExtensions
@@ -38,5 +39,15 @@ public static class HostBuilderContextExtensions
             notify = prev + notify;
         }
         context.SetContextProperty(notify);
+    }
+
+    public static ParseResult GetParseResult(this HostBuilderContext context)
+    {
+        return (ParseResult)context.Properties[typeof(ParseResult)];
+    }
+
+    public static ParseResult GetParseResult(this IHostBuilder hostBuilder)
+    {
+        return (ParseResult)hostBuilder.Properties[typeof(ParseResult)];
     }
 }

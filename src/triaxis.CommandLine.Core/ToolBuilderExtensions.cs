@@ -1,8 +1,6 @@
 namespace triaxis.CommandLine;
 
 using System.CommandLine;
-using System.CommandLine.Hosting;
-using System.CommandLine.Parsing;
 using System.ComponentModel;
 using System.Reflection;
 using Microsoft.Extensions.DependencyInjection;
@@ -25,7 +23,7 @@ public static class ToolBuilderExtensions
             {
                 foreach (var alias in attr.Aliases)
                 {
-                    cmd.AddAlias(alias);
+                    cmd.Aliases.Add(alias);
                 }
             }
 
@@ -51,10 +49,10 @@ public static class ToolBuilderExtensions
                 switch (attr)
                 {
                     case ArgumentAttribute aa:
-                        cmd.AddArgument((Argument)Activator.CreateInstance(typeof(MemberArgument<>).MakeGenericType(memberType), m, attr, path));
+                        cmd.Arguments.Add((Argument)Activator.CreateInstance(typeof(MemberArgument<>).MakeGenericType(memberType), m, attr, path));
                         break;
                     case OptionAttribute oa:
-                        cmd.AddOption((Option)Activator.CreateInstance(typeof(MemberOption<>).MakeGenericType(memberType), m, attr, path));
+                        cmd.Options.Add((Option)Activator.CreateInstance(typeof(MemberOption<>).MakeGenericType(memberType), m, attr, path));
                         break;
                     case OptionsAttribute:
                         var optsPath = path;
@@ -81,7 +79,7 @@ public static class ToolBuilderExtensions
 
                 ProcessMemberAttributes(cmd, type);
 
-                cmd.Handler = new DependencyCommandHandler(type, attr);
+                cmd.Action = new DependencyCommandAction(type, attr);
                 types.Add(type);
             }
         }

@@ -1,8 +1,6 @@
 namespace triaxis.CommandLine;
 
 using System.CommandLine;
-using System.CommandLine.Invocation;
-using System.CommandLine.Parsing;
 using Microsoft.Extensions.Hosting;
 
 public interface IToolBuilder : IHostBuilder
@@ -10,7 +8,10 @@ public interface IToolBuilder : IHostBuilder
     string[] Arguments { get; }
     RootCommand RootCommand { get; }
     Command GetCommand(params string[] path);
-    IToolBuilder AddMiddleware(InvocationMiddleware middleware);
+    IToolBuilder AddResultProcessor(CommandResultProcessor processor);
 
-    new Parser Build();
+    int Run();
+    Task<int> RunAsync();
 }
+
+public delegate Task CommandResultProcessor(IServiceProvider services, ParseResult parseResult, ICommandInvocationResult? result, CancellationToken cancellationToken);

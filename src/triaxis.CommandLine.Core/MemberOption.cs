@@ -7,32 +7,22 @@ using System.Reflection;
 public class MemberOption<T> : Option<T>, IMemberBoundSymbol
 {
     public MemberOption(MemberInfo member, OptionAttribute attribute, MemberInfo[] path)
-        : base(GetNameAndAliases(member, attribute), attribute.Description)
+        : base(GetName(member, attribute), GetAliases(member, attribute))
     {
         Member = member;
         Description = attribute.Description;
-        IsRequired = attribute.RequiredIsSet ? attribute.Required : member.IsMemberRequired();
+        Required = attribute.RequiredIsSet ? attribute.Required : member.IsMemberRequired();
         Path = path;
     }
 
     public MemberInfo Member { get; }
     public MemberInfo[]? Path { get; }
 
-    private static string[] GetNameAndAliases(MemberInfo member, OptionAttribute opt)
-    {
-        var name = opt.Name ?? member.Name;
-        if (opt.Aliases == null)
-        {
-            return new[] { name };
-        }
-        else
-        {
-            var res = new string[opt.Aliases.Length + 1];
-            res[0] = name;
-            opt.Aliases.CopyTo(res, 1);
-            return res;
-        }
-    }
+    private static string GetName(MemberInfo member, OptionAttribute opt)
+        => opt.Name ?? member.Name;
+
+    private static string[] GetAliases(MemberInfo member, OptionAttribute opt)
+        => opt.Aliases ?? Array.Empty<string>();
 
     public void SetValue(object target, ArgumentResult parseResult)
     {

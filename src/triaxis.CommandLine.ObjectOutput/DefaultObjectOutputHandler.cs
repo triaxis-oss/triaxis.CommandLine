@@ -1,20 +1,17 @@
 
-using System.CommandLine;
-using System.CommandLine.IO;
-
 namespace triaxis.CommandLine.ObjectOutput;
 
 public class DefaultObjectOutputHandler<T> : IObjectOutputHandler<T>
 {
     private readonly IObjectDescriptorProvider<T> _descriptorProvider;
     private readonly IObjectFormatterProvider _formatterProvider;
-    private readonly IConsole _console;
+    private readonly TextWriter _output;
 
-    public DefaultObjectOutputHandler(IObjectDescriptorProvider<T> descriptorProvider, IObjectFormatterProvider formatterProvider, IConsole console)
+    public DefaultObjectOutputHandler(IObjectDescriptorProvider<T> descriptorProvider, IObjectFormatterProvider formatterProvider, TextWriter output)
     {
         _descriptorProvider = descriptorProvider;
         _formatterProvider = formatterProvider;
-        _console = console;
+        _output = output;
     }
 
     public async Task ProcessOutputAsync(ICommandInvocationResult<T> cir, CancellationToken cancellationToken)
@@ -31,7 +28,7 @@ public class DefaultObjectOutputHandler<T> : IObjectOutputHandler<T>
                     if (formatter is null)
                     {
                         var descriptor = _descriptorProvider.GetDescriptor(e);
-                        output = _console is SystemConsole ? CreateStdoutWriter() : _console.Out.CreateTextWriter();
+                        output = _output == Console.Out ? CreateStdoutWriter() : _output;
                         formatter = await _formatterProvider.CreateFormatterAsync<T>(descriptor, output, cir.IsCollection);
                     }
                     await formatter.OutputElementAsync(e);
@@ -50,14 +47,17 @@ public class DefaultObjectOutputHandler<T> : IObjectOutputHandler<T>
             {
                 await disposable.DisposeAsync();
             }
-            if (output is IAsyncDisposable outputDisposable)
+            if (output is not null && output != _output)
             {
-                await outputDisposable.DisposeAsync();
-            }
-            else if (output is not null)
-            {
-                await output.FlushAsync();
-                output.Dispose();
+                if (output is IAsyncDisposable outputDisposable)
+                {
+                    await outputDisposable.DisposeAsync();
+                }
+                else
+                {
+                    await output.FlushAsync();
+                    output.Dispose();
+                }
             }
         }
     }

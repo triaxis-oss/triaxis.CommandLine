@@ -1,5 +1,3 @@
-using System.CommandLine;
-using System.CommandLine.Invocation;
 using System.Data;
 using System.Runtime.InteropServices;
 
@@ -32,9 +30,9 @@ class DataTableObjectOutputHandler : IObjectOutputHandler<DataTable>
         public IObjectDescriptor GetDescriptor(DataRow? instance) => s_current.Value!;
     }
 
-    public DataTableObjectOutputHandler(IObjectFormatterProvider formatterProvider, IConsole console)
+    public DataTableObjectOutputHandler(IObjectFormatterProvider formatterProvider, TextWriter output)
     {
-        _rowHandler = new DefaultObjectOutputHandler<DataRow>(AsyncContextDescriptorProvider.Instance, formatterProvider, console);
+        _rowHandler = new DefaultObjectOutputHandler<DataRow>(AsyncContextDescriptorProvider.Instance, formatterProvider, output);
     }
 
     class DataTableCommandInvocationResult(
@@ -42,9 +40,6 @@ class DataTableObjectOutputHandler : IObjectOutputHandler<DataTable>
         ) : ICommandInvocationResult<DataRow>
     {
         public bool IsCollection => true;
-
-        public void Apply(InvocationContext context)
-            => cir.Apply(context);
 
         public Task EnsureCompleteAsync(CancellationToken cancellationToken)
             => cir.EnsureCompleteAsync(cancellationToken);
