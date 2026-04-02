@@ -1,5 +1,3 @@
-using System.Reflection;
-
 namespace triaxis.CommandLine;
 
 public static class Tool

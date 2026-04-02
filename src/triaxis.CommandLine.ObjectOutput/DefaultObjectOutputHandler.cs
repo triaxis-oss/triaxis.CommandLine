@@ -1,20 +1,16 @@
-
-using System.CommandLine;
-using System.CommandLine.IO;
-
 namespace triaxis.CommandLine.ObjectOutput;
 
 public class DefaultObjectOutputHandler<T> : IObjectOutputHandler<T>
 {
     private readonly IObjectDescriptorProvider<T> _descriptorProvider;
     private readonly IObjectFormatterProvider _formatterProvider;
-    private readonly IConsole _console;
+    private readonly IOutputStreamProvider _outputStreamProvider;
 
-    public DefaultObjectOutputHandler(IObjectDescriptorProvider<T> descriptorProvider, IObjectFormatterProvider formatterProvider, IConsole console)
+    public DefaultObjectOutputHandler(IObjectDescriptorProvider<T> descriptorProvider, IObjectFormatterProvider formatterProvider, IOutputStreamProvider outputStreamProvider)
     {
         _descriptorProvider = descriptorProvider;
         _formatterProvider = formatterProvider;
-        _console = console;
+        _outputStreamProvider = outputStreamProvider;
     }
 
     public async Task ProcessOutputAsync(ICommandInvocationResult<T> cir, CancellationToken cancellationToken)
@@ -31,7 +27,7 @@ public class DefaultObjectOutputHandler<T> : IObjectOutputHandler<T>
                     if (formatter is null)
                     {
                         var descriptor = _descriptorProvider.GetDescriptor(e);
-                        output = _console is SystemConsole ? CreateStdoutWriter() : _console.Out.CreateTextWriter();
+                        output = _outputStreamProvider.GetOutputStream();
                         formatter = await _formatterProvider.CreateFormatterAsync<T>(descriptor, output, cir.IsCollection);
                     }
                     await formatter.OutputElementAsync(e);
@@ -50,21 +46,11 @@ public class DefaultObjectOutputHandler<T> : IObjectOutputHandler<T>
             {
                 await disposable.DisposeAsync();
             }
-            if (output is IAsyncDisposable outputDisposable)
-            {
-                await outputDisposable.DisposeAsync();
-            }
-            else if (output is not null)
+            if (output is not null)
             {
                 await output.FlushAsync();
-                output.Dispose();
             }
         }
-    }
-
-    private static TextWriter CreateStdoutWriter()
-    {
-        return new StreamWriter(Console.OpenStandardOutput(), Console.OutputEncoding, 65536);
     }
 
     Task IObjectOutputHandler.ProcessOutputAsync(ICommandInvocationResult cir, CancellationToken cancellationToken)
