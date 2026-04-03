@@ -8,10 +8,9 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\triaxis.CommandLine.Abstractions\triaxis.CommandLine.Abstractions.csproj" />
-  </ItemGroup>
-
-  <ItemGroup>
+    <PackageReference Include="System.CommandLine" />
+    <PackageReference Include="System.CommandLine.Hosting" />
+    <PackageReference Include="System.Text.Json" />
     <PackageReference Include="triaxis.Reflection.PropertyAccess" />
   </ItemGroup>
 

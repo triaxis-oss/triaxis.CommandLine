@@ -9,7 +9,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
-public static class ToolBuilderExtensions
+public static partial class ToolBuilderExtensions
 {
     public static IToolBuilder AddCommandsFromAssembly(this IToolBuilder builder)
         => builder.AddCommandsFromAssembly(Assembly.GetCallingAssembly());

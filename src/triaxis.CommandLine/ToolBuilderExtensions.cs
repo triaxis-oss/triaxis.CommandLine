@@ -9,7 +9,7 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
-public static class ToolBuilderExtensions
+public static partial class ToolBuilderExtensions
 {
     public static IToolBuilder UseVerbosityOptions(this IToolBuilder builder)
     {

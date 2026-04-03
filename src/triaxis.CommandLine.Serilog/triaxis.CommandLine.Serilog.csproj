@@ -16,7 +16,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\triaxis.CommandLine.Abstractions\triaxis.CommandLine.Abstractions.csproj" />
+    <ProjectReference Include="..\triaxis.CommandLine\triaxis.CommandLine.csproj" />
   </ItemGroup>
 
 </Project>
