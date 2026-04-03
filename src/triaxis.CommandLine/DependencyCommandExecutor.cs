@@ -33,7 +33,7 @@ internal class DependencyCommandExecutor : ICommandExecutor
         _logger.LogTrace("Creating command of type {CommandType}...", command);
         var instance = _serviceProvider.GetRequiredService(command);
 
-        var (d, cancellable, resultType) = CreateDelegate(instance, command);
+        var (d, cancellable, resultType) = CommandDelegateFactory.CreateDelegate(instance, command);
 
         _propertyInjector.InjectProperties(instance);
 
@@ -96,28 +96,5 @@ internal class DependencyCommandExecutor : ICommandExecutor
             logger.LogError(exception, "Error while executing command");
         }
         return true;
-    }
-
-    private (Func<CancellationToken, object>, bool, Type) CreateDelegate(object instance, Type command)
-    {
-        if (command.GetMethod("ExecuteAsync", new[] { typeof(CancellationToken) }) is MethodInfo mthCt)
-        {
-            if (Delegate.CreateDelegate(typeof(Func<CancellationToken, object>), instance, mthCt, false) is Func<CancellationToken, object> dCt)
-            {
-                _logger.LogTrace("Found cancellable {MethodName} method returning {ReturnType}", mthCt.Name, mthCt.ReturnType);
-                return (dCt, true, mthCt.ReturnType);
-            }
-        }
-
-        if ((command.GetMethod("ExecuteAsync", Type.EmptyTypes) ?? command.GetMethod("Execute", Type.EmptyTypes)) is MethodInfo mth)
-        {
-            if (Delegate.CreateDelegate(typeof(Func<object>), instance, mth, false) is Func<object> d)
-            {
-                _logger.LogTrace("Found non-cancellable {MethodName} method returning {ReturnType}", mth.Name, mth.ReturnType);
-                return (ct => d(), false, mth.ReturnType);
-            }
-        }
-
-        throw new InvalidProgramException($"Command type {command.FullName} does not implement the ExecuteAsync() method");
     }
 }
