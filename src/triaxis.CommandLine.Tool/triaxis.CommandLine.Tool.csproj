@@ -4,11 +4,17 @@
     <TargetFrameworks>netstandard2.0;netstandard2.1</TargetFrameworks>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <LangVersion>10</LangVersion>
+    <LangVersion>14</LangVersion>
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\triaxis.CommandLine.Core\triaxis.CommandLine.Core.csproj" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.EnvironmentVariables" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Json" />
+    <PackageReference Include="Microsoft.Extensions.FileProviders.Physical" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\triaxis.CommandLine\triaxis.CommandLine.csproj" />
     <ProjectReference Include="..\triaxis.CommandLine.Serilog\triaxis.CommandLine.Serilog.csproj" />
     <ProjectReference Include="..\triaxis.CommandLine.ObjectOutput\triaxis.CommandLine.ObjectOutput.csproj" />
   </ItemGroup>

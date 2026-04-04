@@ -1,21 +1,19 @@
 namespace triaxis.CommandLine;
 
 using System.CommandLine;
-using System.CommandLine.Hosting;
-using System.CommandLine.Parsing;
 using System.ComponentModel;
 using System.Reflection;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
 
-public static class ToolBuilderExtensions
+public static partial class ToolBuilderExtensions
 {
     public static IToolBuilder AddCommandsFromAssembly(this IToolBuilder builder)
         => builder.AddCommandsFromAssembly(Assembly.GetCallingAssembly());
 
     public static IToolBuilder AddCommandsFromAssembly(this IToolBuilder builder, Assembly assembly)
     {
+        var getServiceProvider = builder.GetServiceProviderAccessor();
+
         Command CommandFromAttribute(CommandAttribute attr, Type? type = null)
         {
             var cmd = builder.GetCommand(attr.Path);
@@ -25,13 +23,12 @@ public static class ToolBuilderExtensions
             {
                 foreach (var alias in attr.Aliases)
                 {
-                    cmd.AddAlias(alias);
+                    cmd.Aliases.Add(alias);
                 }
             }
 
             return cmd;
         }
-
 
         static void ProcessMemberAttributes(Command cmd, Type type, MemberInfo[]? path = null)
         {
@@ -51,10 +48,10 @@ public static class ToolBuilderExtensions
                 switch (attr)
                 {
                     case ArgumentAttribute aa:
-                        cmd.AddArgument((Argument)Activator.CreateInstance(typeof(MemberArgument<>).MakeGenericType(memberType), m, attr, path));
+                        cmd.Arguments.Add((Argument)Activator.CreateInstance(typeof(MemberArgument<>).MakeGenericType(memberType), m, attr, path));
                         break;
                     case OptionAttribute oa:
-                        cmd.AddOption((Option)Activator.CreateInstance(typeof(MemberOption<>).MakeGenericType(memberType), m, attr, path));
+                        cmd.Options.Add((Option)Activator.CreateInstance(typeof(MemberOption<>).MakeGenericType(memberType), m, attr, path));
                         break;
                     case OptionsAttribute:
                         var optsPath = path;
@@ -81,7 +78,7 @@ public static class ToolBuilderExtensions
 
                 ProcessMemberAttributes(cmd, type);
 
-                cmd.Handler = new DependencyCommandHandler(type, attr);
+                cmd.Action = new DependencyCommandAction(getServiceProvider, type);
                 types.Add(type);
             }
         }

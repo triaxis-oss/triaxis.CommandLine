@@ -1,61 +1,70 @@
 namespace triaxis.CommandLine;
 
+using System.CommandLine;
 using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.Configuration.Memory;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Serilog;
-using Serilog.Core;
 using Serilog.Events;
 using Serilog.Extensions.Logging;
 using Serilog.Sinks.SystemConsole.Themes;
 
 public static class ToolBuilderExtensions
 {
-    public static IToolBuilder UseSerilog(this IToolBuilder builder, bool useShortContext = false, Action<HostBuilderContext, LoggerConfiguration>? configure = null)
+    public static IToolBuilder UseSerilog(this IToolBuilder builder, bool useShortContext = false, Action<IConfiguration, LoggerConfiguration>? configure = null)
     {
-        var levelSwitch = new LoggingLevelSwitch();
-
-        builder.UseSerilog((context, logger) =>
+        builder.ConfigureServices(services => services.AddLogging(logging =>
         {
-            logger.ReadFrom.Configuration(context.Configuration);
-
-            if (useShortContext)
+            logging.SetMinimumLevel(LogLevel.Trace);
+            logging.Services.AddSingleton<ILoggerProvider>(sp =>
             {
-                logger.Enrich.With(new ShortContextEnricher());
-            }
+                var configuration = sp.GetRequiredService<IConfiguration>();
 
-            if (!context.Configuration.GetSection("Serilog:WriteTo").Exists())
-            {
-                var contextProperty = useShortContext ? "ShortContext" : "SourceContext";
-                bool sixteen = false;
-                bool theme = IsForceColorSet(ref sixteen) || !Console.IsErrorRedirected;
-                // fallback configuration
-                logger.WriteTo.Console(
-                    outputTemplate: "[{Timestamp:HH:mm:ss.fff} {Level:u3}] {" + contextProperty + "}: {Message:lj}{NewLine}{Exception}",
-                    standardErrorFromLevel: LogEventLevel.Verbose,
-                    applyThemeToRedirectedOutput: theme,
-                    theme: sixteen ? AnsiConsoleTheme.Sixteen : AnsiConsoleTheme.Literate
-                );
-            }
+                var loggerConfig = new LoggerConfiguration();
 
-            configure?.Invoke(context, logger);
+                loggerConfig.ReadFrom.Configuration(configuration);
 
-            logger.MinimumLevel.ControlledBy(levelSwitch);
+                if (useShortContext)
+                {
+                    loggerConfig.Enrich.With(new ShortContextEnricher());
+                }
 
-            context.ObserveContextProperty<LogLevel>(level =>
-            {
-                levelSwitch.MinimumLevel = LevelConvert.ToSerilogLevel(level);
+                if (!configuration.GetSection("Serilog:WriteTo").Exists())
+                {
+                    var contextProperty = useShortContext ? "ShortContext" : "SourceContext";
+                    bool sixteen = false;
+                    bool theme = IsForceColorSet(ref sixteen) || !Console.IsErrorRedirected;
+                    loggerConfig.WriteTo.Console(
+                        outputTemplate: "[{Timestamp:HH:mm:ss.fff} {Level:u3}] {" + contextProperty + "}: {Message:lj}{NewLine}{Exception}",
+                        standardErrorFromLevel: LogEventLevel.Verbose,
+                        applyThemeToRedirectedOutput: theme,
+                        theme: sixteen ? AnsiConsoleTheme.Sixteen : AnsiConsoleTheme.Literate
+                    );
+                }
+
+                configure?.Invoke(configuration, loggerConfig);
+
+                var level = VerbosityOptions.GetEffectiveLevel(sp.GetRequiredService<ParseResult>());
+                loggerConfig.MinimumLevel.Is(LevelConvert.ToSerilogLevel(level));
+
+                return new SerilogLoggerProvider(loggerConfig.CreateLogger(), dispose: true);
             });
-        });
+        }));
 
+        return builder;
+    }
+
+    public static IToolBuilder UseVerbosityOptions(this IToolBuilder builder)
+    {
+        builder.RootCommand.Options.Add(VerbosityOptions.Verbosity);
+        builder.RootCommand.Options.Add(VerbosityOptions.Verbose);
+        builder.RootCommand.Options.Add(VerbosityOptions.Quiet);
         return builder;
     }
 
     private static bool IsForceColorSet(ref bool sixteen)
     {
-        var forceColor = Environment.GetEnvironmentVariable("FORCE_COLOR");
+        var forceColor = System.Environment.GetEnvironmentVariable("FORCE_COLOR");
         if (forceColor == "16") { sixteen = true; return true; }
         return forceColor is not null && (forceColor == "1" || forceColor.Equals("true", StringComparison.OrdinalIgnoreCase));
     }

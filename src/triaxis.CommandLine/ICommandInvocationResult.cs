@@ -1,8 +1,6 @@
 namespace triaxis.CommandLine;
 
-using System.CommandLine.Invocation;
-
-public interface ICommandInvocationResult : IInvocationResult
+public interface ICommandInvocationResult
 {
     Task EnsureCompleteAsync(CancellationToken cancellationToken);
 }
