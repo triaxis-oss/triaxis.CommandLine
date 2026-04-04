@@ -1,0 +1,8 @@
+<Project>
+  <!-- Make the source generator available to all projects in this repo -->
+  <ItemGroup Condition="'$(IsRoslynComponent)' != 'true'">
+    <ProjectReference Include="$(MSBuildThisFileDirectory)src\triaxis.CommandLine.SourceGenerator\triaxis.CommandLine.SourceGenerator.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false" />
+  </ItemGroup>
+</Project>

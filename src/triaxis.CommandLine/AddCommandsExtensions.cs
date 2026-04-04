@@ -12,6 +12,12 @@ public static partial class ToolBuilderExtensions
 
     public static IToolBuilder AddCommandsFromAssembly(this IToolBuilder builder, Assembly assembly)
     {
+        if (GeneratedCommandRegistration.TryGet(assembly.GetName().Name!, out var registration))
+        {
+            registration(builder);
+            return builder;
+        }
+
         var getServiceProvider = builder.GetServiceProviderAccessor();
 
         Command CommandFromAttribute(CommandAttribute attr, Type? type = null)

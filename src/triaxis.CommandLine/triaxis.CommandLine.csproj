@@ -16,4 +16,16 @@
     <PackageReference Include="triaxis.Reflection.PropertyAccess" />
   </ItemGroup>
 
+  <!-- NuGet: pack the generator into analyzers/ and a transitive targets file -->
+  <ItemGroup>
+    <None Include="$(MSBuildThisFileDirectory)..\triaxis.CommandLine.SourceGenerator\bin\$(Configuration)\netstandard2.0\triaxis.CommandLine.SourceGenerator.dll"
+          Pack="true"
+          PackagePath="analyzers/dotnet/cs"
+          Visible="false" />
+    <None Include="$(MSBuildThisFileDirectory)buildTransitive\triaxis.CommandLine.targets"
+          Pack="true"
+          PackagePath="buildTransitive"
+          Visible="false" />
+  </ItemGroup>
+
 </Project>

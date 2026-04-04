@@ -1,6 +1,6 @@
 namespace triaxis.CommandLine.Invocation;
 
-class AsyncEnumerableCommandInvocationResult<T> : CommandInvocationResult, ICommandInvocationResult<T>
+public class AsyncEnumerableCommandInvocationResult<T> : CommandInvocationResult, ICommandInvocationResult<T>
 {
     IAsyncEnumerable<T>? _enumerable;
 
