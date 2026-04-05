@@ -77,7 +77,6 @@ class ToolBuilder : IToolBuilder
         _services.AddSingleton(parseResult);
         _services.AddSingleton<IConfiguration>(_configuration);
         _services.AddLogging();
-        _services.TryAddTransient<IPropertyInjector, DependencyPropertyInjector>();
         _services.TryAddSingleton<ICommandExecutor>(sp =>
             new DefaultCommandExecutor(_middlewares, sp.GetRequiredService<ILoggerFactory>()));
 

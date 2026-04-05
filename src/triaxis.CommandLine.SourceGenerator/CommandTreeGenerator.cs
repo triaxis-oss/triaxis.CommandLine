@@ -23,20 +23,68 @@ public class CommandTreeGenerator : IIncrementalGenerator
             .Select(static (m, _) => m!);
 
         var collected = commandClasses.Collect();
-        var assemblyName = context.CompilationProvider.Select(static (c, _) => c.AssemblyName ?? "");
-        var combined = collected.Combine(assemblyName);
+        var compilationInfo = context.CompilationProvider.Select(static (c, _) =>
+        {
+            var hasUnsafeAccessor = c.GetTypeByMetadataName("System.Runtime.CompilerServices.UnsafeAccessorAttribute") is not null;
+            var assemblyCommands = ExtractAssemblyCommands(c);
+            return (AssemblyName: c.AssemblyName ?? "", HasUnsafeAccessor: hasUnsafeAccessor, AssemblyCommands: assemblyCommands);
+        });
+        var combined = collected.Combine(compilationInfo);
 
         context.RegisterSourceOutput(combined, static (spc, pair) =>
         {
-            var (commands, asmName) = pair;
-            if (commands.IsDefaultOrEmpty)
+            var (commands, info) = pair;
+            if (commands.IsDefaultOrEmpty && info.AssemblyCommands.IsDefaultOrEmpty)
             {
                 return;
             }
 
-            var source = GenerateSource(commands, asmName);
+            var source = GenerateSource(commands, info.AssemblyCommands, info.AssemblyName, info.HasUnsafeAccessor);
             spc.AddSource("GeneratedCommandTree.g.cs", source);
         });
+    }
+
+    private static ImmutableArray<AssemblyCommandModel> ExtractAssemblyCommands(Compilation compilation)
+    {
+        var builder = ImmutableArray.CreateBuilder<AssemblyCommandModel>();
+        foreach (var attr in compilation.Assembly.GetAttributes())
+        {
+            if (attr.AttributeClass?.ToDisplayString() != "triaxis.CommandLine.CommandAttribute")
+            {
+                continue;
+            }
+
+            var path = attr.ConstructorArguments
+                .SelectMany(a => a.Kind == TypedConstantKind.Array
+                    ? a.Values.Select(v => v.Value?.ToString())
+                    : new[] { a.Value?.ToString() })
+                .Where(s => s is not null)
+                .ToArray();
+
+            if (path.Length == 0)
+            {
+                continue;
+            }
+
+            string? description = null;
+            string[]? aliases = null;
+            foreach (var named in attr.NamedArguments)
+            {
+                switch (named.Key)
+                {
+                    case "Description":
+                        description = named.Value.Value?.ToString();
+                        break;
+                    case "Aliases":
+                        aliases = named.Value.Values.Select(v => v.Value?.ToString()!).ToArray();
+                        break;
+                }
+            }
+
+            builder.Add(new AssemblyCommandModel(path!, description, aliases));
+        }
+
+        return builder.ToImmutable();
     }
 
     private static CommandModel? ExtractCommandModel(GeneratorAttributeSyntaxContext ctx, System.Threading.CancellationToken ct)
@@ -437,7 +485,7 @@ public class CommandTreeGenerator : IIncrementalGenerator
         return null;
     }
 
-    private static string GenerateSource(ImmutableArray<CommandModel> commands, string assemblyName)
+    private static string GenerateSource(ImmutableArray<CommandModel> commands, ImmutableArray<AssemblyCommandModel> assemblyCommands, string assemblyName, bool hasUnsafeAccessor)
     {
         var sw = new StringWriter();
         var w = new IndentedTextWriter(sw);
@@ -450,6 +498,7 @@ public class CommandTreeGenerator : IIncrementalGenerator
         w.WriteLine("using System.CommandLine;");
         w.WriteLine("using System.CommandLine.Invocation;");
         w.WriteLine("using System.CommandLine.Parsing;");
+        w.WriteLine("using System.Reflection;");
         w.WriteLine("using System.Runtime.CompilerServices;");
         w.WriteLine("using System.Threading;");
         w.WriteLine("using System.Threading.Tasks;");
@@ -479,6 +528,26 @@ public class CommandTreeGenerator : IIncrementalGenerator
                         var safeName = GetSafeName(cmd);
                         w.WriteLine($"{safeName}_Action.Register(builder, getServiceProvider);");
                     }
+
+                    // Apply assembly-level [assembly: Command(...)] metadata to tree nodes
+                    // (descriptions and aliases for intermediate/parent commands).
+                    foreach (var asmCmd in assemblyCommands)
+                    {
+                        w.WriteLine();
+                        w.WriteLine($"var __asmCmd_{string.Join("_", asmCmd.Path).Replace("-", "_")} = builder.GetCommand({FormatStringArray(asmCmd.Path)});");
+                        var varName = $"__asmCmd_{string.Join("_", asmCmd.Path).Replace("-", "_")}";
+                        if (asmCmd.Description is not null)
+                        {
+                            w.WriteLine($"{varName}.Description = {FormatString(asmCmd.Description)};");
+                        }
+                        if (asmCmd.Aliases is { Length: > 0 })
+                        {
+                            foreach (var alias in asmCmd.Aliases)
+                            {
+                                w.WriteLine($"{varName}.Aliases.Add({FormatString(alias)});");
+                            }
+                        }
+                    }
                 });
                 w.WriteLine();
             });
@@ -487,7 +556,7 @@ public class CommandTreeGenerator : IIncrementalGenerator
             // Per-command action classes
             foreach (var cmd in commands)
             {
-                GenerateCommandAction(w, cmd);
+                GenerateCommandAction(w, cmd, hasUnsafeAccessor);
             }
         });
 
@@ -495,7 +564,7 @@ public class CommandTreeGenerator : IIncrementalGenerator
         return sw.ToString();
     }
 
-    private static void GenerateCommandAction(IndentedTextWriter w, CommandModel cmd)
+    private static void GenerateCommandAction(IndentedTextWriter w, CommandModel cmd, bool hasUnsafeAccessor)
     {
         var safeName = GetSafeName(cmd);
         var args = GetArguments(cmd);
@@ -596,66 +665,44 @@ public class CommandTreeGenerator : IIncrementalGenerator
         });
         w.WriteLine();
 
-        // UnsafeAccessor methods for direct members that need backing field access
+        // Accessors for direct members that need backing field access
         // (non-public members, or public read-only properties)
-        var needsAccessor = args.Concat(opts).Concat(injects)
-            .Where(m => m.AccessPath.Length == 0 && (!m.IsPublic || !m.HasSetter))
-            .ToArray();
-        foreach (var member in needsAccessor)
+        var memberAccessors = new Dictionary<string, Accessor>();
+        foreach (var member in args.Concat(opts).Concat(injects).Where(m => m.AccessPath.Length == 0))
         {
-            GenerateUnsafeAccessor(w, cmd.TypeName, member);
+            var owner = cmd.TypeName;
+            memberAccessors[MemberKey(member)] = EmitAccessor(
+                w, owner, member.MemberName, member.MemberTypeFqn,
+                member.IsField, member.IsPublic, member.HasSetter,
+                $"__access_{GetMemberFieldName(member)}", hasUnsafeAccessor);
         }
 
-        // UnsafeAccessor methods for [Options] path segments
-        var pathSegments = new HashSet<string>();
+        // Accessors for [Options] path segments
+        var pathAccessors = new Dictionary<string, Accessor>();
         foreach (var member in args.Concat(opts).Concat(injects))
         {
             foreach (var seg in member.AccessPath)
             {
-                if (pathSegments.Add(seg.OwnerTypeFqn + "." + seg.MemberName))
+                var key = seg.OwnerTypeFqn + "." + seg.MemberName;
+                if (pathAccessors.ContainsKey(key))
                 {
-                    if (seg.IsPublic && seg.HasSetter)
-                    {
-                        // Public settable — no accessor needed, accessed directly
-                        continue;
-                    }
-
-                    if (seg.IsField)
-                    {
-                        // Field: ref accessor for read/write
-                        w.WriteLine($"[UnsafeAccessor(UnsafeAccessorKind.Field, Name = {FormatString(seg.MemberName)})]");
-                        w.WriteLine($"private static extern ref {seg.MemberTypeFqn} {GetPathAccessorName(seg)}({seg.OwnerTypeFqn} instance);");
-                    }
-                    else if (!seg.HasSetter)
-                    {
-                        // Read-only property: getter only
-                        if (seg.IsPublic)
-                        {
-                            // Public read-only: accessed directly via property getter, no accessor needed
-                            continue;
-                        }
-                        w.WriteLine($"[UnsafeAccessor(UnsafeAccessorKind.Method, Name = {FormatString("get_" + seg.MemberName)})]");
-                        w.WriteLine($"private static extern {seg.MemberTypeFqn} {GetPathAccessorName(seg)}({seg.OwnerTypeFqn} instance);");
-                    }
-                    else
-                    {
-                        // Non-public settable property: use backing field ref for read/write
-                        w.WriteLine($"[UnsafeAccessor(UnsafeAccessorKind.Field, Name = {FormatString("<" + seg.MemberName + ">k__BackingField")})]");
-                        w.WriteLine($"private static extern ref {seg.MemberTypeFqn} {GetPathAccessorName(seg)}({seg.OwnerTypeFqn} instance);");
-                    }
-                    w.WriteLine();
+                    continue;
                 }
+                pathAccessors[key] = EmitAccessor(
+                    w, seg.OwnerTypeFqn, seg.MemberName, seg.MemberTypeFqn,
+                    seg.IsField, seg.IsPublic, seg.HasSetter,
+                    $"__access_path_{seg.MemberName}", hasUnsafeAccessor);
             }
         }
 
-        // UnsafeAccessor methods for members on nested [Options] types that need backing field access
-        foreach (var member in args.Concat(opts).Where(m => m.AccessPath.Length > 0 && (!m.IsPublic || !m.HasSetter)))
+        // Accessors for members on nested [Options] types that need backing field access
+        foreach (var member in args.Concat(opts).Where(m => m.AccessPath.Length > 0))
         {
             var lastSeg = member.AccessPath[member.AccessPath.Length - 1];
-            var fieldName = member.IsField ? member.MemberName : "<" + member.MemberName + ">k__BackingField";
-            w.WriteLine($"[UnsafeAccessor(UnsafeAccessorKind.Field, Name = {FormatString(fieldName)})]");
-            w.WriteLine($"private static extern ref {member.MemberTypeFqn} {GetAccessorName(member)}({lastSeg.MemberTypeFqn} instance);");
-            w.WriteLine();
+            memberAccessors[MemberKey(member)] = EmitAccessor(
+                w, lastSeg.MemberTypeFqn, member.MemberName, member.MemberTypeFqn,
+                member.IsField, member.IsPublic, member.HasSetter,
+                $"__access_{GetMemberFieldName(member)}", hasUnsafeAccessor);
         }
 
         // InvokeAsync
@@ -674,14 +721,11 @@ public class CommandTreeGenerator : IIncrementalGenerator
                 foreach (var inject in injects)
                 {
                     var serviceType = inject.InjectTypeFqn ?? inject.MemberTypeFqn;
-                    var assignment = inject.IsPublic
-                        ? $"instance.{inject.MemberName}"
-                        : $"{GetAccessorName(inject)}(instance)";
-                    w.WriteLine($"{assignment} = provider.GetRequiredService<{serviceType}>();");
+                    w.WriteLine(FormatWrite(memberAccessors[MemberKey(inject)], "instance", $"provider.GetRequiredService<{serviceType}>()") + ";");
                 }
 
                 // Eagerly resolve [Options] nested objects
-                GenerateOptionsPathResolution(w, cmd, args, opts);
+                GenerateOptionsPathResolution(w, args, opts, pathAccessors);
 
                 // Inline bind: arguments
                 foreach (var arg in args)
@@ -689,7 +733,7 @@ public class CommandTreeGenerator : IIncrementalGenerator
                     var fieldName = GetMemberFieldName(arg);
                     w.Block($"if (parseResult.GetResult(_{fieldName}) is {{ }} {fieldName}_result && {fieldName}_result.Tokens.Any())", () =>
                     {
-                        WriteMemberAssignment(w, arg, $"parseResult.GetValue(_{fieldName})");
+                        WriteMemberAssignment(w, arg, $"parseResult.GetValue(_{fieldName})", memberAccessors[MemberKey(arg)]);
                     });
                 }
 
@@ -699,7 +743,7 @@ public class CommandTreeGenerator : IIncrementalGenerator
                     var fieldName = GetMemberFieldName(opt);
                     w.Block($"if (parseResult.GetResult(_{fieldName}) is {{ }} {fieldName}_result && !{fieldName}_result.Implicit)", () =>
                     {
-                        WriteMemberAssignment(w, opt, $"parseResult.GetValue(_{fieldName})");
+                        WriteMemberAssignment(w, opt, $"parseResult.GetValue(_{fieldName})", memberAccessors[MemberKey(opt)]);
                     });
                 }
 
@@ -735,18 +779,103 @@ public class CommandTreeGenerator : IIncrementalGenerator
         w.WriteLine();
     }
 
-    private static void GenerateUnsafeAccessor(IndentedTextWriter w, string typeName, MemberModel member)
+    /// <summary>
+    /// Emits the minimal accessor declaration needed for a member/segment and returns an
+    /// <see cref="Accessor"/> describing how to read/write it inline at call sites.
+    /// </summary>
+    private static Accessor EmitAccessor(IndentedTextWriter w, string ownerTypeFqn,
+        string memberName, string memberTypeFqn,
+        bool isField, bool isPublic, bool hasSetter,
+        string identifier, bool hasUnsafeAccessor)
     {
-        var fieldName = member.IsField ? member.MemberName : "<" + member.MemberName + ">k__BackingField";
-        w.WriteLine($"[UnsafeAccessor(UnsafeAccessorKind.Field, Name = {FormatString(fieldName)})]");
-        w.WriteLine($"private static extern ref {member.MemberTypeFqn} {GetAccessorName(member)}({typeName} instance);");
-        w.WriteLine();
+        // Public settable — no accessor declaration needed, access directly.
+        if (isPublic && (isField || hasSetter))
+        {
+            return new Accessor(AccessorKind.Direct, "", memberName, memberTypeFqn);
+        }
+
+        // Public read-only property — read directly via getter, no declaration needed.
+        // Write still requires a backing-field accessor (emitted below).
+        if (isPublic && !isField && !hasSetter)
+        {
+            // Public read-only properties are only used as path segments (read + init-if-null).
+            // The init-if-null path is not reachable for a public read-only path segment in the
+            // current resolution logic (which throws for public read-only); but to be safe, emit
+            // a backing-field setter so writes work. For now, use Direct-read with no setter.
+            // We handle the read-only case by emitting only a setter declaration.
+            var backingFieldName = "<" + memberName + ">k__BackingField";
+            if (hasUnsafeAccessor)
+            {
+                w.WriteLine($"[UnsafeAccessor(UnsafeAccessorKind.Field, Name = {FormatString(backingFieldName)})]");
+                w.WriteLine($"private static extern ref {memberTypeFqn} {identifier}({ownerTypeFqn} instance);");
+                w.WriteLine();
+                return new Accessor(AccessorKind.UnsafeFieldRef, identifier, memberName, memberTypeFqn);
+            }
+            else
+            {
+                w.WriteLine($"private static readonly FieldInfo {identifier} = typeof({ownerTypeFqn}).GetField({FormatString(backingFieldName)}, BindingFlags.Instance | BindingFlags.NonPublic)!;");
+                w.WriteLine();
+                return new Accessor(AccessorKind.ReflectionField, identifier, memberName, memberTypeFqn);
+            }
+        }
+
+        // Non-public read-only property — need get_ method (UA) or PropertyInfo (reflection).
+        if (!isField && !hasSetter)
+        {
+            if (hasUnsafeAccessor)
+            {
+                w.WriteLine($"[UnsafeAccessor(UnsafeAccessorKind.Method, Name = {FormatString("get_" + memberName)})]");
+                w.WriteLine($"private static extern {memberTypeFqn} {identifier}({ownerTypeFqn} instance);");
+                w.WriteLine();
+                return new Accessor(AccessorKind.UnsafeGetter, identifier, memberName, memberTypeFqn);
+            }
+            else
+            {
+                w.WriteLine($"private static readonly PropertyInfo {identifier} = typeof({ownerTypeFqn}).GetProperty({FormatString(memberName)}, BindingFlags.Instance | BindingFlags.NonPublic)!;");
+                w.WriteLine();
+                return new Accessor(AccessorKind.ReflectionProperty, identifier, memberName, memberTypeFqn);
+            }
+        }
+
+        // Non-public field, or non-public/init-only property with backing field.
+        {
+            var backingFieldName = isField ? memberName : "<" + memberName + ">k__BackingField";
+            if (hasUnsafeAccessor)
+            {
+                w.WriteLine($"[UnsafeAccessor(UnsafeAccessorKind.Field, Name = {FormatString(backingFieldName)})]");
+                w.WriteLine($"private static extern ref {memberTypeFqn} {identifier}({ownerTypeFqn} instance);");
+                w.WriteLine();
+                return new Accessor(AccessorKind.UnsafeFieldRef, identifier, memberName, memberTypeFqn);
+            }
+            else
+            {
+                w.WriteLine($"private static readonly FieldInfo {identifier} = typeof({ownerTypeFqn}).GetField({FormatString(backingFieldName)}, BindingFlags.Instance | BindingFlags.NonPublic)!;");
+                w.WriteLine();
+                return new Accessor(AccessorKind.ReflectionField, identifier, memberName, memberTypeFqn);
+            }
+        }
     }
 
-    private static string GetAccessorName(MemberModel member)
+    private static string FormatRead(Accessor a, string target) => a.Kind switch
     {
-        return $"__access_{GetMemberFieldName(member)}";
-    }
+        AccessorKind.Direct => $"{target}.{a.MemberName}",
+        AccessorKind.UnsafeFieldRef => $"{a.Identifier}({target})",
+        AccessorKind.UnsafeGetter => $"{a.Identifier}({target})",
+        AccessorKind.ReflectionField => $"({a.MemberTypeFqn}){a.Identifier}.GetValue({target})!",
+        AccessorKind.ReflectionProperty => $"({a.MemberTypeFqn}){a.Identifier}.GetValue({target})!",
+        _ => throw new InvalidOperationException(),
+    };
+
+    private static string FormatWrite(Accessor a, string target, string valueExpr) => a.Kind switch
+    {
+        AccessorKind.Direct => $"{target}.{a.MemberName} = {valueExpr}",
+        AccessorKind.UnsafeFieldRef => $"{a.Identifier}({target}) = {valueExpr}",
+        AccessorKind.ReflectionField => $"{a.Identifier}.SetValue({target}, {valueExpr})",
+        _ => throw new InvalidOperationException($"Cannot write to accessor of kind {a.Kind}"),
+    };
+
+    private static string MemberKey(MemberModel m) =>
+        string.Join(".", m.AccessPath.Select(s => s.MemberName).Append(m.MemberName));
 
     private static void GenerateExecuteCall(IndentedTextWriter w, CommandModel cmd, string? cancellationTokenArg)
     {
@@ -802,34 +931,23 @@ public class CommandTreeGenerator : IIncrementalGenerator
         }
     }
 
-    private static void WriteMemberAssignment(IndentedTextWriter w, MemberModel member, string valueExpr)
+    private static void WriteMemberAssignment(IndentedTextWriter w, MemberModel member, string valueExpr, Accessor accessor)
     {
         // For members with an access path, the path variable is resolved eagerly
         // in GenerateOptionsPathResolution and named __opts_{segment}
-        var target = "instance";
-        if (member.AccessPath.Length > 0)
-        {
-            target = "__opts_" + string.Join("_", member.AccessPath.Select(s => s.MemberName));
-        }
+        var target = member.AccessPath.Length == 0
+            ? "instance"
+            : "__opts_" + string.Join("_", member.AccessPath.Select(s => s.MemberName));
 
-        if (member.IsPublic && member.HasSetter)
-        {
-            w.WriteLine($"{target}.{member.MemberName} = {valueExpr};");
-        }
-        else
-        {
-            // Use UnsafeAccessor for non-public members, or public read-only properties (backing field)
-            w.WriteLine($"{GetAccessorName(member)}({target}) = {valueExpr};");
-        }
+        w.WriteLine(FormatWrite(accessor, target, valueExpr) + ";");
     }
 
     /// <summary>
     /// Generates eager resolution of all [Options] path prefixes used by arguments/options.
     /// Called once after instance creation, before any binding.
     /// </summary>
-    private static void GenerateOptionsPathResolution(IndentedTextWriter w, CommandModel cmd, MemberModel[] args, MemberModel[] opts)
+    private static void GenerateOptionsPathResolution(IndentedTextWriter w, MemberModel[] args, MemberModel[] opts, Dictionary<string, Accessor> pathAccessors)
     {
-        // Collect all unique path prefixes
         var resolved = new HashSet<string>();
         foreach (var member in args.Concat(opts))
         {
@@ -848,39 +966,33 @@ public class CommandTreeGenerator : IIncrementalGenerator
                     ? "instance"
                     : "__opts_" + string.Join("_", prefix.Take(depth - 1).Select(s => s.MemberName));
 
+                var accessor = pathAccessors[seg.OwnerTypeFqn + "." + seg.MemberName];
                 var createExpr = $"Activator.CreateInstance<{seg.MemberTypeFqn}>()";
+                var readExpr = FormatRead(accessor, parentVar);
+
                 if (seg.IsField || seg.HasSetter)
                 {
-                    // Field or settable property: read, create if null, assign back
-                    if (seg.IsPublic && seg.HasSetter)
+                    // Settable: read, create-if-null, assign back
+                    if (accessor.Kind == AccessorKind.Direct)
                     {
-                        w.WriteLine($"var {varName} = {parentVar}.{seg.MemberName} ?? ({parentVar}.{seg.MemberName} = {createExpr});");
+                        w.WriteLine($"var {varName} = {readExpr} ?? ({FormatWrite(accessor, parentVar, createExpr)});");
                     }
                     else
                     {
-                        w.WriteLine($"ref var {varName}_slot = ref {GetPathAccessorName(seg)}({parentVar});");
-                        w.WriteLine($"var {varName} = {varName}_slot ?? ({varName}_slot = {createExpr});");
+                        w.WriteLine($"var {varName} = {readExpr};");
+                        w.Block($"if ({varName} is null)", () =>
+                        {
+                            w.WriteLine($"{FormatWrite(accessor, parentVar, varName + " = " + createExpr)};");
+                        });
                     }
                 }
                 else
                 {
-                    // Read-only property: just read, expect pre-initialized
-                    if (seg.IsPublic)
-                    {
-                        w.WriteLine($"var {varName} = {parentVar}.{seg.MemberName} ?? throw new InvalidOperationException(\"[Options] property '{seg.MemberName}' returned null but has no setter\");");
-                    }
-                    else
-                    {
-                        w.WriteLine($"var {varName} = {GetPathAccessorName(seg)}({parentVar}) ?? throw new InvalidOperationException(\"[Options] property '{seg.MemberName}' returned null but has no setter\");");
-                    }
+                    // Read-only: expect pre-initialized
+                    w.WriteLine($"var {varName} = {readExpr} ?? throw new InvalidOperationException(\"[Options] property '{seg.MemberName}' returned null but has no setter\");");
                 }
             }
         }
-    }
-
-    private static string GetPathAccessorName(AccessPathSegment seg)
-    {
-        return $"__access_path_{seg.MemberName}";
     }
 
     private static MemberModel[] GetArguments(CommandModel cmd) =>
@@ -930,6 +1042,22 @@ enum MemberKind
     Inject,
 }
 
+enum AccessorKind
+{
+    /// <summary>Public settable: access directly via <c>instance.Member</c>.</summary>
+    Direct,
+    /// <summary>[UnsafeAccessor] field ref return: <c>method(instance)</c> yields a ref.</summary>
+    UnsafeFieldRef,
+    /// <summary>[UnsafeAccessor] get_ method: <c>method(instance)</c> reads via property getter.</summary>
+    UnsafeGetter,
+    /// <summary>Cached <see cref="System.Reflection.FieldInfo"/> used for GetValue/SetValue.</summary>
+    ReflectionField,
+    /// <summary>Cached <see cref="System.Reflection.PropertyInfo"/> used for GetValue.</summary>
+    ReflectionProperty,
+}
+
+record Accessor(AccessorKind Kind, string Identifier, string MemberName, string MemberTypeFqn);
+
 enum ReturnKind
 {
     Void,
@@ -960,6 +1088,11 @@ record CommandModel(
     string[]? Aliases,
     ImmutableArray<MemberModel> Members,
     ExecuteMethodModel ExecuteMethod);
+
+record AssemblyCommandModel(
+    string[] Path,
+    string? Description,
+    string[]? Aliases);
 
 record AccessPathSegment(
     string MemberName,

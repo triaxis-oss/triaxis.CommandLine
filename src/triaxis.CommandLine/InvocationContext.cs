@@ -20,7 +20,7 @@ public class InvocationContext(IServiceProvider services, ParseResult parseResul
     public Type CommandType { get; } = commandType;
 
     /// <summary>
-    /// The result produced by the command. Set by <see cref="DependencyCommandAction"/> after
+    /// The result produced by the command. Set by the generated command action after
     /// invoking the command method. Consumed by middleware (e.g. ObjectOutput) and finalized
     /// by <see cref="DefaultCommandExecutor"/> via <see cref="ICommandInvocationResult.EnsureCompleteAsync"/>.
     /// </summary>
