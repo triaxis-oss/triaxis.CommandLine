@@ -11,8 +11,37 @@ defaults:
     working-directory: src
 
 jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      DOTNET_NOLOGO: true
+      DOTNET_SYSTEM_GLOBALIZATION_INVARIANT: true
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+      # Install mono on Linux if it isn't already available - needed to run the net48 test executables
+      - if: runner.os == 'Linux'
+        name: Ensure mono is installed
+        run: |
+          if ! command -v mono >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends mono-runtime
+          fi
+          mono --version
+      - run: dotnet test -c Release
+
   publish:
     name: Publish nuget
+    needs: test
     runs-on: ubuntu-latest
     env:
       DOTNET_NOLOGO: true

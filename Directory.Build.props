@@ -37,6 +37,7 @@
     <OutputType>Exe</OutputType>
     <EnableNUnitRunner>true</EnableNUnitRunner>
     <TestingPlatformDotnetTestSupport>true</TestingPlatformDotnetTestSupport>
+    <NoWarn>NETSDK1188</NoWarn>
   </PropertyGroup>
 
   <!-- PolySharp provides the polyfills needed to use LangVersion 14 features against
