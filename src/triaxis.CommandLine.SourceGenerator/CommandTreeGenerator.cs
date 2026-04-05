@@ -130,7 +130,14 @@ public class CommandTreeGenerator : IIncrementalGenerator
         }
 
         var members = new List<MemberModel>();
-        CollectMembers(typeSymbol, members, ct);
+        for (var current = typeSymbol; current is not null; current = current.BaseType)
+        {
+            if (current.ToDisplayString() is "object" or "System.Object")
+            {
+                break;
+            }
+            CollectMembers(current, members, ct);
+        }
 
         var executeMethod = DetectExecuteMethod(typeSymbol);
 
@@ -670,7 +677,7 @@ public class CommandTreeGenerator : IIncrementalGenerator
         var memberAccessors = new Dictionary<string, Accessor>();
         foreach (var member in args.Concat(opts).Concat(injects).Where(m => m.AccessPath.Length == 0))
         {
-            var owner = cmd.TypeName;
+            var owner = member.DeclaringTypeFqn;
             memberAccessors[MemberKey(member)] = EmitAccessor(
                 w, owner, member.MemberName, member.MemberTypeFqn,
                 member.IsField, member.IsPublic, member.HasSetter,
