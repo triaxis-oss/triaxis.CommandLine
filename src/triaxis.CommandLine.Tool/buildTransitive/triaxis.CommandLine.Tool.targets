@@ -1,0 +1,7 @@
+<Project>
+  <ItemGroup Condition=" '$(ImplicitUsings)' == 'enable' or '$(ImplicitUsings)' == 'true' ">
+    <Using Include="Microsoft.Extensions.Logging" />
+    <Using Include="triaxis.CommandLine" />
+    <Using Include="triaxis.CommandLine.ObjectOutput" />
+  </ItemGroup>
+</Project>

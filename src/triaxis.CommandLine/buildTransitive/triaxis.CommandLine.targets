@@ -1,5 +1,14 @@
 <Project>
-  <ItemGroup>
+  <ItemGroup Condition="Exists('$(MSBuildThisFileDirectory)..\analyzers\dotnet\cs\triaxis.CommandLine.SourceGenerator.dll')">
     <Analyzer Include="$(MSBuildThisFileDirectory)..\analyzers\dotnet\cs\triaxis.CommandLine.SourceGenerator.dll" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <CompilerVisibleProperty Include="TriaxisCommandLineConfigOverridePath" />
+    <CompilerVisibleProperty Include="TriaxisCommandLineEnvironmentVariablePrefix" />
+  </ItemGroup>
+
+  <ItemGroup Condition=" '$(ImplicitUsings)' == 'enable' or '$(ImplicitUsings)' == 'true' ">
+    <Using Include="triaxis.CommandLine" />
   </ItemGroup>
 </Project>

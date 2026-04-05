@@ -36,29 +36,25 @@ dotnet add package triaxis.CommandLine.Tool
 Replace `Program.cs` with a one-liner:
 
 ```csharp
-using triaxis.CommandLine;
-
 return Tool.CreateBuilder(args).UseDefaults().Run();
 ```
+
+Or **delete `Program.cs` entirely**: if the project is an executable and has no user-written
+entry point, the source generator synthesizes one that is equivalent to the line above. See
+[Source-generated entry point](#source-generated-entry-point) below.
 
 Add a command class anywhere in the assembly:
 
 ```csharp
-using Microsoft.Extensions.Logging;
-using triaxis.CommandLine;
-
 [Command("hello", Description = "Greets the world, or someone")]
-public class HelloCommand
+public class HelloCommand : LoggingCommand
 {
-    [Inject]
-    private readonly ILogger<HelloCommand> _logger = null!;
-
     [Option("--name", "-n", Description = "Name of the person to greet")]
     public string Name { get; set; } = "World";
 
     public Task ExecuteAsync(CancellationToken cancellationToken)
     {
-        _logger.LogDebug("Greeting {Name}...", Name);
+        Logger.LogDebug("Greeting {Name}...", Name);
         Console.WriteLine($"Hello {Name}!");
         return Task.CompletedTask;
     }
@@ -440,6 +436,49 @@ builder
 Use it when you want the opinionated defaults; compose the individual `Use*` extensions when
 you need finer control (for example when shipping a library of commands without Serilog).
 
+### Source-generated entry point
+
+When the consuming project is an executable (`OutputType=Exe`) and has no user-written
+`Main`, the source generator emits one for you. You can therefore delete `Program.cs` from
+any tool that would otherwise contain nothing but the canonical one-liner — the generator
+produces an equivalent `Main` that calls
+`Tool.CreateBuilder(args).UseDefaults(…).Run()` (or falls back to
+`AddCommandsFromAssembly().Run()` when only the base `triaxis.CommandLine` package is
+referenced, without the `Tool` meta-package).
+
+Writing your own `Main` is always fine: if one already exists the generator skips
+entry-point emission, so you never get a "multiple entry points" error.
+
+The remaining `UseDefaults` parameters that the generator cannot infer on its own can be
+supplied via MSBuild properties:
+
+```xml
+<PropertyGroup>
+  <TriaxisCommandLineConfigOverridePath>MyTool/appsettings.json</TriaxisCommandLineConfigOverridePath>
+  <TriaxisCommandLineEnvironmentVariablePrefix>MYTOOL_</TriaxisCommandLineEnvironmentVariablePrefix>
+</PropertyGroup>
+```
+
+This composes naturally with .NET 10
+[file-based apps](https://learn.microsoft.com/dotnet/core/tutorials/file-based-apps).
+A complete tool in a single file, no project file, no `Main`:
+
+```csharp
+#!/usr/bin/env dotnet
+#:package triaxis.CommandLine.Tool@*
+
+[Command("greet", Description = "Say hello")]
+public class GreetCommand : LoggingCommand
+{
+    [Option("--name", "-n")]
+    private readonly string _name = "World";
+
+    public void Execute() => Console.WriteLine($"Hello {_name}!");
+}
+```
+
+See [`examples/hello.cs`](./examples/hello.cs) for a runnable version.
+
 ## Technical documentation
 
 Deeper dives into how the library is put together live under [`docs/`](./docs):
@@ -455,17 +494,23 @@ Deeper dives into how the library is put together live under [`docs/`](./docs):
 
 Runnable examples live under [`examples/`](./examples):
 
-- [`examples/Hello`](./examples/Hello) — single command, DI and verbosity flags.
+- [`examples/Hello`](./examples/Hello) — single command, DI and verbosity flags. Has no
+  `Program.cs` — the entry point is source-generated.
 - [`examples/ObjectOutput`](./examples/ObjectOutput) — every supported return shape
   (`IEnumerable`, `IAsyncEnumerable`, `Task<IEnumerable>`, tuples, `DataTable`, manual
   `IObjectOutputHandler`) and the `--output` formatter matrix.
+- [`examples/hello.cs`](./examples/hello.cs) — a single-file .NET 10 "dotnet run app.cs"
+  tool (no `.csproj`, no `Main`, shebang-executable). Uses `[assembly: ToolDefaults(...)]`
+  to configure the generated bootstrap.
 
 Build and run:
 
 ```shell
 dotnet build examples/Examples.sln
-dotnet run --project examples/Hello -- hello --name Alice
+dotnet run --project examples/Hello -- hello Alice
 dotnet run --project examples/ObjectOutput -- enumerable -o Json
+dotnet run examples/hello.cs -- greet --name Alice
+./examples/hello.cs greet --name Alice        # after chmod +x
 ```
 
 ## Building from source
