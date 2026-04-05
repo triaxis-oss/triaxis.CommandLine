@@ -3,6 +3,7 @@ namespace triaxis.CommandLine;
 using System.CommandLine;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Serilog;
 using Serilog.Events;
@@ -12,13 +13,23 @@ using Serilog.Sinks.SystemConsole.Themes;
 public static class ToolBuilderExtensions
 {
     public static IToolBuilder UseSerilog(this IToolBuilder builder, bool useShortContext = false, Action<IConfiguration, LoggerConfiguration>? configure = null)
+        => builder.UseSerilog(useShortContext, configure is null ? null : (context, loggerConfig) => configure(context.Configuration, loggerConfig));
+
+    public static IToolBuilder UseSerilog(this IToolBuilder builder, Action<HostBuilderContext, LoggerConfiguration> configure)
+        => builder.UseSerilog(useShortContext: false, configure);
+
+    public static IToolBuilder UseSerilog(this IToolBuilder builder, bool useShortContext, Action<HostBuilderContext, LoggerConfiguration>? configure)
     {
-        builder.ConfigureServices(services => services.AddLogging(logging =>
+        // Capture the HostBuilderContext via IHostBuilder.ConfigureServices(HostBuilderContext, ...)
+        // so the Serilog factory can close over it instead of resolving it from DI (it's a
+        // build-time object that shouldn't leak into the runtime container).
+        IHostBuilder hostBuilder = builder;
+        hostBuilder.ConfigureServices((hostBuilderContext, services) => services.AddLogging(logging =>
         {
             logging.SetMinimumLevel(LogLevel.Trace);
             logging.Services.AddSingleton<ILoggerProvider>(sp =>
             {
-                var configuration = sp.GetRequiredService<IConfiguration>();
+                var configuration = hostBuilderContext.Configuration;
 
                 var loggerConfig = new LoggerConfiguration();
 
@@ -42,7 +53,7 @@ public static class ToolBuilderExtensions
                     );
                 }
 
-                configure?.Invoke(configuration, loggerConfig);
+                configure?.Invoke(hostBuilderContext, loggerConfig);
 
                 var level = VerbosityOptions.GetEffectiveLevel(sp.GetRequiredService<ParseResult>());
                 loggerConfig.MinimumLevel.Is(LevelConvert.ToSerilogLevel(level));

@@ -5,19 +5,41 @@ using System.CommandLine;
 /// <summary>
 /// Context for a single command invocation, passed through middleware and the executor.
 /// </summary>
-public class InvocationContext(IServiceProvider services, ParseResult parseResult, CancellationToken cancellationToken, Type commandType)
+public class InvocationContext
 {
+    private readonly CancellationToken _cancellationToken;
+
+    public InvocationContext(IServiceProvider services, ParseResult parseResult, CancellationToken cancellationToken, Type commandType)
+    {
+        Services = services;
+        ParseResult = parseResult;
+        _cancellationToken = cancellationToken;
+        CommandType = commandType;
+    }
+
+    /// <summary>
+    /// Build-time invocation context used during <c>IHostBuilder.Build()</c> — only <see cref="ParseResult"/>
+    /// is available; <see cref="Services"/> and <see cref="CommandType"/> are populated later when the
+    /// command actually runs.
+    /// </summary>
+    internal InvocationContext(ParseResult parseResult)
+    {
+        ParseResult = parseResult;
+        Services = null!;
+        CommandType = null!;
+    }
+
     /// <summary>The DI service provider for this invocation.</summary>
-    public IServiceProvider Services { get; } = services;
+    public IServiceProvider Services { get; }
 
     /// <summary>The parsed command-line arguments.</summary>
-    public ParseResult ParseResult { get; } = parseResult;
+    public ParseResult ParseResult { get; }
 
     /// <summary>Cancellation token wired to Ctrl+C / SIGTERM by System.CommandLine.</summary>
-    public CancellationToken GetCancellationToken() => cancellationToken;
+    public CancellationToken GetCancellationToken() => _cancellationToken;
 
     /// <summary>The command class type being executed.</summary>
-    public Type CommandType { get; } = commandType;
+    public Type CommandType { get; }
 
     /// <summary>
     /// The result produced by the command. Set by the generated command action after
