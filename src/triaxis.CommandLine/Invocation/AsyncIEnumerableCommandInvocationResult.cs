@@ -1,6 +1,6 @@
 namespace triaxis.CommandLine.Invocation;
 
-public class AsyncIEnumerableCommandInvocationResult<T> : CommandInvocationResult, ICommandInvocationResult<T>
+public class AsyncIEnumerableCommandInvocationResult<T> : ICommandInvocationResult<T>
 {
     Task<IEnumerable<T>>? _task;
 
@@ -11,7 +11,7 @@ public class AsyncIEnumerableCommandInvocationResult<T> : CommandInvocationResul
 
     public bool IsCollection => true;
 
-    public override Task EnsureCompleteAsync(CancellationToken cancellationToken)
+    public Task EnsureCompleteAsync(CancellationToken cancellationToken)
     {
         return Interlocked.Exchange(ref _task, null) ?? Task.CompletedTask;
     }

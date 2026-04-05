@@ -1,6 +1,6 @@
 namespace triaxis.CommandLine.Invocation;
 
-public class AsyncEnumerableCommandInvocationResult<T> : CommandInvocationResult, ICommandInvocationResult<T>
+public class AsyncEnumerableCommandInvocationResult<T> : ICommandInvocationResult<T>
 {
     IAsyncEnumerable<T>? _enumerable;
 
@@ -11,7 +11,7 @@ public class AsyncEnumerableCommandInvocationResult<T> : CommandInvocationResult
 
     public bool IsCollection => true;
 
-    public override async Task EnsureCompleteAsync(CancellationToken cancellationToken)
+    public async Task EnsureCompleteAsync(CancellationToken cancellationToken)
     {
         if (Interlocked.Exchange(ref _enumerable, null) is { } enumerable)
         {

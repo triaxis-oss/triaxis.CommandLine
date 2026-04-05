@@ -1,8 +1,8 @@
 namespace triaxis.CommandLine.Invocation;
 
-public class EmptyCommandInvocationResult : CommandInvocationResult
+public class EmptyCommandInvocationResult : ICommandInvocationResult
 {
-    public override Task EnsureCompleteAsync(CancellationToken cancellationToken)
+    public Task EnsureCompleteAsync(CancellationToken cancellationToken)
     {
         return Task.CompletedTask;
     }

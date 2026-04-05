@@ -1,6 +1,6 @@
 namespace triaxis.CommandLine.Invocation;
 
-public class EnumerableCommandInvocationResult<T> : CommandInvocationResult, ICommandInvocationResult<T>
+public class EnumerableCommandInvocationResult<T> : ICommandInvocationResult<T>
 {
     IEnumerable<T>? _result;
 
@@ -11,7 +11,7 @@ public class EnumerableCommandInvocationResult<T> : CommandInvocationResult, ICo
 
     public bool IsCollection => true;
 
-    public override Task EnsureCompleteAsync(CancellationToken cancellationToken)
+    public Task EnsureCompleteAsync(CancellationToken cancellationToken)
     {
         return Task.CompletedTask;
     }

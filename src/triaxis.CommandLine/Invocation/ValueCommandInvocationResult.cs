@@ -1,6 +1,6 @@
 namespace triaxis.CommandLine.Invocation;
 
-public class ValueCommandInvocationResult<T> : CommandInvocationResult, ICommandInvocationResult<T>
+public class ValueCommandInvocationResult<T> : ICommandInvocationResult<T>
 {
     T _result;
 
@@ -11,7 +11,7 @@ public class ValueCommandInvocationResult<T> : CommandInvocationResult, ICommand
 
     public bool IsCollection => false;
 
-    public override Task EnsureCompleteAsync(CancellationToken cancellationToken)
+    public Task EnsureCompleteAsync(CancellationToken cancellationToken)
     {
         return Task.CompletedTask;
     }

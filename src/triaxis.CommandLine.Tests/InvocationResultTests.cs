@@ -6,51 +6,6 @@ using triaxis.CommandLine.Invocation;
 public class InvocationResultTests
 {
     [Test]
-    public void Create_WithNull_ReturnsEmpty()
-    {
-        var r = CommandInvocationResult.Create(null!, typeof(void));
-        Assert.That(r, Is.InstanceOf<EmptyCommandInvocationResult>());
-    }
-
-    [Test]
-    public void Create_WithTask_ReturnsAsyncEmpty()
-    {
-        var r = CommandInvocationResult.Create(Task.CompletedTask, typeof(Task));
-        Assert.That(r, Is.InstanceOf<AsyncEmptyCommandInvocationResult>());
-    }
-
-    [Test]
-    public void Create_WithTaskOfValue_ReturnsAsyncValue()
-    {
-        var r = CommandInvocationResult.Create(Task.FromResult(42), typeof(Task<int>));
-        Assert.That(r, Is.InstanceOf<AsyncValueCommandInvocationResult<int>>());
-        Assert.That(r, Is.InstanceOf<ICommandInvocationResult<int>>());
-    }
-
-    [Test]
-    public void Create_WithValue_ReturnsValueResult()
-    {
-        var r = CommandInvocationResult.Create(42, typeof(int));
-        Assert.That(r, Is.InstanceOf<ValueCommandInvocationResult<int>>());
-    }
-
-    [Test]
-    public void Create_WithEnumerable_ReturnsEnumerableResult()
-    {
-        IEnumerable<int> data = [1, 2, 3];
-        var r = CommandInvocationResult.Create(data, typeof(IEnumerable<int>));
-        Assert.That(r, Is.InstanceOf<EnumerableCommandInvocationResult<int>>());
-    }
-
-    [Test]
-    public void Create_WithTaskOfEnumerable_ReturnsAsyncIEnumerableResult()
-    {
-        var task = Task.FromResult<IEnumerable<int>>([1, 2, 3]);
-        var r = CommandInvocationResult.Create(task, typeof(Task<IEnumerable<int>>));
-        Assert.That(r, Is.InstanceOf<AsyncIEnumerableCommandInvocationResult<int>>());
-    }
-
-    [Test]
     public async Task EnumerableResult_EnumeratesElements_Once()
     {
         IEnumerable<string> data = ["a", "b", "c"];
