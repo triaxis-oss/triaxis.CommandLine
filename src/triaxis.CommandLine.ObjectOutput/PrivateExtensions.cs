@@ -116,7 +116,8 @@ static class PrivateExtensions
 
 #if NETSTANDARD2_0
         var sb = new StringBuilder(len);
-        while (ws.NextWord() is {} word && !word.IsEmpty)
+        ws = new WordSplitter(s.AsSpan());
+        while (ws.NextWord() is { } word && !word.IsEmpty)
         {
             if (sb.Length > 0)
             {

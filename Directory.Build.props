@@ -27,4 +27,22 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.SourceLink.GitHub" PrivateAssets="all" />
   </ItemGroup>
+
+  <!-- Promote *.Tests projects (regular NUnit test projects in shape) to self-contained
+       Microsoft.Testing.Platform executables via the NUnit3 adapter's MTP integration, so
+       the output .exe / .dll can be launched directly — by dotnet for .NET (Core) and by
+       mono for .NET Framework. Must live in .props because the NUnit3 adapter's own .props
+       read EnableNUnitRunner at import time to wire up the entry point. -->
+  <PropertyGroup Condition="$(MSBuildProjectName.EndsWith('.Tests'))">
+    <OutputType>Exe</OutputType>
+    <EnableNUnitRunner>true</EnableNUnitRunner>
+    <TestingPlatformDotnetTestSupport>true</TestingPlatformDotnetTestSupport>
+  </PropertyGroup>
+
+  <!-- PolySharp provides the polyfills needed to use LangVersion 14 features against
+       .NET Framework. Microsoft.NETFramework.ReferenceAssemblies is added implicitly by
+       the SDK when targeting net4x on non-Windows. -->
+  <ItemGroup Condition="$(MSBuildProjectName.EndsWith('.Tests'))">
+    <PackageReference Include="PolySharp" PrivateAssets="all" />
+  </ItemGroup>
 </Project>

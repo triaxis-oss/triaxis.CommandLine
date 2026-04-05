@@ -12,7 +12,6 @@
 
   <ItemGroup>
     <ProjectReference Include="..\triaxis.CommandLine\triaxis.CommandLine.csproj" />
-    <ProjectReference Include="..\triaxis.CommandLine.ObjectOutput\triaxis.CommandLine.ObjectOutput.csproj" />
   </ItemGroup>
 
   <ItemGroup>

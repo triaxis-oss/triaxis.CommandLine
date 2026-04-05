@@ -3,14 +3,17 @@ namespace triaxis.CommandLine.ObjectOutput.Tests;
 [TestFixture]
 public class PrivateExtensionsTests
 {
-    [Test]
-    public void Test()
+    [TestCase("bla_bla", "BLA BLA")]
+    [TestCase("BlaBla", "BLA BLA")]
+    [TestCase("TestID", "TEST ID")]
+    [TestCase("Test1THING", "TEST 1 THING")]
+    [TestCase("what[Is]THIsX", "WHAT IS TH IS X")]
+    [TestCase("  WS around 4 Words...", "WS AROUND 4 WORDS")]
+    [TestCase("", "")]
+    [TestCase("A", "A")]
+    [TestCase("single", "SINGLE")]
+    public void ToTableTitle_TransformsToUpperCaseWithSpaceSeparators(string input, string expected)
     {
-        Assert.That("bla_bla".ToTableTitle(), Is.EqualTo("BLA BLA"));
-        Assert.That("BlaBla".ToTableTitle(), Is.EqualTo("BLA BLA"));
-        Assert.That("TestID".ToTableTitle(), Is.EqualTo("TEST ID"));
-        Assert.That("Test1THING".ToTableTitle(), Is.EqualTo("TEST 1 THING"));
-        Assert.That("what[Is]THIsX".ToTableTitle(), Is.EqualTo("WHAT IS TH IS X"));
-        Assert.That("  WS around 4 Words...".ToTableTitle(), Is.EqualTo("WS AROUND 4 WORDS"));
+        Assert.That(input.ToTableTitle(), Is.EqualTo(expected));
     }
 }

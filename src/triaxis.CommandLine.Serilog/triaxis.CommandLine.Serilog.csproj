@@ -20,4 +20,8 @@
     <ProjectReference Include="..\triaxis.CommandLine\triaxis.CommandLine.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="triaxis.CommandLine.Serilog.Tests" />
+  </ItemGroup>
+
 </Project>
