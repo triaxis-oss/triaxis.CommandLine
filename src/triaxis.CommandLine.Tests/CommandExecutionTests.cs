@@ -47,6 +47,17 @@ public class CountCommand
     public NumberBox Execute() => new(Value);
 }
 
+[Command("ctor-echo")]
+public class CtorInjectedCommand(EchoState state)
+{
+    public Task ExecuteAsync()
+    {
+        state.WasRun = true;
+        state.Name = "ctor";
+        return Task.CompletedTask;
+    }
+}
+
 [TestFixture]
 public class CommandExecutionTests
 {
@@ -136,6 +147,19 @@ public class CommandExecutionTests
         await ((ICommandInvocationResult<NumberBox>)captured.InvocationResult!).EnumerateResultsAsync(
             v => { value = v; return default; }, null, default);
         Assert.That(value, Is.EqualTo(new NumberBox(7)));
+    }
+
+    [Test]
+    public async Task Run_ConstructorInjection_ResolvesFromDI()
+    {
+        var state = new EchoState();
+        var builder = CreateBuilder(["ctor-echo"], state);
+
+        var exitCode = await builder.RunAsync();
+
+        Assert.That(exitCode, Is.EqualTo(0));
+        Assert.That(state.WasRun, Is.True);
+        Assert.That(state.Name, Is.EqualTo("ctor"));
     }
 
     [Test]

@@ -119,7 +119,7 @@ internal sealed class MyTool_HelloCommand_Action : AsynchronousCommandLineAction
 
         await provider.GetRequiredService<ICommandExecutor>().ExecuteAsync(context, async () =>
         {
-            var instance = ActivatorUtilities.CreateInstance<MyTool.HelloCommand>(provider);
+            var instance = new MyTool.HelloCommand(/* constructor params resolved from DI */);
             // [Inject] assignments, argument/option binding, Execute dispatch …
         });
 
@@ -130,8 +130,8 @@ internal sealed class MyTool_HelloCommand_Action : AsynchronousCommandLineAction
 
 Key points:
 
-- **`ActivatorUtilities.CreateInstance<T>(provider)`** constructs the command, so
-  constructor injection works without registering the command type in DI.
+- **`new T(...)`** constructs the command directly, with constructor parameters
+  resolved from DI via `GetRequiredService<T>()`. No reflection at runtime.
 - **Member writes are direct** where possible (public settable properties and fields) and
   go through a compile-time accessor helper otherwise.
 - **`[Options]` traversal** is inlined: a `null`-check plus `new()` for each segment,

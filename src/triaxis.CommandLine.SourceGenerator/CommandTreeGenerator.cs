@@ -225,6 +225,7 @@ public class CommandTreeGenerator : IIncrementalGenerator
         }
 
         var executeMethod = DetectExecuteMethod(typeSymbol);
+        var ctorParams = ExtractConstructorParameters(typeSymbol);
 
         return new CommandModel(
             typeSymbol.ToDisplayString(FqnFormat),
@@ -232,7 +233,34 @@ public class CommandTreeGenerator : IIncrementalGenerator
             description,
             aliases,
             members.ToImmutableArray(),
-            executeMethod);
+            executeMethod,
+            ctorParams);
+    }
+
+    private static ImmutableArray<ConstructorParameterModel> ExtractConstructorParameters(INamedTypeSymbol typeSymbol)
+    {
+        var ctors = typeSymbol.InstanceConstructors
+            .Where(c => c.DeclaredAccessibility == Accessibility.Public)
+            .ToArray();
+
+        // Prefer [ActivatorUtilitiesConstructor]-annotated constructor
+        var chosen = ctors.FirstOrDefault(c =>
+            c.GetAttributes().Any(a =>
+                a.AttributeClass?.ToDisplayString() == "Microsoft.Extensions.DependencyInjection.ActivatorUtilitiesConstructorAttribute"));
+
+        // Otherwise pick the constructor with the most parameters
+        chosen ??= ctors
+            .OrderByDescending(c => c.Parameters.Length)
+            .FirstOrDefault();
+
+        if (chosen is null || chosen.Parameters.Length == 0)
+        {
+            return ImmutableArray<ConstructorParameterModel>.Empty;
+        }
+
+        return chosen.Parameters
+            .Select(p => new ConstructorParameterModel(p.Type.ToDisplayString(FqnFormat)))
+            .ToImmutableArray();
     }
 
     private static ExecuteMethodModel DetectExecuteMethod(INamedTypeSymbol typeSymbol)
@@ -806,7 +834,16 @@ public class CommandTreeGenerator : IIncrementalGenerator
             w.WriteLine("await provider.GetRequiredService<ICommandExecutor>().ExecuteAsync(context, async () =>");
             w.Block(() =>
             {
-                w.WriteLine($"var instance = ActivatorUtilities.CreateInstance<{cmd.TypeName}>(provider);");
+                if (cmd.ConstructorParameters.IsEmpty)
+                {
+                    w.WriteLine($"var instance = new {cmd.TypeName}();");
+                }
+                else
+                {
+                    var ctorArgs = string.Join(", ", cmd.ConstructorParameters
+                        .Select(p => $"provider.GetRequiredService<{p.TypeFqn}>()"));
+                    w.WriteLine($"var instance = new {cmd.TypeName}({ctorArgs});");
+                }
                 w.WriteLine();
 
                 // Direct [Inject] assignments
@@ -1179,7 +1216,8 @@ record CommandModel(
     string? Description,
     string[]? Aliases,
     ImmutableArray<MemberModel> Members,
-    ExecuteMethodModel ExecuteMethod);
+    ExecuteMethodModel ExecuteMethod,
+    ImmutableArray<ConstructorParameterModel> ConstructorParameters);
 
 record AssemblyCommandModel(
     string[] Path,
@@ -1215,6 +1253,9 @@ record MemberModel(
     double Order,
     string? InjectTypeFqn,
     AccessPathSegment[] AccessPath);
+
+record ConstructorParameterModel(
+    string TypeFqn);
 
 static class IndentedTextWriterExtensions
 {
