@@ -112,6 +112,9 @@ class ToolBuilder : IToolBuilder, IHostBuilder
             action(hostBuilderContext, _services);
         }
 
+        ToolHost? host = null;
+        _services.AddSingleton<IHostApplicationLifetime>(_ => host!);
+
         _services.AddSingleton(parseResult);
         _services.AddSingleton<IConfiguration>(_configuration);
         _services.AddLogging();
@@ -120,7 +123,8 @@ class ToolBuilder : IToolBuilder, IHostBuilder
 
         _serviceProvider = _services.BuildServiceProvider();
 
-        return new ToolHost(_serviceProvider, parseResult);
+        host = new ToolHost(_serviceProvider, parseResult);
+        return host;
     }
 
     #endregion

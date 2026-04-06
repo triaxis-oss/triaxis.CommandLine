@@ -3,6 +3,7 @@ namespace triaxis.CommandLine.Tests;
 using System.CommandLine;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 
 [TestFixture]
 public class ToolBuilderTests
@@ -71,5 +72,105 @@ public class ToolBuilderTests
         // Before Run, accessor returns null (the backing field is not yet populated).
         // Calling it should not throw — the delegate uses the null-forgiving operator.
         Assert.That(() => accessor(), Throws.Nothing);
+    }
+
+    [Test]
+    public async Task HostApplicationLifetime_IsResolvable_DuringCommandExecution()
+    {
+        var capture = new LifetimeCapture();
+        var builder = Tool.CreateBuilder(["lifetime-resolve"]);
+        builder.ConfigureServices(s => s.AddSingleton(capture));
+        builder.AddCommandsFromAssembly(typeof(ToolBuilderTests).Assembly);
+
+        await builder.RunAsync();
+
+        Assert.That(capture.Lifetime, Is.Not.Null);
+    }
+
+    [Test]
+    public async Task HostApplicationLifetime_ApplicationStarted_FiresDuringRun()
+    {
+        var capture = new LifetimeCapture();
+        var builder = Tool.CreateBuilder(["lifetime-resolve"]);
+        builder.ConfigureServices(s => s.AddSingleton(capture));
+        builder.AddCommandsFromAssembly(typeof(ToolBuilderTests).Assembly);
+
+        await builder.RunAsync();
+
+        Assert.That(capture.StartedFired, Is.True, "ApplicationStarted should have fired after StartAsync");
+    }
+
+    [Test]
+    public async Task HostApplicationLifetime_StoppingAndStopped_FireDuringStopAsync()
+    {
+        var capture = new LifetimeCapture();
+        var builder = Tool.CreateBuilder(["lifetime-resolve"]);
+        builder.ConfigureServices(s => s.AddSingleton(capture));
+        builder.AddCommandsFromAssembly(typeof(ToolBuilderTests).Assembly);
+
+        await builder.RunAsync();
+
+        Assert.That(capture.StoppingFired, Is.True, "ApplicationStopping should have fired during StopAsync");
+        Assert.That(capture.StoppedFired, Is.True, "ApplicationStopped should have fired during StopAsync");
+    }
+
+    [Test]
+    public async Task HostApplicationLifetime_StopApplication_FiresStopping()
+    {
+        var capture = new LifetimeCapture();
+        var builder = Tool.CreateBuilder(["lifetime-stop"]);
+        builder.ConfigureServices(s => s.AddSingleton(capture));
+        builder.AddCommandsFromAssembly(typeof(ToolBuilderTests).Assembly);
+
+        await builder.RunAsync();
+
+        Assert.That(capture.StopApplicationCalledStoppingFired, Is.True,
+            "StopApplication() should fire ApplicationStopping");
+    }
+}
+
+public class LifetimeCapture
+{
+    public IHostApplicationLifetime? Lifetime { get; set; }
+    public bool StartedFired { get; set; }
+    public bool StoppingFired { get; set; }
+    public bool StoppedFired { get; set; }
+    public bool StopApplicationCalledStoppingFired { get; set; }
+}
+
+[Command("lifetime-resolve")]
+public class LifetimeResolveCommand
+{
+    [Inject]
+    public IHostApplicationLifetime Lifetime { get; set; } = null!;
+
+    [Inject]
+    public LifetimeCapture Capture { get; set; } = null!;
+
+    public Task ExecuteAsync()
+    {
+        Capture.Lifetime = Lifetime;
+        Capture.StartedFired = Lifetime.ApplicationStarted.IsCancellationRequested;
+        Lifetime.ApplicationStopping.Register(() => Capture.StoppingFired = true);
+        Lifetime.ApplicationStopped.Register(() => Capture.StoppedFired = true);
+        return Task.CompletedTask;
+    }
+}
+
+[Command("lifetime-stop")]
+public class LifetimeStopCommand
+{
+    [Inject]
+    public IHostApplicationLifetime Lifetime { get; set; } = null!;
+
+    [Inject]
+    public LifetimeCapture Capture { get; set; } = null!;
+
+    public Task ExecuteAsync()
+    {
+        Capture.Lifetime = Lifetime;
+        Lifetime.ApplicationStopping.Register(() => Capture.StopApplicationCalledStoppingFired = true);
+        Lifetime.StopApplication();
+        return Task.CompletedTask;
     }
 }

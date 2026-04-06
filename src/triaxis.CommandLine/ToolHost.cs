@@ -4,11 +4,23 @@ using System.CommandLine.Parsing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
-class ToolHost(IServiceProvider services, ParseResult parseResult) : IHost
+class ToolHost(IServiceProvider services, ParseResult parseResult) : IHost, IHostApplicationLifetime
 {
     private IHostedService[]? _hostedServices;
+    private readonly CancellationTokenSource _startedSource = new();
+    private readonly CancellationTokenSource _stoppingSource = new();
+    private readonly CancellationTokenSource _stoppedSource = new();
 
     public IServiceProvider Services => services;
+
+    public CancellationToken ApplicationStarted => _startedSource.Token;
+    public CancellationToken ApplicationStopping => _stoppingSource.Token;
+    public CancellationToken ApplicationStopped => _stoppedSource.Token;
+
+    public void StopApplication()
+    {
+        _stoppingSource.Cancel();
+    }
 
     public async Task StartAsync(CancellationToken cancellationToken = default)
     {
@@ -17,6 +29,8 @@ class ToolHost(IServiceProvider services, ParseResult parseResult) : IHost
         {
             await service.StartAsync(cancellationToken);
         }
+
+        _startedSource.Cancel();
     }
 
     public void Start()
@@ -26,15 +40,17 @@ class ToolHost(IServiceProvider services, ParseResult parseResult) : IHost
 
     public async Task StopAsync(CancellationToken cancellationToken = default)
     {
-        if (_hostedServices is null)
+        _stoppingSource.Cancel();
+
+        if (_hostedServices is not null)
         {
-            return;
+            for (var i = _hostedServices.Length - 1; i >= 0; i--)
+            {
+                await _hostedServices[i].StopAsync(cancellationToken);
+            }
         }
 
-        for (var i = _hostedServices.Length - 1; i >= 0; i--)
-        {
-            await _hostedServices[i].StopAsync(cancellationToken);
-        }
+        _stoppedSource.Cancel();
     }
 
     public int Invoke() => parseResult.Invoke();
@@ -43,6 +59,9 @@ class ToolHost(IServiceProvider services, ParseResult parseResult) : IHost
 
     public void Dispose()
     {
+        _startedSource.Dispose();
+        _stoppingSource.Dispose();
+        _stoppedSource.Dispose();
         (services as IDisposable)?.Dispose();
     }
 }
