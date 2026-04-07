@@ -791,8 +791,9 @@ public class CommandTreeGenerator : IIncrementalGenerator
 
         // Accessors for direct members that need backing field access
         // (non-public members, or public read-only properties)
+        // Skip required members — they are set in the object initializer.
         var memberAccessors = new Dictionary<string, Accessor>();
-        foreach (var member in args.Concat(opts).Concat(injects).Where(m => m.AccessPath.Length == 0))
+        foreach (var member in args.Concat(opts).Concat(injects).Where(m => m.AccessPath.Length == 0 && !m.IsMemberRequired))
         {
             var owner = member.DeclaringTypeFqn;
             memberAccessors[MemberKey(member)] = EmitAccessor(
