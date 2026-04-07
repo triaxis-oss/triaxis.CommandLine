@@ -20,12 +20,11 @@ IToolBuilder  ─ (IHostBuilder)
 Run() / RunAsync()     ← extension methods on IToolBuilder
       │
       ├─ IHostBuilder.Build()          → ToolHost
-      │       ├─ CommandNode.Realize()        (attach subcommands to RootCommand)
       │       ├─ RootCommand.Parse(args)      (System.CommandLine parser → ParseResult)
       │       ├─ HostBuilderContext created, build-time InvocationContext (ParseResult only)
       │       ├─ ConfigureAppConfiguration callbacks run
       │       ├─ ConfigureServices(HostBuilderContext) callbacks run
-      │       ├─ ParseResult, IConfiguration, ILoggerFactory, ICommandExecutor registered
+      │       ├─ ParseResult, IConfiguration, IHostApplicationLifetime, ILoggerFactory, ICommandExecutor registered
       │       └─ ServiceProvider built
       │
       ├─ ToolHost.StartAsync()        → starts IHostedService instances in order
@@ -36,9 +35,9 @@ Run() / RunAsync()     ← extension methods on IToolBuilder
       │                       ├─ ICommandExecutor.ExecuteAsync(context, body)
       │                       │       ├─ wraps body in the middleware chain
       │                       │       └─ body:
-      │                       │               ├─ ActivatorUtilities.CreateInstance<T>(provider)
+      │                       │               ├─ new T(...) with DI-resolved ctor args
       │                       │               ├─ inlined [Inject] assignments
-      │                       │               ├─ inlined argument/option binding
+      │                       │               ├─ foreach/switch over CommandResult.Children
       │                       │               ├─ Execute / ExecuteAsync (with optional FailFast)
       │                       │               └─ wrap result into context.InvocationResult
       │                       └─ return context.ExitCode
@@ -55,9 +54,10 @@ Run() / RunAsync()     ← extension methods on IToolBuilder
 | `Tool` | Static entry point — `CreateBuilder(args)`. |
 | `IToolBuilder` / `ToolBuilder` | Owns `IServiceCollection`, middleware list, `IConfigurationManager`, the `RootCommand` tree, and `IHostBuilder` state (properties, configuration callbacks). |
 | `ToolBuilderRunExtensions` | Extension methods (`Run`, `RunAsync`) that drive `Build → Start → Invoke → Stop → Dispose`. |
-| `ToolHost` | `IHost` implementation — starts/stops `IHostedService`s, owns the `ServiceProvider`, exposes `Invoke`/`InvokeAsync`. |
-| `CommandNode` | In-memory command tree built incrementally by discovery, materialized into System.CommandLine `Command.Subcommands` in `Realize()`. |
-| Generated `*_Action` classes | One `AsynchronousCommandLineAction` per `[Command]` class. Emitted by `triaxis.CommandLine.SourceGenerator`. Resolves from DI, binds parameters, invokes `Execute`/`ExecuteAsync`. |
+| `ToolHost` | `IHost` + `IHostApplicationLifetime` implementation — starts/stops `IHostedService`s, owns the `ServiceProvider`, fires lifetime tokens, exposes `Invoke`/`InvokeAsync`. |
+| `CommandTreeNode` | Lightweight model describing the command tree. Returned by the source-generated factory, merged into `RootCommand` via `ApplyTo()`. |
+| `ArgumentDefinition<T>` / `OptionDefinition<T>` | Type-safe descriptors in the tree model. `Create()` produces fresh System.CommandLine `Argument<T>`/`Option<T>` instances. |
+| Generated `*_Action` classes | One `AsynchronousCommandLineAction` per `[Command]` class. Emitted by `triaxis.CommandLine.SourceGenerator`. Constructs the command, binds parameters, invokes `Execute`/`ExecuteAsync`. |
 | `ICommandExecutor` / `DefaultCommandExecutor` | Runs the middleware chain around command execution and finalizes the result. |
 | `InvocationContext` | Passed through middleware: `Services`, `ParseResult`, `CommandType`, `InvocationResult`, `ExitCode`, `CancellationToken`. |
 | `ICommandInvocationResult[<T>]` | Uniform wrapper around anything a command can return. |
@@ -80,10 +80,10 @@ Run() / RunAsync()     ← extension methods on IToolBuilder
 **triaxis.CommandLine owns:**
 
 - Command discovery from `[Command]` attributes via the source generator
-- Constructing command instances via `ActivatorUtilities.CreateInstance`
-- Transferring parsed values from `ParseResult` onto command instances (inlined in the
-  generated action, with `UnsafeAccessor` or `FieldInfo`/`PropertyInfo` fallbacks for
-  non-public members)
+- Constructing command instances via `new T(...)` with DI-resolved constructor args
+- Transferring parsed values from `ParseResult` onto command instances (via a
+  `foreach`/`switch` over `CommandResult.Children`, with `UnsafeAccessor` or
+  `FieldInfo`/`PropertyInfo` fallbacks for non-public members)
 - Resolving `[Inject]` members and calling the right `Execute` overload
 - Wrapping return values in `ICommandInvocationResult` and running the middleware chain
 - Optional layers: Serilog wiring, verbosity flags, object output formatters

@@ -24,14 +24,15 @@ public static IToolBuilder AddCommandsFromAssembly(this IToolBuilder builder, As
     // when a module is first touched via reflection, so force it.
     RuntimeHelpers.RunModuleConstructor(assembly.ManifestModule.ModuleHandle);
 
-    if (!GeneratedCommandRegistration.TryGet(name, out var registration))
+    if (!GeneratedCommandRegistration.TryGet(name, out var factory))
     {
         throw new InvalidOperationException(
             $"No generated command registration found for assembly '{name}'. " +
             $"Ensure the assembly references triaxis.CommandLine so the source generator runs.");
     }
 
-    registration(builder);
+    var tree = factory(builder.GetServiceProviderAccessor());
+    tree.ApplyTo(builder.RootCommand);
     return builder;
 }
 ```
@@ -41,18 +42,18 @@ public static IToolBuilder AddCommandsFromAssembly(this IToolBuilder builder, As
 ```csharp
 public static class GeneratedCommandRegistration
 {
-    private static readonly Dictionary<string, Action<IToolBuilder>> s_registrations = new();
+    private static readonly Dictionary<string, Func<Func<IServiceProvider>, CommandTreeNode>> s_registrations = new();
 
-    public static void Register(string assemblyName, Action<IToolBuilder> registration)
-        => s_registrations[assemblyName] = registration;
+    public static void Register(string assemblyName, Func<Func<IServiceProvider>, CommandTreeNode> factory)
+        => s_registrations[assemblyName] = factory;
 
-    public static bool TryGet(string assemblyName, out Action<IToolBuilder> registration)
-        => s_registrations.TryGetValue(assemblyName, out registration!);
+    public static bool TryGet(string assemblyName, out Func<Func<IServiceProvider>, CommandTreeNode> factory)
+        => s_registrations.TryGetValue(assemblyName, out factory!);
 }
 ```
 
 The generator emits a `[ModuleInitializer]` in the target assembly that calls
-`GeneratedCommandRegistration.Register(assemblyName, AddGeneratedCommands)`. On modern
+`GeneratedCommandRegistration.Register(assemblyName, CreateCommandTree)`. On modern
 runtimes the module initializer runs the first time any type from the assembly is
 touched. `AddCommandsFromAssembly` also calls `RuntimeHelpers.RunModuleConstructor`
 unconditionally so that reflection-loaded assemblies on runtimes that don't eagerly
@@ -74,53 +75,49 @@ internal static class GeneratedCommandRegistration_
     [ModuleInitializer]
     internal static void Register()
     {
-        GeneratedCommandRegistration.Register("MyTool", AddGeneratedCommands);
+        GeneratedCommandRegistration.Register("MyTool", CreateCommandTree);
     }
 
-    private static void AddGeneratedCommands(IToolBuilder builder)
+    private static CommandTreeNode CreateCommandTree(Func<IServiceProvider> getServiceProvider)
     {
-        var getServiceProvider = builder.GetServiceProviderAccessor();
-
-        // Assembly-level [Command] attributes: description/aliases on intermediate tree nodes
+        return new CommandTreeNode("")
         {
-            var cmd = builder.GetCommand("db");
-            cmd.Description = "Database operations";
-        }
-
-        MyTool_HelloCommand_Action.Register(builder, getServiceProvider);
-        // … one line per [Command] class …
+            Subcommands =
+            {
+                new CommandTreeNode("hello")
+                {
+                    Description = "Greets the world, or someone",
+                    Action = new hello_Action(getServiceProvider),
+                    Options =
+                    {
+                        new OptionDefinition<string>("--name", new[] { "-n" })
+                            { Description = "Name to greet", Arity = ArgumentArity.ExactlyOne },
+                    },
+                },
+            },
+        };
     }
 }
 
-internal sealed class MyTool_HelloCommand_Action : AsynchronousCommandLineAction
+internal sealed class hello_Action(Func<IServiceProvider> getServiceProvider) : AsynchronousCommandLineAction
 {
-    private readonly Func<IServiceProvider> _getServiceProvider;
-    private readonly Option<string> _Name;
-
-    public static void Register(IToolBuilder builder, Func<IServiceProvider> getServiceProvider)
-    {
-        var cmd = builder.GetCommand("hello");
-        cmd.Description = "Greets the world, or someone";
-        var action = new MyTool_HelloCommand_Action(getServiceProvider);
-        cmd.Options.Add(action._Name);
-        cmd.Action = action;
-    }
-
-    private MyTool_HelloCommand_Action(Func<IServiceProvider> getServiceProvider)
-    {
-        _getServiceProvider = getServiceProvider;
-        _Name = new Option<string>("--name", "-n") { Description = "..." };
-    }
-
     public override async Task<int> InvokeAsync(ParseResult parseResult, CancellationToken cancellationToken)
     {
-        var provider = _getServiceProvider();
+        var provider = getServiceProvider();
         var context = new InvocationContext(provider, parseResult, cancellationToken, typeof(MyTool.HelloCommand));
 
         await provider.GetRequiredService<ICommandExecutor>().ExecuteAsync(context, async () =>
         {
-            var instance = new MyTool.HelloCommand(/* constructor params resolved from DI */);
-            // [Inject] assignments, argument/option binding, Execute dispatch …
+            var instance = new MyTool.HelloCommand(/* ctor params resolved from DI */);
+            // [Inject] assignments ...
+            foreach (var __result in parseResult.CommandResult.Children)
+            {
+                if (__result is OptionResult { Implicit: false } __or) switch (__or.Option.Name)
+                {
+                    case "--name": instance.Name = __or.GetValueOrDefault<string>(); break;
+                }
+            }
+            await instance.ExecuteAsync();
         });
 
         return context.ExitCode;
@@ -130,15 +127,20 @@ internal sealed class MyTool_HelloCommand_Action : AsynchronousCommandLineAction
 
 Key points:
 
+- **`CommandTreeNode`** is a lightweight model — no System.CommandLine types are created
+  in the generated tree. `ApplyTo(Command)` creates fresh `Argument<T>`/`Option<T>`
+  instances directly on the target tree, avoiding parent-tracking issues.
 - **`new T(...)`** constructs the command directly, with constructor parameters
   resolved from DI via `GetRequiredService<T>()`. No reflection at runtime.
-- **Member writes are direct** where possible (public settable properties and fields) and
-  go through a compile-time accessor helper otherwise.
-- **`[Options]` traversal** is inlined: a `null`-check plus `new()` for each segment,
-  emitted per member.
+- **Binding** uses a single `foreach`/`switch` over `parseResult.CommandResult.Children`.
+  Arguments match by `Tokens.Count > 0`, options by `Implicit: false`. The compiler
+  optimizes the name switch as a string jump table.
+- **`[Options]` traversal** is inlined: a `null`-check plus `new()` for each segment.
+  Required members on `[Options]` types are set in the `new()` initializer.
 - **`[Inject]`** is inlined as `instance.Member = provider.GetRequiredService<TService>();`
   (or an accessor-wrapped variant for non-public members).
-- **`required` members** are precomputed into option/argument flags at generation time.
+- **`required` / `init`** members are set in the object initializer via
+  `parseResult.GetValue<T>(name)`; non-required init-only members use field accessors.
 
 ## Reaching non-public members
 
@@ -188,25 +190,18 @@ file uses the `FieldInfo`/`PropertyInfo` cache.
 
 ## Command tree
 
-Command paths are materialized lazily by `CommandNode`:
+The source generator builds the entire command tree at generation time as a sorted
+`CommandTreeNode` structure. `AddCommandsFromAssembly` calls the generated factory, then
+`tree.ApplyTo(builder.RootCommand)` walks the model and creates fresh System.CommandLine
+`Command`, `Argument<T>`, and `Option<T>` instances directly on the target tree.
 
-```csharp
-public Command GetCommand(string[] path)
-{
-    var node = this;
-    foreach (string element in path)
-    {
-        node = node.GetOrCreateChild(element);
-    }
-    return node._command;
-}
-```
+Subcommands are inserted in sorted position (searching from the end, since the input is
+pre-sorted). When multiple assemblies contribute commands under the same parent path,
+`ApplyTo` merges them recursively — matching subcommands by name (case-insensitive).
 
-`IHostBuilder.Build()` calls `Realize()` once before parsing, which walks the tree and adds
-each child `Command` to its parent's `Subcommands`. Doing this at the end means that the
-order in which commands are registered (generated registration, manual
-`builder.GetCommand(...)` calls, assembly-level attributes) is irrelevant — the tree is
-always assembled consistently before System.CommandLine sees it.
+`ToolBuilder.GetCommand(params string[] path)` is still available for manual command
+creation (e.g. in tests or for commands not handled by the generator). It walks the
+`RootCommand` tree, creating and inserting subcommands in sorted position.
 
 ## Assembly-level `[Command]`
 

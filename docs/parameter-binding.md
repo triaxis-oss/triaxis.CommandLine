@@ -28,85 +28,86 @@ public class CommandlineAttribute : Attribute
 | `OptionsAttribute` | — | Marker on a property whose nested type carries further `[Argument]`/`[Option]` members. |
 
 `Required` is tri-state: unset, explicitly `true`, explicitly `false`. When unset, the C#
-`required` modifier on the member is used as a fallback — any member marked with
-`System.Runtime.CompilerServices.RequiredMemberAttribute` becomes a required
-argument/option.
+`required` modifier on the member is used as a fallback (detected via
+`IPropertySymbol.IsRequired` / `IFieldSymbol.IsRequired`).
 
 ## Member → symbol
 
-During compilation, the generator walks every `[Command]` class and emits a dedicated
-action class. Each `[Argument]` or `[Option]` member becomes a field on that action holding
-a plain `System.CommandLine.Argument<T>` or `Option<T>` instance. The type parameter `T` is
-the member's declared value type, unwrapped from `Nullable<>`.
+During compilation, the generator walks every `[Command]` class and emits a
+`CommandTreeNode` containing `ArgumentDefinition<T>` and `OptionDefinition<T>` entries.
+The type parameter `T` is the member's declared value type, unwrapped from `Nullable<>`.
+At runtime, `ApplyTo` creates fresh System.CommandLine `Argument<T>` / `Option<T>`
+instances on the target command tree.
 
 ### Options
 
 ```csharp
-// roughly what the generator emits for [Option("--name", "-n", Description = "…")] string Name
-private readonly Option<string> _Name;
-
-// in the constructor:
-_Name = new Option<string>("--name", "-n");
-_Name.Description = "…";
+// what the generator emits in the CommandTreeNode for [Option("--name", "-n", Description = "…")] string Name
+new OptionDefinition<string>("--name", new[] { "-n" }) { Description = "…", Arity = ArgumentArity.ExactlyOne }
 ```
 
 Notes:
 
-- `Name` defaults to the member name. **You supply any prefix yourself** — `[Option("--name")]`
-  becomes `--name`, `[Option]` on a property called `Force` becomes the literal token
-  `Force`. Aliases are passed straight through.
-- `Required` becomes `_Name.Required = true;` when set explicitly or when the C# `required`
-  modifier is present.
+- When `Name` is not set explicitly, the member name is used with a `--` prefix (or `-`
+  for single-character names), after stripping leading underscores.
+- `Required` becomes `Required = true` on the definition when set explicitly or when the
+  C# `required` modifier is present.
 
 ### Arguments
 
 ```csharp
-// roughly what the generator emits for [Argument(Description = "source", Required = true)] string Source
-private readonly Argument<string> _Source;
-
-// in the constructor:
-_Source = new Argument<string>("Source");
-_Source.Description = "source";
-_Source.Arity = new ArgumentArity(1, _Source.Arity.MaximumNumberOfValues);
+// what the generator emits for [Argument(Description = "source", Required = true)] string Source
+new ArgumentDefinition<string>("SOURCE") { Description = "source", Arity = ArgumentArity.ExactlyOne }
 ```
 
-Arguments are positional, so "required" is expressed by adjusting `ArgumentArity` rather
-than by setting a flag. The default arity comes from System.CommandLine's own
-`Argument<T>`, which is why collection types and `bool` already do the right thing. The
-generator flips the minimum between 0 and 1 based on `Required` / `required`.
+When `Name` is not set explicitly, the member name is uppercased (after stripping leading
+underscores) following CLI conventions.
+
+Arity is always set explicitly based on the member type and `Required`:
+
+| Type | Required | Arity |
+| --- | --- | --- |
+| `bool` | any | `ZeroOrOne` |
+| scalar | `true` / `required` | `ExactlyOne` |
+| scalar | `false` / nullable | `ZeroOrOne` |
+| collection | `true` / `required` | `OneOrMore` |
+| collection | `false` / default | `ZeroOrMore` (arguments) / `OneOrMore` (options) |
 
 ## Writing parsed values back
 
-After the command instance has been resolved from DI, the generated action walks every
-argument/option it owns and writes the parsed value back onto the instance:
+After the command instance is constructed, the generated action enumerates
+`parseResult.CommandResult.Children` in a single pass and binds explicit values:
 
 ```csharp
 // inside the generated action's InvokeAsync, roughly:
-var instance = ActivatorUtilities.CreateInstance<HelloCommand>(provider);
-
+var instance = new HelloCommand(provider.GetRequiredService<ILogger<HelloCommand>>());
 // [Inject] assignments …
 
-if (parseResult.GetResult(_Name) is { } Name_result && !Name_result.Implicit)
+foreach (var __result in parseResult.CommandResult.Children)
 {
-    instance.Name = parseResult.GetValue(_Name);
-}
-
-if (parseResult.GetResult(_Source) is { } Source_result && Source_result.Tokens.Any())
-{
-    instance.Source = parseResult.GetValue(_Source);
+    if (__result is ArgumentResult { Tokens.Count: > 0 } __ar) switch (__ar.Argument.Name)
+    {
+        case "SOURCE": instance.Source = __ar.GetValueOrDefault<string>(); break;
+    }
+    if (__result is OptionResult { Implicit: false } __or) switch (__or.Option.Name)
+    {
+        case "--name": instance.Name = __or.GetValueOrDefault<string>(); break;
+    }
 }
 ```
 
-Two subtleties:
+Key points:
 
-1. **Only explicit values overwrite defaults.** For arguments the binder checks
-   `Tokens.Any()` — if the user didn't type any tokens, the member's initializer/default
-   is preserved. For options it checks `!Implicit` — System.CommandLine's default values
-   are "implicit" and don't overwrite your member default.
-2. **Assignments go to non-public members too.** For private fields, `init`-only
-   properties, or read-only properties, the generator emits either an `UnsafeAccessor`
-   helper (on TFMs that support it) or a cached `FieldInfo`/`PropertyInfo` and a
-   `_Set` call. See [source-generator.md](source-generator.md#reaching-non-public-members).
+1. **Single pass.** The outer switch dispatches on result type (`ArgumentResult` vs
+   `OptionResult`), the inner switch dispatches on name (compiler-optimizable string
+   jump table).
+2. **Only explicit values overwrite defaults.** Arguments check `Tokens.Count > 0`;
+   options check `Implicit: false`.
+3. **`required` / `init` members** are set in the object initializer via
+   `parseResult.GetValue<T>(name)` before the binding loop runs. Non-required
+   init-only members use field accessors for conditional binding.
+4. **Non-public members** use `UnsafeAccessor` (net8.0+) or cached
+   `FieldInfo`/`PropertyInfo` — see [source-generator.md](source-generator.md#reaching-non-public-members).
 
 ## Nested option groups
 
@@ -129,26 +130,22 @@ public class ConnectCommand
 ```
 
 During generation, an `[Options]` member causes the generator to recurse into the nested
-type with an extended access path. The resulting `Option<T>`/`Argument<T>` still lives
-directly on the command — from System.CommandLine's point of view there is no nesting. The
-generator remembers the access path and emits code that walks through the nested object
-when writing the value back:
+type with an extended access path. The resulting arguments/options still live directly on
+the command — from System.CommandLine's point of view there is no nesting. The generator
+creates the nested object if null and binds values through it:
 
 ```csharp
 // roughly, for Connection.Host:
-if (instance.Connection is null)
-{
-    instance.Connection = new ConnectionOptions();
-}
-if (parseResult.GetResult(_Connection_Host) is { } result && !result.Implicit)
-{
-    instance.Connection.Host = parseResult.GetValue(_Connection_Host);
-}
+var __opts_Connection = instance.Connection ?? (instance.Connection = new ConnectionOptions());
+// then in the foreach/switch:
+case "--host": __opts_Connection.Host = __or.GetValueOrDefault<string>(); break;
 ```
 
 So even if you don't initialize the `[Options]` property yourself, the generator creates it
-on demand — provided the type has a parameterless constructor. You can nest `[Options]` as
-deeply as you like; the access path grows by one entry per level.
+on demand — provided the type has a parameterless constructor (or an initializer with
+`required` members set via `parseResult.GetValue`). You can nest `[Options]` as deeply as
+you like; the access path grows by one entry per level. The `[Options]` property itself can
+be `required`, `init`-only, or both.
 
 ## Type support
 
@@ -172,7 +169,8 @@ in stock System.CommandLine works here — there's no separate binder to teach.
 | --- | --- |
 | Option not specified on command line | Member keeps its initializer value. |
 | Option specified without a value (e.g. `bool` flag) | `parseResult.GetValue(_Option)` — usually `true` for bools. |
-| `[Option]` with no `Name` | Uses the member name verbatim. You must include the `--` prefix in `Name` yourself if you want one. |
+| `[Option]` with no `Name` | Strips leading underscores and adds `--` (or `-` for single-char). |
+| `[Argument]` with no `Name` | Strips leading underscores and uppercases. |
 | `[Argument]` with no tokens | Member keeps its initializer; the binder skips the write. |
 | `required` C# modifier on member | Argument arity becomes `(1, max)`; option becomes `Required = true`. |
 | `Required = true` on attribute | Same effect; overrides the `required` modifier. |

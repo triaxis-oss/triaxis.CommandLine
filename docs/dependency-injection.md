@@ -14,7 +14,7 @@ angle. This document focuses on the DI details.
 
 `IHostBuilder.Build()` runs inside `Run`/`RunAsync`. It:
 
-1. Realizes the command tree and parses the command line (`ParseResult`).
+1. Parses the command line via `RootCommand.Parse(args)` → `ParseResult`.
 2. Creates a `HostBuilderContext` and stashes a build-time `InvocationContext` (containing
    only the `ParseResult`) in `HostBuilderContext.Properties`.
 3. Runs every `ConfigureAppConfiguration` callback against the `HostBuilderContext`.
@@ -23,6 +23,7 @@ angle. This document focuses on the DI details.
    - `ParseResult` as a singleton
    - `IConfiguration` (backed by `IConfigurationManager`)
    - `ILoggerFactory` / `ILogger<T>` via `AddLogging()`
+   - `IHostApplicationLifetime` (backed by `ToolHost`)
    - `ICommandExecutor` (the middleware-aware executor)
 6. Builds the provider and wraps it in a `ToolHost`.
 
@@ -65,10 +66,10 @@ defaults from `ConfigureServices`:
 });
 ```
 
-## Commands are built via `ActivatorUtilities`
+## Commands are built via `new T(...)`
 
-Each generated command action emits `ActivatorUtilities.CreateInstance<T>(provider)` to
-build its command instance, so **constructor injection just works** with no additional
+Each generated command action emits `new T(...)` with constructor parameters resolved from
+DI via `GetRequiredService<T>()`, so **constructor injection just works** with no additional
 ceremony and no need to register the command type in DI:
 
 ```csharp
@@ -144,8 +145,7 @@ __access__log._Set(instance, provider.GetRequiredService<ILogger<DiagCommand>>()
 
 Injection order inside the generated `InvokeAsync`:
 
-1. Command instance is resolved via `ActivatorUtilities.CreateInstance<T>(provider)`
-   (constructor injection happens here).
+1. Command instance is constructed via `new T(...)` with DI-resolved constructor args.
 2. `[Inject]` members are populated.
 3. `[Options]` nested instances are created if null.
 4. Arguments and options are bound (see [parameter-binding.md](parameter-binding.md)).

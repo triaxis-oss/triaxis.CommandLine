@@ -38,6 +38,7 @@ jobs:
           fi
           mono --version
       - run: dotnet test -c Release
+      - run: dotnet build -c Release ../examples/Examples.sln
 
   publish:
     name: Publish nuget

@@ -104,9 +104,14 @@ finally
 ## `ToolHost`
 
 ```csharp
-class ToolHost(IServiceProvider services, ParseResult parseResult) : IHost
+class ToolHost(IServiceProvider services, ParseResult parseResult) : IHost, IHostApplicationLifetime
 {
     public IServiceProvider Services => services;
+
+    public CancellationToken ApplicationStarted { get; }
+    public CancellationToken ApplicationStopping { get; }
+    public CancellationToken ApplicationStopped { get; }
+    public void StopApplication();
 
     public Task StartAsync(CancellationToken cancellationToken = default);
     public void Start();
@@ -115,19 +120,24 @@ class ToolHost(IServiceProvider services, ParseResult parseResult) : IHost
     public int Invoke();            // parseResult.Invoke()
     public Task<int> InvokeAsync(); // parseResult.InvokeAsync()
 
-    public void Dispose();          // disposes the ServiceProvider
+    public void Dispose();          // disposes CTS instances and the ServiceProvider
 }
 ```
+
+`ToolHost` also implements `IHostApplicationLifetime`, registered in DI via a deferred
+singleton factory. Consumers can inject it to observe lifecycle events or trigger graceful
+shutdown (e.g. a `WindowsServiceBridge` calling `lifetime.StopApplication()` on SCM stop).
 
 Lifecycle:
 
 1. `Build()` constructs `ToolHost(provider, parseResult)`.
 2. `StartAsync` enumerates `IHostedService` instances from DI and calls `StartAsync` on
-   each in registration order.
+   each in registration order, then fires `ApplicationStarted`.
 3. `Invoke` / `InvokeAsync` runs the command via `ParseResult.Invoke`/`InvokeAsync`.
-4. `StopAsync` calls `StopAsync` on every hosted service in **reverse** order.
-5. `Dispose` disposes the `ServiceProvider`, which in turn disposes any disposable
-   services (loggers, HTTP handlers, etc.).
+4. `StopAsync` fires `ApplicationStopping`, calls `StopAsync` on every hosted service in
+   **reverse** order, then fires `ApplicationStopped`.
+5. `Dispose` disposes the lifetime `CancellationTokenSource` instances and the
+   `ServiceProvider`.
 
 Any exception thrown during `Invoke` / `InvokeAsync` escapes to `Run` / `RunAsync`, which
 still runs `StopAsync` in a `finally`. Hosted services therefore get a chance to shut down
