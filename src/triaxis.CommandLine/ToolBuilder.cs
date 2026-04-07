@@ -15,7 +15,6 @@ class ToolBuilder : IToolBuilder, IHostBuilder
 {
     private readonly string[] _args;
     private readonly RootCommand _root;
-    private readonly CommandNode _tree;
     private readonly List<InvocationMiddleware> _middlewares;
     private readonly ServiceCollection _services;
     private readonly ConfigurationManager _configuration;
@@ -30,7 +29,6 @@ class ToolBuilder : IToolBuilder, IHostBuilder
     {
         _args = args.ToArray();
         _root = new RootCommand();
-        _tree = new CommandNode(_root);
         _middlewares = new();
         _services = new ServiceCollection();
         _configuration = new ConfigurationManager();
@@ -39,7 +37,29 @@ class ToolBuilder : IToolBuilder, IHostBuilder
     public string[] Arguments => _args;
     public RootCommand RootCommand => _root;
 
-    public Command GetCommand(params string[] path) => _tree.GetCommand(path);
+    public Command GetCommand(params string[] path)
+    {
+        Command current = _root;
+        foreach (var segment in path)
+        {
+            var subcommands = current.Subcommands;
+            var child = subcommands.FirstOrDefault(c =>
+                string.Equals(c.Name, segment, StringComparison.OrdinalIgnoreCase));
+            if (child is null)
+            {
+                child = new Command(segment);
+                var index = subcommands.Count;
+                while (index > 0 &&
+                       string.Compare(subcommands[index - 1].Name, segment, StringComparison.OrdinalIgnoreCase) > 0)
+                {
+                    index--;
+                }
+                subcommands.Insert(index, child);
+            }
+            current = child;
+        }
+        return current;
+    }
 
     IToolBuilder IToolBuilder.AddMiddleware(InvocationMiddleware middleware)
         => AddMiddleware(middleware);
@@ -94,8 +114,6 @@ class ToolBuilder : IToolBuilder, IHostBuilder
 
     IHost IHostBuilder.Build()
     {
-        _tree.Realize();
-
         // Parse with invariant culture so numeric/date conversions are locale-independent
         var savedCulture = CultureInfo.CurrentCulture;
         CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;

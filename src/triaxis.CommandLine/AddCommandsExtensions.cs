@@ -1,5 +1,6 @@
 namespace triaxis.CommandLine;
 
+using System.CommandLine;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 
@@ -17,14 +18,15 @@ public static partial class ToolBuilderExtensions
         // initializers when a module is first touched via reflection, so force it.
         RuntimeHelpers.RunModuleConstructor(assembly.ManifestModule.ModuleHandle);
 
-        if (!GeneratedCommandRegistration.TryGet(name, out var registration))
+        if (!GeneratedCommandRegistration.TryGet(name, out var factory))
         {
             throw new InvalidOperationException(
                 $"No generated command registration found for assembly '{name}'. " +
                 $"Ensure the assembly references triaxis.CommandLine so the source generator runs.");
         }
 
-        registration(builder);
+        var tree = factory(builder.GetServiceProviderAccessor());
+        tree.ApplyTo(builder.RootCommand);
         return builder;
     }
 }

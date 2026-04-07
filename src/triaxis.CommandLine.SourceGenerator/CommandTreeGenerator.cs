@@ -454,19 +454,27 @@ public class CommandTreeGenerator : IIncrementalGenerator
                     continue;
                 }
 
+                var isNullable = false;
                 if (memberType is INamedTypeSymbol nts &&
                     nts.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T &&
                     nts.TypeArguments.Length == 1)
                 {
                     memberType = nts.TypeArguments[0];
+                    isNullable = true;
+                }
+                else if (memberType.NullableAnnotation == NullableAnnotation.Annotated)
+                {
+                    isNullable = true;
                 }
 
                 var memberTypeFqn = memberType.ToDisplayString(FqnFormat);
                 var isField = member is IFieldSymbol;
                 var isPublic = member.DeclaredAccessibility == Accessibility.Public;
                 var hasSetter = member is IFieldSymbol || (member is IPropertySymbol prop && prop.SetMethod is { IsInitOnly: false });
+                var isInitOnly = member is IPropertySymbol { SetMethod.IsInitOnly: true };
                 var declaringTypeFqn = member.ContainingType.ToDisplayString(FqnFormat);
                 var isMemberRequired = IsMemberRequired(member);
+                var isCollection = GetIEnumerableElementType(memberType) is not null;
 
                 switch (attrName)
                 {
@@ -480,10 +488,10 @@ public class CommandTreeGenerator : IIncrementalGenerator
                         var required = GetNamedArgBool(attr, "Required");
                         var requiredIsSet = attr.NamedArguments.Any(n => n.Key == "Required");
                         members.Add(new MemberModel(
-                            MemberKind.Argument, member.Name, memberTypeFqn, isField, isPublic, hasSetter,
+                            MemberKind.Argument, member.Name, memberTypeFqn, isField, isPublic, hasSetter, isInitOnly,
                             declaringTypeFqn, name, desc, null,
                             requiredIsSet ? required : null,
-                            isMemberRequired,
+                            isMemberRequired, isCollection, isNullable,
                             order, null, accessPath ?? Array.Empty<AccessPathSegment>()));
                         break;
                     }
@@ -498,10 +506,10 @@ public class CommandTreeGenerator : IIncrementalGenerator
                         var required = GetNamedArgBool(attr, "Required");
                         var requiredIsSet = attr.NamedArguments.Any(n => n.Key == "Required");
                         members.Add(new MemberModel(
-                            MemberKind.Option, member.Name, memberTypeFqn, isField, isPublic, hasSetter,
+                            MemberKind.Option, member.Name, memberTypeFqn, isField, isPublic, hasSetter, isInitOnly,
                             declaringTypeFqn, name, desc, optAliases,
                             requiredIsSet ? required : null,
-                            isMemberRequired,
+                            isMemberRequired, isCollection, isNullable,
                             order, null, accessPath ?? Array.Empty<AccessPathSegment>()));
                         break;
                     }
@@ -510,7 +518,7 @@ public class CommandTreeGenerator : IIncrementalGenerator
                         if (memberType is INamedTypeSymbol nestedType)
                         {
                             var segment = new AccessPathSegment(
-                                member.Name, memberTypeFqn, isField, isPublic, hasSetter, declaringTypeFqn);
+                                member.Name, memberTypeFqn, isField, isPublic, hasSetter, isMemberRequired, declaringTypeFqn);
                             var newPath = (accessPath ?? Array.Empty<AccessPathSegment>()).Append(segment).ToArray();
                             CollectMembers(nestedType, members, ct, newPath);
                         }
@@ -520,8 +528,8 @@ public class CommandTreeGenerator : IIncrementalGenerator
                     {
                         var injectType = GetNamedArgType(attr, "Type");
                         members.Add(new MemberModel(
-                            MemberKind.Inject, member.Name, memberTypeFqn, isField, isPublic, hasSetter,
-                            declaringTypeFqn, null, null, null, null, false,
+                            MemberKind.Inject, member.Name, memberTypeFqn, isField, isPublic, hasSetter, isInitOnly,
+                            declaringTypeFqn, null, null, null, null, isMemberRequired, false, false,
                             0, injectType, accessPath ?? Array.Empty<AccessPathSegment>()));
                         break;
                     }
@@ -638,40 +646,14 @@ public class CommandTreeGenerator : IIncrementalGenerator
                 w.WriteLine("[ModuleInitializer]");
                 w.Block("internal static void Register()", () =>
                 {
-                    w.WriteLine($"GeneratedCommandRegistration.Register({FormatString(assemblyName)}, AddGeneratedCommands);");
+                    w.WriteLine($"GeneratedCommandRegistration.Register({FormatString(assemblyName)}, CreateCommandTree);");
                 });
                 w.WriteLine();
 
-                // Registration method
-                w.Block("private static void AddGeneratedCommands(IToolBuilder builder)", () =>
+                // Tree factory — builds the command tree model and returns the root
+                w.Block("private static CommandTreeNode CreateCommandTree(Func<IServiceProvider> getServiceProvider)", () =>
                 {
-                    w.WriteLine("var getServiceProvider = builder.GetServiceProviderAccessor();");
-                    w.WriteLine();
-                    foreach (var cmd in commands)
-                    {
-                        var safeName = GetSafeName(cmd);
-                        w.WriteLine($"{safeName}_Action.Register(builder, getServiceProvider);");
-                    }
-
-                    // Apply assembly-level [assembly: Command(...)] metadata to tree nodes
-                    // (descriptions and aliases for intermediate/parent commands).
-                    foreach (var asmCmd in assemblyCommands)
-                    {
-                        w.WriteLine();
-                        w.WriteLine($"var __asmCmd_{string.Join("_", asmCmd.Path).Replace("-", "_")} = builder.GetCommand({FormatStringArray(asmCmd.Path)});");
-                        var varName = $"__asmCmd_{string.Join("_", asmCmd.Path).Replace("-", "_")}";
-                        if (asmCmd.Description is not null)
-                        {
-                            w.WriteLine($"{varName}.Description = {FormatString(asmCmd.Description)};");
-                        }
-                        if (asmCmd.Aliases is { Length: > 0 })
-                        {
-                            foreach (var alias in asmCmd.Aliases)
-                            {
-                                w.WriteLine($"{varName}.Aliases.Add({FormatString(alias)});");
-                            }
-                        }
-                    }
+                    GenerateTreeConstruction(w, commands, assemblyCommands);
                 });
                 w.WriteLine();
             });
@@ -688,6 +670,196 @@ public class CommandTreeGenerator : IIncrementalGenerator
         return sw.ToString();
     }
 
+    /// <summary>
+    /// Emits the body of CreateCommandTree — builds a RootCommand with nested Subcommands
+    /// using object/collection initializer syntax, fully sorted at generation time.
+    /// </summary>
+    private static void GenerateTreeConstruction(IndentedTextWriter w,
+        ImmutableArray<CommandModel> commands,
+        ImmutableArray<AssemblyCommandModel> assemblyCommands)
+    {
+        // Build a generation-time tree from all command paths and assembly commands
+        var root = new GenTreeNode("");
+
+        foreach (var cmd in commands)
+        {
+            var node = root;
+            for (var i = 0; i < cmd.Path.Length - 1; i++)
+            {
+                node = node.GetOrCreateChild(cmd.Path[i]);
+            }
+            var leaf = node.GetOrCreateChild(cmd.Path[cmd.Path.Length - 1]);
+            leaf.Command = cmd;
+        }
+
+        foreach (var asmCmd in assemblyCommands)
+        {
+            var node = root;
+            foreach (var segment in asmCmd.Path)
+            {
+                node = node.GetOrCreateChild(segment);
+            }
+            node.AssemblyCommand = asmCmd;
+        }
+
+        // Emit the tree as a CommandTreeNode with nested initializers
+        w.Write("return new CommandTreeNode(\"\")");
+        EmitNodeInitializer(w, root);
+        w.WriteLine(";");
+    }
+
+    /// <summary>
+    /// Emits the object initializer block for a tree node.
+    /// </summary>
+    private static void EmitNodeInitializer(IndentedTextWriter w, GenTreeNode node)
+    {
+        var children = node.Children.OrderBy(c => c.Key, StringComparer.OrdinalIgnoreCase)
+            .Select(c => c.Value).ToArray();
+
+        var desc = node.AssemblyCommand?.Description ?? node.Command?.Description;
+        var aliases = node.AssemblyCommand?.Aliases ?? node.Command?.Aliases;
+        var hasAction = node.Command is not null;
+        var hasContent = desc is not null || aliases is { Length: > 0 } || hasAction || children.Length > 0;
+
+        if (!hasContent)
+        {
+            return;
+        }
+
+        w.WriteLine();
+        w.WriteLine("{");
+        w.Indent++;
+
+        if (desc is not null)
+        {
+            w.WriteLine($"Description = {FormatString(desc)},");
+        }
+
+        if (aliases is { Length: > 0 })
+        {
+            w.WriteLine($"Aliases = {FormatStringArrayInline(aliases)},");
+        }
+
+        if (node.Command is { } cmd)
+        {
+            var safeName = GetSafeName(cmd);
+            var args = GetArguments(cmd);
+            var opts = GetOptions(cmd);
+
+            w.WriteLine($"Action = new {safeName}_Action(getServiceProvider),");
+            if (args.Length > 0)
+            {
+                w.WriteLine("Arguments =");
+                w.WriteLine("{");
+                w.Indent++;
+                foreach (var arg in args)
+                {
+                    w.Write($"new ArgumentDefinition<{arg.MemberTypeFqn}>({FormatString(GetCliName(arg))})");
+                    EmitArgOptInitializer(w, arg);
+                    w.WriteLine(",");
+                }
+                w.Indent--;
+                w.WriteLine("},");
+            }
+            if (opts.Length > 0)
+            {
+                w.WriteLine("Options =");
+                w.WriteLine("{");
+                w.Indent++;
+                foreach (var opt in opts)
+                {
+                    var nameAndAliases = new List<string> { GetCliName(opt) };
+                    if (opt.Aliases is not null)
+                    {
+                        nameAndAliases.AddRange(opt.Aliases);
+                    }
+                    var aliasesArr = nameAndAliases.Skip(1).ToArray();
+                    var nameArg = aliasesArr.Length > 0
+                        ? $"{FormatString(nameAndAliases[0])}, {FormatStringArrayInline(aliasesArr)}"
+                        : FormatString(nameAndAliases[0]);
+                    w.Write($"new OptionDefinition<{opt.MemberTypeFqn}>({nameArg})");
+                    EmitArgOptInitializer(w, opt);
+                    w.WriteLine(",");
+                }
+                w.Indent--;
+                w.WriteLine("},");
+            }
+        }
+
+        if (children.Length > 0)
+        {
+            w.WriteLine("Subcommands =");
+            w.WriteLine("{");
+            w.Indent++;
+            foreach (var child in children)
+            {
+                w.Write($"new CommandTreeNode({FormatString(child.Name)})");
+                EmitNodeInitializer(w, child);
+                w.WriteLine(",");
+            }
+            w.Indent--;
+            w.WriteLine("},");
+        }
+
+        w.Indent--;
+        w.Write("}");
+    }
+
+    private static void EmitArgOptInitializer(IndentedTextWriter w, MemberModel member)
+    {
+        var initParts = new List<string>();
+        if (member.Description is not null)
+        {
+            initParts.Add($"Description = {FormatString(member.Description)}");
+        }
+        if (member.Kind == MemberKind.Option && (member.Required == true || member.IsMemberRequired))
+        {
+            initParts.Add("Required = true");
+        }
+        var isBool = member.MemberTypeFqn is "bool" or "global::System.Boolean";
+        var isOptional = member.Required == false || member.IsNullable;
+        var isRequired = member.Required == true || member.IsMemberRequired;
+        string arity;
+        if (isBool)
+        {
+            arity = "ZeroOrOne";
+        }
+        else if (member.IsCollection)
+        {
+            arity = member.Kind == MemberKind.Argument && !isRequired ? "ZeroOrMore" : "OneOrMore";
+        }
+        else if (isOptional)
+        {
+            arity = "ZeroOrOne";
+        }
+        else
+        {
+            arity = "ExactlyOne";
+        }
+        initParts.Add($"Arity = ArgumentArity.{arity}");
+        if (initParts.Count > 0)
+        {
+            w.Write(" { " + string.Join(", ", initParts) + " }");
+        }
+    }
+
+    private class GenTreeNode(string name)
+    {
+        public string Name { get; } = name;
+        public SortedDictionary<string, GenTreeNode> Children { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public CommandModel? Command { get; set; }
+        public AssemblyCommandModel? AssemblyCommand { get; set; }
+
+        public GenTreeNode GetOrCreateChild(string childName)
+        {
+            if (!Children.TryGetValue(childName, out var child))
+            {
+                Children[childName] = child = new GenTreeNode(childName);
+            }
+            return child;
+        }
+    }
+
     private static void GenerateCommandAction(IndentedTextWriter w, CommandModel cmd, bool hasUnsafeAccessor)
     {
         var safeName = GetSafeName(cmd);
@@ -697,103 +869,14 @@ public class CommandTreeGenerator : IIncrementalGenerator
         var nonPublicDirect = args.Concat(opts).Concat(injects).Where(m => !m.IsPublic && m.AccessPath.Length == 0).ToArray();
         var exec = cmd.ExecuteMethod;
 
-        w.Block($"internal sealed class {safeName}_Action : AsynchronousCommandLineAction", () =>
+        w.Block($"internal sealed class {safeName}_Action(Func<IServiceProvider> getServiceProvider) : AsynchronousCommandLineAction", () =>
         {
-        // Fields
-        w.WriteLine("private readonly Func<IServiceProvider> _getServiceProvider;");
-        foreach (var arg in args)
-        {
-            w.WriteLine($"private readonly Argument<{arg.MemberTypeFqn}> _{GetMemberFieldName(arg)};");
-        }
-        foreach (var opt in opts)
-        {
-            w.WriteLine($"private readonly Option<{opt.MemberTypeFqn}> _{GetMemberFieldName(opt)};");
-        }
-        w.WriteLine();
-
-        // Static Register method — creates action, wires up command
-        w.Block("public static void Register(IToolBuilder builder, Func<IServiceProvider> getServiceProvider)", () =>
-        {
-            w.WriteLine($"var cmd = builder.GetCommand({FormatStringArray(cmd.Path)});");
-            if (cmd.Description is not null)
-            {
-                w.WriteLine($"cmd.Description = {FormatString(cmd.Description)};");
-            }
-            if (cmd.Aliases is { Length: > 0 })
-            {
-                foreach (var alias in cmd.Aliases)
-                {
-                    w.WriteLine($"cmd.Aliases.Add({FormatString(alias)});");
-                }
-            }
-            w.WriteLine("var action = new " + safeName + "_Action(getServiceProvider);");
-            foreach (var arg in args)
-            {
-                w.WriteLine($"cmd.Arguments.Add(action._{GetMemberFieldName(arg)});");
-            }
-            foreach (var opt in opts)
-            {
-                w.WriteLine($"cmd.Options.Add(action._{GetMemberFieldName(opt)});");
-            }
-            w.WriteLine("cmd.Action = action;");
-        });
-        w.WriteLine();
-
-        // Constructor
-        w.Block($"private {safeName}_Action(Func<IServiceProvider> getServiceProvider)", () =>
-        {
-            w.WriteLine("_getServiceProvider = getServiceProvider;");
-            foreach (var arg in args)
-            {
-                var fieldName = GetMemberFieldName(arg);
-                w.WriteLine($"_{fieldName} = new Argument<{arg.MemberTypeFqn}>({FormatString(arg.Name ?? arg.MemberName)});");
-                if (arg.Description is not null)
-                {
-                    w.WriteLine($"_{fieldName}.Description = {FormatString(arg.Description)};");
-                }
-                if (arg.Required == false)
-                {
-                    w.WriteLine($"_{fieldName}.Arity = new ArgumentArity(0, _{fieldName}.Arity.MaximumNumberOfValues);");
-                }
-                else if (arg.Required == true || arg.IsMemberRequired)
-                {
-                    w.WriteLine($"_{fieldName}.Arity = new ArgumentArity(1, _{fieldName}.Arity.MaximumNumberOfValues);");
-                }
-            }
-            foreach (var opt in opts)
-            {
-                var fieldName = GetMemberFieldName(opt);
-                var nameAndAliases = new List<string> { opt.Name ?? opt.MemberName };
-                if (opt.Aliases is not null)
-                {
-                    nameAndAliases.AddRange(opt.Aliases);
-                }
-                var aliasesArr = nameAndAliases.Skip(1).ToArray();
-                if (aliasesArr.Length > 0)
-                {
-                    w.WriteLine($"_{fieldName} = new Option<{opt.MemberTypeFqn}>({FormatString(nameAndAliases[0])}, {FormatStringArrayInline(aliasesArr)});");
-                }
-                else
-                {
-                    w.WriteLine($"_{fieldName} = new Option<{opt.MemberTypeFqn}>({FormatString(nameAndAliases[0])});");
-                }
-                if (opt.Description is not null)
-                {
-                    w.WriteLine($"_{fieldName}.Description = {FormatString(opt.Description)};");
-                }
-                if (opt.Required == true || opt.IsMemberRequired)
-                {
-                    w.WriteLine($"_{fieldName}.Required = true;");
-                }
-            }
-        });
-        w.WriteLine();
 
         // Accessors for direct members that need backing field access
         // (non-public members, or public read-only properties)
         // Skip required members — they are set in the object initializer.
         var memberAccessors = new Dictionary<string, Accessor>();
-        foreach (var member in args.Concat(opts).Concat(injects).Where(m => m.AccessPath.Length == 0 && !m.IsMemberRequired))
+        foreach (var member in args.Concat(opts).Concat(injects).Where(m => m.AccessPath.Length == 0 && !m.NeedsInitializer))
         {
             var owner = member.DeclaringTypeFqn;
             memberAccessors[MemberKey(member)] = EmitAccessor(
@@ -833,61 +916,53 @@ public class CommandTreeGenerator : IIncrementalGenerator
         // InvokeAsync
         w.Block("public override async Task<int> InvokeAsync(ParseResult parseResult, CancellationToken cancellationToken)", () =>
         {
-            w.WriteLine("var provider = _getServiceProvider();");
+            w.WriteLine("var provider = getServiceProvider();");
             w.WriteLine($"var context = new InvocationContext(provider, parseResult, cancellationToken, typeof({cmd.TypeName}));");
             w.WriteLine();
             w.WriteLine("await provider.GetRequiredService<ICommandExecutor>().ExecuteAsync(context, async () =>");
             w.Block(() =>
             {
                 // Identify required direct members that must go in the object initializer
-                var requiredDirectArgs = args.Where(m => m.IsMemberRequired && m.AccessPath.Length == 0).ToArray();
-                var requiredDirectOpts = opts.Where(m => m.IsMemberRequired && m.AccessPath.Length == 0).ToArray();
-                var requiredDirectInjects = injects.Where(m => m.IsMemberRequired).ToArray();
+                var requiredDirectArgs = args.Where(m => m.NeedsInitializer && m.AccessPath.Length == 0).ToArray();
+                var requiredDirectOpts = opts.Where(m => m.NeedsInitializer && m.AccessPath.Length == 0).ToArray();
+                var requiredDirectInjects = injects.Where(m => m.NeedsInitializer).ToArray();
+                // Required [Options] properties on the command itself
+                var requiredOptionsProps = args.Concat(opts)
+                    .Where(m => m.AccessPath.Length > 0 && m.AccessPath[0].IsMemberRequired)
+                    .Select(m => m.AccessPath[0])
+                    .Distinct()
+                    .ToArray();
 
-                // Pre-bind required argument/option values before instance creation
-                foreach (var arg in requiredDirectArgs)
-                {
-                    var fieldName = GetMemberFieldName(arg);
-                    w.WriteLine($"var _bound_{fieldName} = parseResult.GetValue(_{fieldName});");
-                }
-                foreach (var opt in requiredDirectOpts)
-                {
-                    var fieldName = GetMemberFieldName(opt);
-                    w.WriteLine($"var _bound_{fieldName} = parseResult.GetValue(_{fieldName});");
-                }
-                if (requiredDirectArgs.Length > 0 || requiredDirectOpts.Length > 0)
-                {
-                    w.WriteLine();
-                }
-
-                // Create instance — required members go in the object initializer
-                var hasRequired = requiredDirectArgs.Length > 0 || requiredDirectOpts.Length > 0 || requiredDirectInjects.Length > 0;
+                // Create instance — required/init members go in the object initializer
+                var hasInitializer = requiredDirectArgs.Length > 0 || requiredDirectOpts.Length > 0
+                    || requiredDirectInjects.Length > 0 || requiredOptionsProps.Length > 0;
 
                 var ctorExpr = cmd.ConstructorParameters.IsEmpty
                     ? $"new {cmd.TypeName}()"
                     : $"new {cmd.TypeName}({string.Join(", ", cmd.ConstructorParameters.Select(p => $"provider.GetRequiredService<{p.TypeFqn}>()"))})";
 
-                if (hasRequired)
+                if (hasInitializer)
                 {
-                    // Drop trailing "()" when using object initializer syntax
                     var initExpr = cmd.ConstructorParameters.IsEmpty
                         ? $"new {cmd.TypeName}"
                         : ctorExpr;
                     w.WriteLine($"var instance = {initExpr}");
                     w.WriteLine("{");
                     w.Indent++;
-                    foreach (var arg in requiredDirectArgs)
+                    foreach (var member in requiredDirectArgs.Cast<MemberModel>().Concat(requiredDirectOpts))
                     {
-                        w.WriteLine($"{arg.MemberName} = _bound_{GetMemberFieldName(arg)},");
-                    }
-                    foreach (var opt in requiredDirectOpts)
-                    {
-                        w.WriteLine($"{opt.MemberName} = _bound_{GetMemberFieldName(opt)},");
+                        w.WriteLine($"{member.MemberName} = parseResult.GetValue<{member.MemberTypeFqn}>({FormatString(GetCliName(member))}),");
                     }
                     foreach (var inject in requiredDirectInjects)
                     {
                         var serviceType = inject.InjectTypeFqn ?? inject.MemberTypeFqn;
                         w.WriteLine($"{inject.MemberName} = provider.GetRequiredService<{serviceType}>(),");
+                    }
+                    foreach (var seg in requiredOptionsProps)
+                    {
+                        var prefix = new[] { seg };
+                        var allMembers = args.Concat(opts).ToArray();
+                        w.WriteLine($"{seg.MemberName} = {FormatOptionsCreateExpr(seg, prefix, 1, allMembers)},");
                     }
                     w.Indent--;
                     w.WriteLine("};");
@@ -899,7 +974,7 @@ public class CommandTreeGenerator : IIncrementalGenerator
                 w.WriteLine();
 
                 // Direct [Inject] assignments (skip required members already set in initializer)
-                foreach (var inject in injects.Where(i => !i.IsMemberRequired))
+                foreach (var inject in injects.Where(i => !i.NeedsInitializer))
                 {
                     var serviceType = inject.InjectTypeFqn ?? inject.MemberTypeFqn;
                     w.WriteLine(FormatWrite(memberAccessors[MemberKey(inject)], "instance", $"provider.GetRequiredService<{serviceType}>()") + ";");
@@ -908,28 +983,37 @@ public class CommandTreeGenerator : IIncrementalGenerator
                 // Eagerly resolve [Options] nested objects
                 GenerateOptionsPathResolution(w, args, opts, pathAccessors);
 
-                // Inline bind: arguments (skip required direct members already set in initializer)
-                foreach (var arg in args.Where(a => !a.IsMemberRequired || a.AccessPath.Length != 0))
-                {
-                    var fieldName = GetMemberFieldName(arg);
-                    w.Block($"if (parseResult.GetResult(_{fieldName}) is {{ }} {fieldName}_result && {fieldName}_result.Tokens.Any())", () =>
-                    {
-                        WriteMemberAssignment(w, arg, $"parseResult.GetValue(_{fieldName})", memberAccessors[MemberKey(arg)]);
-                    });
-                }
+                // Bind explicit argument/option values from parse results
+                var bindableArgs = args.Where(a => !a.NeedsInitializer).ToArray();
+                var bindableOpts = opts.Where(o => !o.NeedsInitializer).ToArray();
 
-                // Inline bind: options (skip required direct members already set in initializer)
-                foreach (var opt in opts.Where(o => !o.IsMemberRequired || o.AccessPath.Length != 0))
+                if (bindableArgs.Length > 0 || bindableOpts.Length > 0)
                 {
-                    var fieldName = GetMemberFieldName(opt);
-                    w.Block($"if (parseResult.GetResult(_{fieldName}) is {{ }} {fieldName}_result && !{fieldName}_result.Implicit)", () =>
+                    w.Block("foreach (var __result in parseResult.CommandResult.Children)", () =>
                     {
-                        WriteMemberAssignment(w, opt, $"parseResult.GetValue(_{fieldName})", memberAccessors[MemberKey(opt)]);
+                        if (bindableArgs.Length > 0)
+                        {
+                            w.Block("if (__result is ArgumentResult { Tokens.Count: > 0 } __ar) switch (__ar.Argument.Name)", () =>
+                            {
+                                foreach (var arg in bindableArgs)
+                                {
+                                    var assign = FormatMemberAssignment(arg, $"__ar.GetValueOrDefault<{arg.MemberTypeFqn}>()", memberAccessors[MemberKey(arg)]);
+                                    w.WriteLine($"case {FormatString(GetCliName(arg))}: {assign} break;");
+                                }
+                            });
+                        }
+                        if (bindableOpts.Length > 0)
+                        {
+                            w.Block("if (__result is OptionResult { Implicit: false } __or) switch (__or.Option.Name)", () =>
+                            {
+                                foreach (var opt in bindableOpts)
+                                {
+                                    var assign = FormatMemberAssignment(opt, $"__or.GetValueOrDefault<{opt.MemberTypeFqn}>()", memberAccessors[MemberKey(opt)]);
+                                    w.WriteLine($"case {FormatString(GetCliName(opt))}: {assign} break;");
+                                }
+                            });
+                        }
                     });
-                }
-
-                if (args.Length > 0 || opts.Length > 0)
-                {
                     w.WriteLine();
                 }
 
@@ -1112,25 +1196,53 @@ public class CommandTreeGenerator : IIncrementalGenerator
         }
     }
 
-    private static void WriteMemberAssignment(IndentedTextWriter w, MemberModel member, string valueExpr, Accessor accessor)
+    private static string FormatMemberAssignment(MemberModel member, string valueExpr, Accessor accessor)
     {
-        // For members with an access path, the path variable is resolved eagerly
-        // in GenerateOptionsPathResolution and named __opts_{segment}
         var target = member.AccessPath.Length == 0
             ? "instance"
             : "__opts_" + string.Join("_", member.AccessPath.Select(s => s.MemberName));
 
-        w.WriteLine(FormatWrite(accessor, target, valueExpr) + ";");
+        return FormatWrite(accessor, target, valueExpr) + ";";
     }
 
     /// <summary>
     /// Generates eager resolution of all [Options] path prefixes used by arguments/options.
     /// Called once after instance creation, before any binding.
     /// </summary>
+    /// <summary>
+    /// Builds a new-expression for an [Options] type, including required children
+    /// and required nested [Options] in the initializer.
+    /// </summary>
+    private static string FormatOptionsCreateExpr(AccessPathSegment seg, AccessPathSegment[] prefix, int depth, MemberModel[] allMembers)
+    {
+        var requiredChildren = allMembers
+            .Where(m => m.AccessPath.Length == depth
+                && m.NeedsInitializer
+                && m.AccessPath.Take(depth).Select(s => s.MemberName).SequenceEqual(prefix.Select(s => s.MemberName)))
+            .ToArray();
+        var requiredNestedOpts = allMembers
+            .Where(m => m.AccessPath.Length > depth
+                && m.AccessPath[depth].IsMemberRequired
+                && m.AccessPath.Take(depth).Select(s => s.MemberName).SequenceEqual(prefix.Select(s => s.MemberName)))
+            .Select(m => m.AccessPath[depth])
+            .Distinct()
+            .ToArray();
+
+        var initParts = requiredChildren
+            .Select(m => $"{m.MemberName} = parseResult.GetValue<{m.MemberTypeFqn}>({FormatString(GetCliName(m))})")
+            .Concat(requiredNestedOpts.Select(s => $"{s.MemberName} = null!"))
+            .ToArray();
+
+        return initParts.Length > 0
+            ? $"new {seg.MemberTypeFqn} {{ {string.Join(", ", initParts)} }}"
+            : $"new {seg.MemberTypeFqn}()";
+    }
+
     private static void GenerateOptionsPathResolution(IndentedTextWriter w, MemberModel[] args, MemberModel[] opts, Dictionary<string, Accessor> pathAccessors)
     {
+        var allMembers = args.Concat(opts).ToArray();
         var resolved = new HashSet<string>();
-        foreach (var member in args.Concat(opts))
+        foreach (var member in allMembers)
         {
             for (var depth = 1; depth <= member.AccessPath.Length; depth++)
             {
@@ -1148,7 +1260,8 @@ public class CommandTreeGenerator : IIncrementalGenerator
                     : "__opts_" + string.Join("_", prefix.Take(depth - 1).Select(s => s.MemberName));
 
                 var accessor = pathAccessors[seg.OwnerTypeFqn + "." + seg.MemberName];
-                var createExpr = $"Activator.CreateInstance<{seg.MemberTypeFqn}>()";
+
+                var createExpr = FormatOptionsCreateExpr(seg, prefix, depth, allMembers);
                 var readExpr = FormatRead(accessor, parentVar);
 
                 if (seg.IsField || seg.HasSetter)
@@ -1185,6 +1298,21 @@ public class CommandTreeGenerator : IIncrementalGenerator
     private static string GetSafeName(CommandModel cmd)
     {
         return string.Join("_", cmd.Path).Replace("-", "_");
+    }
+
+    private static string GetCliName(MemberModel member)
+    {
+        if (member.Name is not null)
+        {
+            return member.Name;
+        }
+
+        var name = member.MemberName.TrimStart('_');
+        if (member.Kind == MemberKind.Argument)
+        {
+            return name.ToUpperInvariant();
+        }
+        return (name.Length == 1 ? "-" : "--") + name;
     }
 
     private static string GetMemberFieldName(MemberModel member)
@@ -1287,6 +1415,7 @@ record AccessPathSegment(
     bool IsField,
     bool IsPublic,
     bool HasSetter,
+    bool IsMemberRequired,
     string OwnerTypeFqn);
 
 record MemberModel(
@@ -1296,15 +1425,22 @@ record MemberModel(
     bool IsField,
     bool IsPublic,
     bool HasSetter,
+    bool IsInitOnly,
     string DeclaringTypeFqn,
     string? Name,
     string? Description,
     string[]? Aliases,
     bool? Required,
     bool IsMemberRequired,
+    bool IsCollection,
+    bool IsNullable,
     double Order,
     string? InjectTypeFqn,
-    AccessPathSegment[] AccessPath);
+    AccessPathSegment[] AccessPath)
+{
+    /// <summary>True when the member must be set in the object initializer (C# required keyword).</summary>
+    public bool NeedsInitializer => IsMemberRequired;
+}
 
 record ConstructorParameterModel(
     string TypeFqn);

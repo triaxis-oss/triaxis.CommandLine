@@ -48,6 +48,40 @@ public class ToolBuilderTests
     }
 
     [Test]
+    public void GetCommand_IsCaseInsensitive()
+    {
+        var builder = Tool.CreateBuilder([]);
+        var lower = builder.GetCommand("foo");
+        var upper = builder.GetCommand("FOO");
+        Assert.That(upper, Is.SameAs(lower));
+    }
+
+    [Test]
+    public void GetCommand_InsertsSubcommandsInSortedOrder()
+    {
+        var builder = Tool.CreateBuilder([]);
+        builder.GetCommand("charlie");
+        builder.GetCommand("alpha");
+        builder.GetCommand("bravo");
+
+        var names = builder.RootCommand.Subcommands.Select(c => c.Name).ToArray();
+        Assert.That(names, Is.EqualTo(new[] { "alpha", "bravo", "charlie" }));
+    }
+
+    [Test]
+    public void GetCommand_AttachesSubcommandsDirectlyToTree()
+    {
+        var builder = Tool.CreateBuilder([]);
+        builder.GetCommand("beta", "gamma");
+        builder.GetCommand("alpha");
+
+        Assert.That(builder.RootCommand.Subcommands.Select(c => c.Name),
+            Is.EqualTo(new[] { "alpha", "beta" }));
+        var beta = builder.RootCommand.Subcommands.First(c => c.Name == "beta");
+        Assert.That(beta.Subcommands.Select(c => c.Name), Does.Contain("gamma"));
+    }
+
+    [Test]
     public void ConfigureServices_AllowsServiceRegistration()
     {
         var builder = Tool.CreateBuilder([]);

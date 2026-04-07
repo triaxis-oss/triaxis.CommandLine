@@ -64,6 +64,60 @@ public class RequiredOptionCommand
     }
 }
 
+[Command("init-props")]
+public class InitPropsCommand
+{
+    [Argument("path", Required = false)]
+    public string Path { get; init; } = "default-path";
+
+    [Option("--flag")]
+    public bool Flag { get; init; }
+
+    [Inject]
+    public EchoState State { get; set; } = null!;
+
+    public Task ExecuteAsync()
+    {
+        State.WasRun = true;
+        State.Name = $"{Path}:{Flag}";
+        return Task.CompletedTask;
+    }
+}
+
+[Command("nullable-opt")]
+public class NullableOptCommand
+{
+    [Option("--tag", Required = false)]
+    public string? Tag { get; set; }
+
+    [Inject]
+    public EchoState State { get; set; } = null!;
+
+    public Task ExecuteAsync()
+    {
+        State.WasRun = true;
+        State.Name = Tag ?? "(null)";
+        return Task.CompletedTask;
+    }
+}
+
+[Command("decimal-arg")]
+public class DecimalArgCommand
+{
+    [Argument("value")]
+    public double Value { get; set; }
+
+    [Inject]
+    public EchoState State { get; set; } = null!;
+
+    public Task ExecuteAsync()
+    {
+        State.WasRun = true;
+        State.Name = Value.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        return Task.CompletedTask;
+    }
+}
+
 [Command("ctor-echo")]
 public class CtorInjectedCommand(EchoState state)
 {
@@ -190,6 +244,78 @@ public class CommandExecutionTests
         Assert.That(exitCode, Is.EqualTo(0));
         Assert.That(state.WasRun, Is.True);
         Assert.That(state.Name, Is.EqualTo("test-value"));
+    }
+
+    [Test]
+    public async Task Run_InitOnlyProperties_BoundWhenSpecified()
+    {
+        var state = new EchoState();
+        var builder = CreateBuilder(["init-props", "/tmp", "--flag"], state);
+
+        var exitCode = await builder.RunAsync();
+
+        Assert.That(exitCode, Is.EqualTo(0));
+        Assert.That(state.WasRun, Is.True);
+        Assert.That(state.Name, Is.EqualTo("/tmp:True"));
+    }
+
+    [Test]
+    public async Task Run_InitOnlyProperties_UseDefaultsWhenNotSpecified()
+    {
+        var state = new EchoState();
+        var builder = CreateBuilder(["init-props"], state);
+
+        var exitCode = await builder.RunAsync();
+
+        Assert.That(exitCode, Is.EqualTo(0));
+        Assert.That(state.WasRun, Is.True);
+        Assert.That(state.Name, Is.EqualTo("default-path:False"));
+    }
+
+    [Test]
+    public async Task Run_NullableOption_IsNullWhenNotSpecified()
+    {
+        var state = new EchoState();
+        var builder = CreateBuilder(["nullable-opt"], state);
+
+        var exitCode = await builder.RunAsync();
+
+        Assert.That(exitCode, Is.EqualTo(0));
+        Assert.That(state.Name, Is.EqualTo("(null)"));
+    }
+
+    [Test]
+    public async Task Run_NullableOption_IsSetWhenSpecified()
+    {
+        var state = new EchoState();
+        var builder = CreateBuilder(["nullable-opt", "--tag", "hello"], state);
+
+        var exitCode = await builder.RunAsync();
+
+        Assert.That(exitCode, Is.EqualTo(0));
+        Assert.That(state.Name, Is.EqualTo("hello"));
+    }
+
+    [Test]
+    public async Task Run_DecimalArgument_ParsedWithInvariantCulture()
+    {
+        var state = new EchoState();
+        var savedCulture = System.Globalization.CultureInfo.CurrentCulture;
+        try
+        {
+            // Use a culture with comma as decimal separator
+            System.Globalization.CultureInfo.CurrentCulture = new System.Globalization.CultureInfo("de-DE");
+            var builder = CreateBuilder(["decimal-arg", "3.14"], state);
+            var exitCode = await builder.RunAsync();
+
+            Assert.That(exitCode, Is.EqualTo(0));
+            Assert.That(state.WasRun, Is.True);
+            Assert.That(state.Name, Is.EqualTo("3.14"));
+        }
+        finally
+        {
+            System.Globalization.CultureInfo.CurrentCulture = savedCulture;
+        }
     }
 
     [Test]

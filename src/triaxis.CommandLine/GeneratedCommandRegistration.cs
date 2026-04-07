@@ -7,22 +7,22 @@ namespace triaxis.CommandLine;
 /// </summary>
 public static class GeneratedCommandRegistration
 {
-    private static readonly Dictionary<string, Action<IToolBuilder>> s_registrations = new();
+    private static readonly Dictionary<string, Func<Func<IServiceProvider>, CommandTreeNode>> s_registrations = new();
 
     /// <summary>
-    /// Registers a generated command registration action for the given assembly.
+    /// Registers a generated command tree factory for the given assembly.
     /// Called from source-generated module initializers.
     /// </summary>
-    public static void Register(string assemblyName, Action<IToolBuilder> registration)
+    public static void Register(string assemblyName, Func<Func<IServiceProvider>, CommandTreeNode> factory)
     {
-        s_registrations[assemblyName] = registration;
+        s_registrations[assemblyName] = factory;
     }
 
     /// <summary>
     /// Tries to get a generated registration for the given assembly.
     /// </summary>
-    public static bool TryGet(string assemblyName, out Action<IToolBuilder> registration)
+    public static bool TryGet(string assemblyName, out Func<Func<IServiceProvider>, CommandTreeNode> factory)
     {
-        return s_registrations.TryGetValue(assemblyName, out registration!);
+        return s_registrations.TryGetValue(assemblyName, out factory!);
     }
 }
