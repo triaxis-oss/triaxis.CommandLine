@@ -101,6 +101,23 @@ public class NullableOptCommand
     }
 }
 
+[Command(Description = "Root-level command with no path")]
+public class RootLevelCommand
+{
+    [Option("--name")]
+    public string Name { get; set; } = "root";
+
+    [Inject]
+    public EchoState State { get; set; } = null!;
+
+    public Task ExecuteAsync()
+    {
+        State.WasRun = true;
+        State.Name = Name;
+        return Task.CompletedTask;
+    }
+}
+
 [Command("decimal-arg")]
 public class DecimalArgCommand
 {
@@ -318,6 +335,19 @@ public class CommandExecutionTests
         {
             System.Globalization.CultureInfo.CurrentCulture = savedCulture;
         }
+    }
+
+    [Test]
+    public async Task Run_RootLevelCommand_ExecutesWithNoPath()
+    {
+        var state = new EchoState();
+        var builder = CreateBuilder(["--name", "hello"], state);
+
+        var exitCode = await builder.RunAsync();
+
+        Assert.That(exitCode, Is.EqualTo(0));
+        Assert.That(state.WasRun, Is.True);
+        Assert.That(state.Name, Is.EqualTo("hello"));
     }
 
     [Test]

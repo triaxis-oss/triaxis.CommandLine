@@ -4,6 +4,30 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 // ═══════════════════════════════════════════════════════════════════
+// Root-level command (no path — sets the RootCommand's action)
+// ═══════════════════════════════════════════════════════════════════
+
+[Command(Description = "Root-level command that runs when no subcommand is specified")]
+public class DefaultCommand
+{
+    [Option("--info")]
+    public bool Info { get; set; }
+
+    public Task ExecuteAsync()
+    {
+        if (Info)
+        {
+            Console.WriteLine("BindingShowcase v1.0");
+        }
+        else
+        {
+            Console.WriteLine("Use --help to see available commands");
+        }
+        return Task.CompletedTask;
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // Public property binding — the common case
 // ═══════════════════════════════════════════════════════════════════
 

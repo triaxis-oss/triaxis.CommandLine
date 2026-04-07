@@ -684,12 +684,11 @@ public class CommandTreeGenerator : IIncrementalGenerator
         foreach (var cmd in commands)
         {
             var node = root;
-            for (var i = 0; i < cmd.Path.Length - 1; i++)
+            foreach (var segment in cmd.Path)
             {
-                node = node.GetOrCreateChild(cmd.Path[i]);
+                node = node.GetOrCreateChild(segment);
             }
-            var leaf = node.GetOrCreateChild(cmd.Path[cmd.Path.Length - 1]);
-            leaf.Command = cmd;
+            node.Command = cmd;
         }
 
         foreach (var asmCmd in assemblyCommands)
