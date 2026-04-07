@@ -3,6 +3,7 @@ namespace triaxis.CommandLine;
 using System;
 using System.Collections.Generic;
 using System.CommandLine;
+using System.Globalization;
 using System.CommandLine.Parsing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -94,7 +95,19 @@ class ToolBuilder : IToolBuilder, IHostBuilder
     IHost IHostBuilder.Build()
     {
         _tree.Realize();
-        var parseResult = _root.Parse(_args);
+
+        // Parse with invariant culture so numeric/date conversions are locale-independent
+        var savedCulture = CultureInfo.CurrentCulture;
+        CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
+        ParseResult parseResult;
+        try
+        {
+            parseResult = _root.Parse(_args);
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = savedCulture;
+        }
 
         var hostBuilderContext = new HostBuilderContext(_properties)
         {
