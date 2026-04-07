@@ -532,8 +532,12 @@ public class CommandTreeGenerator : IIncrementalGenerator
 
     private static bool IsMemberRequired(ISymbol member)
     {
-        return member.GetAttributes().Any(a =>
-            a.AttributeClass?.ToDisplayString() == "System.Runtime.CompilerServices.RequiredMemberAttribute");
+        return member switch
+        {
+            IFieldSymbol f => f.IsRequired,
+            IPropertySymbol p => p.IsRequired,
+            _ => false,
+        };
     }
 
     private static string? GetNamedArgString(AttributeData attr, string name)
@@ -834,20 +838,67 @@ public class CommandTreeGenerator : IIncrementalGenerator
             w.WriteLine("await provider.GetRequiredService<ICommandExecutor>().ExecuteAsync(context, async () =>");
             w.Block(() =>
             {
-                if (cmd.ConstructorParameters.IsEmpty)
+                // Identify required direct members that must go in the object initializer
+                var requiredDirectArgs = args.Where(m => m.IsMemberRequired && m.AccessPath.Length == 0).ToArray();
+                var requiredDirectOpts = opts.Where(m => m.IsMemberRequired && m.AccessPath.Length == 0).ToArray();
+                var requiredDirectInjects = injects.Where(m => m.IsMemberRequired).ToArray();
+
+                // Pre-bind required argument/option values before instance creation
+                foreach (var arg in requiredDirectArgs)
                 {
-                    w.WriteLine($"var instance = new {cmd.TypeName}();");
+                    var fieldName = GetMemberFieldName(arg);
+                    w.WriteLine($"var _bound_{fieldName} = parseResult.GetValue(_{fieldName});");
+                }
+                foreach (var opt in requiredDirectOpts)
+                {
+                    var fieldName = GetMemberFieldName(opt);
+                    w.WriteLine($"var _bound_{fieldName} = parseResult.GetValue(_{fieldName});");
+                }
+                if (requiredDirectArgs.Length > 0 || requiredDirectOpts.Length > 0)
+                {
+                    w.WriteLine();
+                }
+
+                // Create instance — required members go in the object initializer
+                var hasRequired = requiredDirectArgs.Length > 0 || requiredDirectOpts.Length > 0 || requiredDirectInjects.Length > 0;
+
+                var ctorExpr = cmd.ConstructorParameters.IsEmpty
+                    ? $"new {cmd.TypeName}()"
+                    : $"new {cmd.TypeName}({string.Join(", ", cmd.ConstructorParameters.Select(p => $"provider.GetRequiredService<{p.TypeFqn}>()"))})";
+
+                if (hasRequired)
+                {
+                    // Drop trailing "()" when using object initializer syntax
+                    var initExpr = cmd.ConstructorParameters.IsEmpty
+                        ? $"new {cmd.TypeName}"
+                        : ctorExpr;
+                    w.WriteLine($"var instance = {initExpr}");
+                    w.WriteLine("{");
+                    w.Indent++;
+                    foreach (var arg in requiredDirectArgs)
+                    {
+                        w.WriteLine($"{arg.MemberName} = _bound_{GetMemberFieldName(arg)},");
+                    }
+                    foreach (var opt in requiredDirectOpts)
+                    {
+                        w.WriteLine($"{opt.MemberName} = _bound_{GetMemberFieldName(opt)},");
+                    }
+                    foreach (var inject in requiredDirectInjects)
+                    {
+                        var serviceType = inject.InjectTypeFqn ?? inject.MemberTypeFqn;
+                        w.WriteLine($"{inject.MemberName} = provider.GetRequiredService<{serviceType}>(),");
+                    }
+                    w.Indent--;
+                    w.WriteLine("};");
                 }
                 else
                 {
-                    var ctorArgs = string.Join(", ", cmd.ConstructorParameters
-                        .Select(p => $"provider.GetRequiredService<{p.TypeFqn}>()"));
-                    w.WriteLine($"var instance = new {cmd.TypeName}({ctorArgs});");
+                    w.WriteLine($"var instance = {ctorExpr};");
                 }
                 w.WriteLine();
 
-                // Direct [Inject] assignments
-                foreach (var inject in injects)
+                // Direct [Inject] assignments (skip required members already set in initializer)
+                foreach (var inject in injects.Where(i => !i.IsMemberRequired))
                 {
                     var serviceType = inject.InjectTypeFqn ?? inject.MemberTypeFqn;
                     w.WriteLine(FormatWrite(memberAccessors[MemberKey(inject)], "instance", $"provider.GetRequiredService<{serviceType}>()") + ";");
@@ -856,8 +907,8 @@ public class CommandTreeGenerator : IIncrementalGenerator
                 // Eagerly resolve [Options] nested objects
                 GenerateOptionsPathResolution(w, args, opts, pathAccessors);
 
-                // Inline bind: arguments
-                foreach (var arg in args)
+                // Inline bind: arguments (skip required direct members already set in initializer)
+                foreach (var arg in args.Where(a => !a.IsMemberRequired || a.AccessPath.Length != 0))
                 {
                     var fieldName = GetMemberFieldName(arg);
                     w.Block($"if (parseResult.GetResult(_{fieldName}) is {{ }} {fieldName}_result && {fieldName}_result.Tokens.Any())", () =>
@@ -866,8 +917,8 @@ public class CommandTreeGenerator : IIncrementalGenerator
                     });
                 }
 
-                // Inline bind: options
-                foreach (var opt in opts)
+                // Inline bind: options (skip required direct members already set in initializer)
+                foreach (var opt in opts.Where(o => !o.IsMemberRequired || o.AccessPath.Length != 0))
                 {
                     var fieldName = GetMemberFieldName(opt);
                     w.Block($"if (parseResult.GetResult(_{fieldName}) is {{ }} {fieldName}_result && !{fieldName}_result.Implicit)", () =>

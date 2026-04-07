@@ -47,6 +47,23 @@ public class CountCommand
     public NumberBox Execute() => new(Value);
 }
 
+[Command("required-opt")]
+public class RequiredOptionCommand
+{
+    [Option("--key")]
+    public required string Key { get; set; }
+
+    [Inject]
+    public EchoState State { get; set; } = null!;
+
+    public Task ExecuteAsync()
+    {
+        State.WasRun = true;
+        State.Name = Key;
+        return Task.CompletedTask;
+    }
+}
+
 [Command("ctor-echo")]
 public class CtorInjectedCommand(EchoState state)
 {
@@ -160,6 +177,19 @@ public class CommandExecutionTests
         Assert.That(exitCode, Is.EqualTo(0));
         Assert.That(state.WasRun, Is.True);
         Assert.That(state.Name, Is.EqualTo("ctor"));
+    }
+
+    [Test]
+    public async Task Run_RequiredMemberOption_IsSetCorrectly()
+    {
+        var state = new EchoState();
+        var builder = CreateBuilder(["required-opt", "--key", "test-value"], state);
+
+        var exitCode = await builder.RunAsync();
+
+        Assert.That(exitCode, Is.EqualTo(0));
+        Assert.That(state.WasRun, Is.True);
+        Assert.That(state.Name, Is.EqualTo("test-value"));
     }
 
     [Test]
