@@ -703,14 +703,13 @@ public class CommandTreeGenerator : IIncrementalGenerator
 
         // Emit the tree as a CommandTreeNode with nested initializers
         w.Write("return new CommandTreeNode(\"\")");
-        EmitNodeInitializer(w, root);
-        w.WriteLine(";");
+        EmitNodeInitializer(w, root, suffix: ";");
     }
 
     /// <summary>
     /// Emits the object initializer block for a tree node.
     /// </summary>
-    private static void EmitNodeInitializer(IndentedTextWriter w, GenTreeNode node)
+    private static void EmitNodeInitializer(IndentedTextWriter w, GenTreeNode node, string suffix = "")
     {
         var children = node.Children.OrderBy(c => c.Key, StringComparer.OrdinalIgnoreCase)
             .Select(c => c.Value).ToArray();
@@ -722,86 +721,77 @@ public class CommandTreeGenerator : IIncrementalGenerator
 
         if (!hasContent)
         {
+            w.WriteLine(suffix);
             return;
         }
 
         w.WriteLine();
-        w.WriteLine("{");
-        w.Indent++;
-
-        if (desc is not null)
+        w.Block(suffix: suffix, body: () =>
         {
-            w.WriteLine($"Description = {FormatString(desc)},");
-        }
-
-        if (aliases is { Length: > 0 })
-        {
-            w.WriteLine($"Aliases = {FormatStringArrayInline(aliases)},");
-        }
-
-        if (node.Command is { } cmd)
-        {
-            var safeName = GetSafeName(cmd);
-            var args = GetArguments(cmd);
-            var opts = GetOptions(cmd);
-
-            w.WriteLine($"Action = new {safeName}_Action(getServiceProvider),");
-            if (args.Length > 0)
+            if (desc is not null)
             {
-                w.WriteLine("Arguments =");
-                w.WriteLine("{");
-                w.Indent++;
-                foreach (var arg in args)
-                {
-                    w.Write($"new ArgumentDefinition<{arg.MemberTypeFqn}>({FormatString(GetCliName(arg))})");
-                    EmitArgOptInitializer(w, arg);
-                    w.WriteLine(",");
-                }
-                w.Indent--;
-                w.WriteLine("},");
+                w.WriteLine($"Description = {FormatString(desc)},");
             }
-            if (opts.Length > 0)
+
+            if (aliases is { Length: > 0 })
             {
-                w.WriteLine("Options =");
-                w.WriteLine("{");
-                w.Indent++;
-                foreach (var opt in opts)
+                w.WriteLine($"Aliases = {FormatStringArrayInline(aliases)},");
+            }
+
+            if (node.Command is { } cmd)
+            {
+                var safeName = GetSafeName(cmd);
+                var args = GetArguments(cmd);
+                var opts = GetOptions(cmd);
+
+                w.WriteLine($"Action = new {safeName}_Action(getServiceProvider),");
+                if (args.Length > 0)
                 {
-                    var nameAndAliases = new List<string> { GetCliName(opt) };
-                    if (opt.Aliases is not null)
+                    w.Block("Arguments =", suffix: ",", body: () =>
                     {
-                        nameAndAliases.AddRange(opt.Aliases);
-                    }
-                    var aliasesArr = nameAndAliases.Skip(1).ToArray();
-                    var nameArg = aliasesArr.Length > 0
-                        ? $"{FormatString(nameAndAliases[0])}, {FormatStringArrayInline(aliasesArr)}"
-                        : FormatString(nameAndAliases[0]);
-                    w.Write($"new OptionDefinition<{opt.MemberTypeFqn}>({nameArg})");
-                    EmitArgOptInitializer(w, opt);
-                    w.WriteLine(",");
+                        foreach (var arg in args)
+                        {
+                            w.Write($"new ArgumentDefinition<{arg.MemberTypeFqn}>({FormatString(GetCliName(arg))})");
+                            EmitArgOptInitializer(w, arg);
+                            w.WriteLine(",");
+                        }
+                    });
                 }
-                w.Indent--;
-                w.WriteLine("},");
+                if (opts.Length > 0)
+                {
+                    w.Block("Options =", suffix: ",", body: () =>
+                    {
+                        foreach (var opt in opts)
+                        {
+                            var nameAndAliases = new List<string> { GetCliName(opt) };
+                            if (opt.Aliases is not null)
+                            {
+                                nameAndAliases.AddRange(opt.Aliases);
+                            }
+                            var aliasesArr = nameAndAliases.Skip(1).ToArray();
+                            var nameArg = aliasesArr.Length > 0
+                                ? $"{FormatString(nameAndAliases[0])}, {FormatStringArrayInline(aliasesArr)}"
+                                : FormatString(nameAndAliases[0]);
+                            w.Write($"new OptionDefinition<{opt.MemberTypeFqn}>({nameArg})");
+                            EmitArgOptInitializer(w, opt);
+                            w.WriteLine(",");
+                        }
+                    });
+                }
             }
-        }
 
-        if (children.Length > 0)
-        {
-            w.WriteLine("Subcommands =");
-            w.WriteLine("{");
-            w.Indent++;
-            foreach (var child in children)
+            if (children.Length > 0)
             {
-                w.Write($"new CommandTreeNode({FormatString(child.Name)})");
-                EmitNodeInitializer(w, child);
-                w.WriteLine(",");
+                w.Block("Subcommands =", suffix: ",", body: () =>
+                {
+                    foreach (var child in children)
+                    {
+                        w.Write($"new CommandTreeNode({FormatString(child.Name)})");
+                        EmitNodeInitializer(w, child, suffix: ",");
+                    }
+                });
             }
-            w.Indent--;
-            w.WriteLine("},");
-        }
-
-        w.Indent--;
-        w.Write("}");
+        });
     }
 
     private static void EmitArgOptInitializer(IndentedTextWriter w, MemberModel member)
@@ -945,26 +935,24 @@ public class CommandTreeGenerator : IIncrementalGenerator
                     var initExpr = cmd.ConstructorParameters.IsEmpty
                         ? $"new {cmd.TypeName}"
                         : ctorExpr;
-                    w.WriteLine($"var instance = {initExpr}");
-                    w.WriteLine("{");
-                    w.Indent++;
-                    foreach (var member in requiredDirectArgs.Cast<MemberModel>().Concat(requiredDirectOpts))
+                    w.Block($"var instance = {initExpr}", () =>
                     {
-                        w.WriteLine($"{member.MemberName} = parseResult.GetValue<{member.MemberTypeFqn}>({FormatString(GetCliName(member))}),");
-                    }
-                    foreach (var inject in requiredDirectInjects)
-                    {
-                        var serviceType = inject.InjectTypeFqn ?? inject.MemberTypeFqn;
-                        w.WriteLine($"{inject.MemberName} = provider.GetRequiredService<{serviceType}>(),");
-                    }
-                    foreach (var seg in requiredOptionsProps)
-                    {
-                        var prefix = new[] { seg };
-                        var allMembers = args.Concat(opts).ToArray();
-                        w.WriteLine($"{seg.MemberName} = {FormatOptionsCreateExpr(seg, prefix, 1, allMembers)},");
-                    }
-                    w.Indent--;
-                    w.WriteLine("};");
+                        foreach (var member in requiredDirectArgs.Cast<MemberModel>().Concat(requiredDirectOpts))
+                        {
+                            w.WriteLine($"{member.MemberName} = parseResult.GetValue<{member.MemberTypeFqn}>({FormatString(GetCliName(member))}),");
+                        }
+                        foreach (var inject in requiredDirectInjects)
+                        {
+                            var serviceType = inject.InjectTypeFqn ?? inject.MemberTypeFqn;
+                            w.WriteLine($"{inject.MemberName} = provider.GetRequiredService<{serviceType}>(),");
+                        }
+                        foreach (var seg in requiredOptionsProps)
+                        {
+                            var prefix = new[] { seg };
+                            var allMembers = args.Concat(opts).ToArray();
+                            w.WriteLine($"{seg.MemberName} = {FormatOptionsCreateExpr(seg, prefix, 1, allMembers)},");
+                        }
+                    }, suffix: ";");
                 }
                 else
                 {
@@ -1446,18 +1434,25 @@ record ConstructorParameterModel(
 
 static class IndentedTextWriterExtensions
 {
-    public static void Block(this IndentedTextWriter w, Action body)
+    public static void Block(this IndentedTextWriter w, Action body, string suffix = "", bool eol = true)
     {
         w.WriteLine("{");
         w.Indent++;
         body();
         w.Indent--;
-        w.WriteLine("}");
+        if (eol)
+        {
+            w.WriteLine("}" + suffix);
+        }
+        else
+        {
+            w.Write("}" + suffix);
+        }
     }
 
-    public static void Block(this IndentedTextWriter w, string header, Action body)
+    public static void Block(this IndentedTextWriter w, string header, Action body, string suffix = "", bool eol = true)
     {
         w.WriteLine(header);
-        w.Block(body);
+        w.Block(body, suffix, eol);
     }
 }
