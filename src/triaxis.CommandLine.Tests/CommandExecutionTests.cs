@@ -304,7 +304,9 @@ public class CommandExecutionTests
         try
         {
             // Use a culture with comma as decimal separator
-            System.Globalization.CultureInfo.CurrentCulture = new System.Globalization.CultureInfo("de-DE");
+            var culture = (System.Globalization.CultureInfo)System.Globalization.CultureInfo.InvariantCulture.Clone();
+            culture.NumberFormat.NumberDecimalSeparator = ",";
+            System.Globalization.CultureInfo.CurrentCulture = culture;
             var builder = CreateBuilder(["decimal-arg", "3.14"], state);
             var exitCode = await builder.RunAsync();
 

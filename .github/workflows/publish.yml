@@ -38,6 +38,9 @@ jobs:
           fi
           mono --version
       - run: dotnet test -c Release
+      - if: failure()
+        run: find . -name "*.log" -path "*/TestResults/*" -exec echo "=== {} ===" \; -exec cat {} \;
+        working-directory: .
       - run: dotnet build -c Release ../examples/Examples.sln
 
   publish:
@@ -69,7 +72,7 @@ jobs:
       - run: dotnet restore
       - run: dotnet build --no-restore -c Release -p ContinuousIntegrationBuild=true
       - run: dotnet pack --no-build -c Release -o ../pack -p PackageVersion=${{steps.version.outputs.version}}
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         with:
           name: packages
           path: pack/*nupkg
