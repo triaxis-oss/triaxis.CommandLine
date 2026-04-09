@@ -26,6 +26,21 @@ public class ExtendedEndpointConfig : BaseEndpointConfig
     public string Scheme { get; set; } = "https";
 }
 
+[Command("mixed-order")]
+public class MixedOrderCommand
+{
+    [Option("--first")]
+    public string First { get; set; } = "";
+
+    [Options]
+    public DbConfig Db { get; set; } = new();
+
+    [Option("--last")]
+    public string Last { get; set; } = "";
+
+    public Task ExecuteAsync() => Task.CompletedTask;
+}
+
 [Command("dbping", Aliases = ["ping", "ping-db"], Description = "Pings the DB")]
 public class DbPingCommand
 {
@@ -166,5 +181,16 @@ public class OptionsAndAliasTests
 
         // Declaration order: --connection-string, --timeout
         Assert.That(optionNames, Is.EqualTo(new[] { "--connection-string", "--timeout" }));
+    }
+
+    [Test]
+    public void NestedOptions_ExpandedInPlaceAmongDirectOptions()
+    {
+        var builder = CreateBuilder([]);
+        var cmd = builder.GetCommand("mixed-order");
+        var optionNames = cmd.Options.Select(o => o.Name).ToList();
+
+        // --first, then [Options] DbConfig expanded in place, then --last
+        Assert.That(optionNames, Is.EqualTo(new[] { "--first", "--connection-string", "--timeout", "--last" }));
     }
 }
