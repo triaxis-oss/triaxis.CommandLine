@@ -131,8 +131,10 @@ public class ConnectCommand
 
 During generation, an `[Options]` member causes the generator to recurse into the nested
 type with an extended access path. The resulting arguments/options still live directly on
-the command — from System.CommandLine's point of view there is no nesting. The generator
-creates the nested object if null and binds values through it:
+the command — from System.CommandLine's point of view there is no nesting. The nested
+options are expanded in-place at the `[Options]` member's declaration position, so they
+appear between any direct options declared before and after the `[Options]` property. The
+generator creates the nested object if null and binds values through it:
 
 ```csharp
 // roughly, for Connection.Host:
@@ -180,3 +182,27 @@ in stock System.CommandLine works here — there's no separate binder to teach.
 | `Required = true` on attribute | Same effect; overrides the `required` modifier. |
 | `Required = false` on attribute | Argument arity becomes `(0, max)` even if the member is `required`. |
 | Member is on a nested `[Options]` type | Walks/creates nested instances on every write. |
+
+## Ordering
+
+Options and arguments appear in **declaration order** by default. The `Order` property
+on `CommandlineAttribute` can override this, but it applies **within the group** where
+the member is declared — it cannot move a member out of its `[Options]` block.
+
+`[Options]` blocks are expanded in-place at their declaration position:
+
+```csharp
+[Command("example")]
+public class ExampleCommand
+{
+    [Option("--alpha")] public string Alpha { get; set; }
+    [Options] public DbConfig Db { get; set; } = new();   // has --host, --port
+    [Option("--beta")]  public string Beta { get; set; }
+}
+```
+
+produces options in the order: `--alpha`, `--host`, `--port`, `--beta`.
+
+An explicit `Order` on a member inside `DbConfig` reorders it relative to other `DbConfig`
+members, but it stays between `--alpha` and `--beta`. For inherited members, the derived
+class's members come before base class members.
