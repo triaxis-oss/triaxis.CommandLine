@@ -11,6 +11,21 @@ public class DbConfig
     public int Timeout { get; set; }
 }
 
+public class BaseEndpointConfig
+{
+    [Option("--host")]
+    public string Host { get; set; } = "localhost";
+
+    [Option("--port")]
+    public int Port { get; set; } = 8080;
+}
+
+public class ExtendedEndpointConfig : BaseEndpointConfig
+{
+    [Option("--scheme")]
+    public string Scheme { get; set; } = "https";
+}
+
 [Command("dbping", Aliases = ["ping", "ping-db"], Description = "Pings the DB")]
 public class DbPingCommand
 {
@@ -30,11 +45,35 @@ public class DbPingCommand
     }
 }
 
+[Command("endpoint")]
+public class EndpointCommand
+{
+    public static ExtendedEndpointConfig? LastConfig;
+
+    [Options]
+    public ExtendedEndpointConfig Config { get; set; } = new();
+
+    public Task ExecuteAsync()
+    {
+        LastConfig = new ExtendedEndpointConfig
+        {
+            Host = Config.Host,
+            Port = Config.Port,
+            Scheme = Config.Scheme,
+        };
+        return Task.CompletedTask;
+    }
+}
+
 [TestFixture]
 public class OptionsAndAliasTests
 {
     [SetUp]
-    public void Reset() => DbPingCommand.LastConfig = null;
+    public void Reset()
+    {
+        DbPingCommand.LastConfig = null;
+        EndpointCommand.LastConfig = null;
+    }
 
     private static IToolBuilder CreateBuilder(string[] args)
     {
@@ -79,5 +118,31 @@ public class OptionsAndAliasTests
         var builder = CreateBuilder([]);
         var cmd = builder.GetCommand("dbping");
         Assert.That(cmd.Description, Is.EqualTo("Pings the DB"));
+    }
+
+    [Test]
+    public async Task NestedOptionsAttribute_BindsBaseClassMembers()
+    {
+        var builder = CreateBuilder(["endpoint", "--host", "example.com", "--port", "9090", "--scheme", "http"]);
+        var exit = await builder.RunAsync();
+
+        Assert.That(exit, Is.EqualTo(0));
+        Assert.That(EndpointCommand.LastConfig, Is.Not.Null);
+        Assert.That(EndpointCommand.LastConfig!.Host, Is.EqualTo("example.com"));
+        Assert.That(EndpointCommand.LastConfig.Port, Is.EqualTo(9090));
+        Assert.That(EndpointCommand.LastConfig.Scheme, Is.EqualTo("http"));
+    }
+
+    [Test]
+    public async Task NestedOptionsAttribute_BaseClassMembersUseDefaults()
+    {
+        var builder = CreateBuilder(["endpoint", "--scheme", "http"]);
+        var exit = await builder.RunAsync();
+
+        Assert.That(exit, Is.EqualTo(0));
+        Assert.That(EndpointCommand.LastConfig, Is.Not.Null);
+        Assert.That(EndpointCommand.LastConfig!.Host, Is.EqualTo("localhost"));
+        Assert.That(EndpointCommand.LastConfig.Port, Is.EqualTo(8080));
+        Assert.That(EndpointCommand.LastConfig.Scheme, Is.EqualTo("http"));
     }
 }

@@ -147,6 +147,10 @@ on demand — provided the type has a parameterless constructor (or an initializ
 you like; the access path grows by one entry per level. The `[Options]` property itself can
 be `required`, `init`-only, or both.
 
+The generator walks the full inheritance hierarchy of the `[Options]` type, so
+`[Option]` and `[Argument]` members declared in base classes are included
+automatically — just like they are for command classes themselves.
+
 ## Type support
 
 The element type `T` on each `Option<T>` / `Argument<T>` is whatever System.CommandLine

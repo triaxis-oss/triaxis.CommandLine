@@ -520,7 +520,14 @@ public class CommandTreeGenerator : IIncrementalGenerator
                             var segment = new AccessPathSegment(
                                 member.Name, memberTypeFqn, isField, isPublic, hasSetter, isMemberRequired, declaringTypeFqn);
                             var newPath = (accessPath ?? Array.Empty<AccessPathSegment>()).Append(segment).ToArray();
-                            CollectMembers(nestedType, members, ct, newPath);
+                            for (var current = nestedType; current is not null; current = current.BaseType)
+                            {
+                                if (current.ToDisplayString() is "object" or "System.Object")
+                                {
+                                    break;
+                                }
+                                CollectMembers(current, members, ct, newPath);
+                            }
                         }
                         break;
                     }
