@@ -1296,10 +1296,63 @@ public class CommandTreeGenerator : IIncrementalGenerator
     }
 
     private static MemberModel[] GetArguments(CommandModel cmd) =>
-        cmd.Members.Where(m => m.Kind == MemberKind.Argument).OrderBy(m => m.Order).ToArray();
+        OrderWithinGroups(cmd.Members.Where(m => m.Kind == MemberKind.Argument));
 
     private static MemberModel[] GetOptions(CommandModel cmd) =>
-        cmd.Members.Where(m => m.Kind == MemberKind.Option).OrderBy(m => m.Order).ToArray();
+        OrderWithinGroups(cmd.Members.Where(m => m.Kind == MemberKind.Option));
+
+    /// <summary>
+    /// Sorts members by <see cref="MemberModel.Order"/> within contiguous runs
+    /// that share the same access path, preserving the relative position of
+    /// different groups (direct members vs. each [Options] block).
+    /// </summary>
+    private static MemberModel[] OrderWithinGroups(IEnumerable<MemberModel> members)
+    {
+        var result = new List<MemberModel>();
+        var group = new List<MemberModel>();
+        AccessPathSegment[]? groupPath = null;
+
+        foreach (var m in members)
+        {
+            if (group.Count > 0 && !AccessPathEquals(m.AccessPath, groupPath!))
+            {
+                FlushGroup(result, group);
+            }
+
+            groupPath = m.AccessPath;
+            group.Add(m);
+        }
+
+        FlushGroup(result, group);
+        return result.ToArray();
+
+        static void FlushGroup(List<MemberModel> result, List<MemberModel> group)
+        {
+            if (group.Count == 0)
+            {
+                return;
+            }
+            group.Sort((a, b) => a.Order.CompareTo(b.Order));
+            result.AddRange(group);
+            group.Clear();
+        }
+
+        static bool AccessPathEquals(AccessPathSegment[] a, AccessPathSegment[] b)
+        {
+            if (a.Length != b.Length)
+            {
+                return false;
+            }
+            for (var i = 0; i < a.Length; i++)
+            {
+                if (a[i].MemberName != b[i].MemberName || a[i].OwnerTypeFqn != b[i].OwnerTypeFqn)
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+    }
 
     private static string GetSafeName(CommandModel cmd)
     {

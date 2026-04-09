@@ -26,6 +26,15 @@ public class ExtendedEndpointConfig : BaseEndpointConfig
     public string Scheme { get; set; } = "https";
 }
 
+public class ReorderedConfig
+{
+    [Option("--second", Order = 2)]
+    public string Second { get; set; } = "";
+
+    [Option("--first", Order = -1)]
+    public string First { get; set; } = "";
+}
+
 [Command("mixed-order")]
 public class MixedOrderCommand
 {
@@ -37,6 +46,21 @@ public class MixedOrderCommand
 
     [Option("--last")]
     public string Last { get; set; } = "";
+
+    public Task ExecuteAsync() => Task.CompletedTask;
+}
+
+[Command("order-scoped")]
+public class OrderScopedCommand
+{
+    [Option("--before")]
+    public string Before { get; set; } = "";
+
+    [Options]
+    public ReorderedConfig Cfg { get; set; } = new();
+
+    [Option("--after")]
+    public string After { get; set; } = "";
 
     public Task ExecuteAsync() => Task.CompletedTask;
 }
@@ -192,5 +216,17 @@ public class OptionsAndAliasTests
 
         // --first, then [Options] DbConfig expanded in place, then --last
         Assert.That(optionNames, Is.EqualTo(new[] { "--first", "--connection-string", "--timeout", "--last" }));
+    }
+
+    [Test]
+    public void Order_AppliesWithinGroup_NotGlobally()
+    {
+        var builder = CreateBuilder([]);
+        var cmd = builder.GetCommand("order-scoped");
+        var optionNames = cmd.Options.Select(o => o.Name).ToList();
+
+        // Order=-1 on --first reorders within the [Options] group, not globally;
+        // --before and --after stay in their declaration positions around the group
+        Assert.That(optionNames, Is.EqualTo(new[] { "--before", "--first", "--second", "--after" }));
     }
 }
