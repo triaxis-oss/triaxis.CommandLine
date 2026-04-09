@@ -1284,10 +1284,10 @@ public class CommandTreeGenerator : IIncrementalGenerator
     }
 
     private static MemberModel[] GetArguments(CommandModel cmd) =>
-        cmd.Members.Where(m => m.Kind == MemberKind.Argument).OrderBy(m => m.Order).ThenBy(m => m.Name).ToArray();
+        cmd.Members.Where(m => m.Kind == MemberKind.Argument).OrderBy(m => m.Order).ToArray();
 
     private static MemberModel[] GetOptions(CommandModel cmd) =>
-        cmd.Members.Where(m => m.Kind == MemberKind.Option).OrderBy(m => m.Order).ThenBy(m => m.Name).ToArray();
+        cmd.Members.Where(m => m.Kind == MemberKind.Option).OrderBy(m => m.Order).ToArray();
 
     private static string GetSafeName(CommandModel cmd)
     {

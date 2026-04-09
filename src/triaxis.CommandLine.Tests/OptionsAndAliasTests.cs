@@ -145,4 +145,26 @@ public class OptionsAndAliasTests
         Assert.That(EndpointCommand.LastConfig.Port, Is.EqualTo(8080));
         Assert.That(EndpointCommand.LastConfig.Scheme, Is.EqualTo("http"));
     }
+
+    [Test]
+    public void Options_AppearInDeclarationOrder_NotAlphabetical()
+    {
+        var builder = CreateBuilder([]);
+        var cmd = builder.GetCommand("endpoint");
+        var optionNames = cmd.Options.Select(o => o.Name).ToList();
+
+        // Derived class members first (declaration order), then base class members
+        Assert.That(optionNames, Is.EqualTo(new[] { "--scheme", "--host", "--port" }));
+    }
+
+    [Test]
+    public void NestedOptions_PreserveDeclarationOrder()
+    {
+        var builder = CreateBuilder([]);
+        var cmd = builder.GetCommand("dbping");
+        var optionNames = cmd.Options.Select(o => o.Name).ToList();
+
+        // Declaration order: --connection-string, --timeout
+        Assert.That(optionNames, Is.EqualTo(new[] { "--connection-string", "--timeout" }));
+    }
 }
