@@ -55,25 +55,39 @@ public class CommandTreeGenerator : IIncrementalGenerator
                     EnvironmentVariablePrefix: string.IsNullOrEmpty(envPrefix) ? (string?)null : envPrefix);
         });
 
-        var entryPointModel = context.CompilationProvider.Combine(entryPointProps).Select(static (pair, ct) =>
-        {
-            var (compilation, props) = pair;
-            if (compilation.Options.OutputKind != OutputKind.ConsoleApplication)
+        var entryPointModel = context.CompilationProvider
+            .Combine(entryPointProps)
+            .Combine(collected)
+            .Select(static (pair, ct) =>
             {
-                return null;
-            }
-            if (compilation.GetEntryPoint(ct) is not null)
-            {
-                return null;
-            }
+                var ((compilation, props), commands) = pair;
+                if (compilation.Options.OutputKind != OutputKind.ConsoleApplication)
+                {
+                    return null;
+                }
+                if (compilation.GetEntryPoint(ct) is not null)
+                {
+                    return null;
+                }
 
-            // Tool package (UseDefaults) detection via a type unique to it.
-            var hasToolPackage = compilation.GetTypeByMetadataName("triaxis.CommandLine.LoggingCommand") is not null;
+                // Tool package (UseDefaults) detection via a type unique to it.
+                var hasToolPackage = compilation.GetTypeByMetadataName("triaxis.CommandLine.LoggingCommand") is not null;
 
-            return new EntryPointModel(hasToolPackage,
-                hasToolPackage ? props.ConfigOverridePath : null,
-                hasToolPackage ? props.EnvironmentVariablePrefix : null);
-        });
+                // Object-output emission is conditional on at least one command actually
+                // producing a value for the formatter to consume. Void/Task/int/Task<int>
+                // returns all go through exit-code handling only.
+                var producesOutput = !commands.IsDefaultOrEmpty && commands.Any(c =>
+                    c.ExecuteMethod.ReturnKind is not (
+                        ReturnKind.Void or
+                        ReturnKind.Task or
+                        ReturnKind.Int or
+                        ReturnKind.TaskOfInt));
+
+                return new EntryPointModel(hasToolPackage,
+                    hasToolPackage ? props.ConfigOverridePath : null,
+                    hasToolPackage ? props.EnvironmentVariablePrefix : null,
+                    producesOutput);
+            });
 
         context.RegisterSourceOutput(entryPointModel, static (spc, model) =>
         {
@@ -104,18 +118,34 @@ public class CommandTreeGenerator : IIncrementalGenerator
                 {
                     if (model.HasToolPackage)
                     {
-                        var parts = new List<string>();
+                        // Chain the individual helpers directly (instead of calling
+                        // UseDefaults) so that UseObjectOutput — and with it the
+                        // triaxis.CommandLine.ObjectOutput + YamlDotNet graph — is only
+                        // referenced when a command actually produces output. That lets
+                        // trimming drop the unused formatting stack entirely.
+                        var configParts = new List<string>();
                         if (model.ConfigOverridePath is not null)
                         {
-                            parts.Add($"configOverridePath: {FormatString(model.ConfigOverridePath)}");
+                            configParts.Add($"configOverridePath: {FormatString(model.ConfigOverridePath)}");
                         }
                         if (model.EnvironmentVariablePrefix is not null)
                         {
-                            parts.Add($"environmentVariablePrefix: {FormatString(model.EnvironmentVariablePrefix)}");
+                            configParts.Add($"environmentVariablePrefix: {FormatString(model.EnvironmentVariablePrefix)}");
                         }
-                        parts.Add("commandsAssembly: typeof(GeneratedProgram).Assembly");
-                        var argsList = string.Join(", ", parts);
-                        w.WriteLine($"return global::triaxis.CommandLine.Tool.CreateBuilder(args).UseDefaults({argsList}).Run();");
+                        var configArgs = string.Join(", ", configParts);
+
+                        w.WriteLine("return global::triaxis.CommandLine.Tool.CreateBuilder(args)");
+                        w.Indent++;
+                        w.WriteLine(".UseSerilog()");
+                        w.WriteLine(".UseVerbosityOptions()");
+                        if (model.ProducesOutput)
+                        {
+                            w.WriteLine(".UseObjectOutput()");
+                        }
+                        w.WriteLine($".UseDefaultConfiguration({configArgs})");
+                        w.WriteLine(".AddCommandsFromAssembly(typeof(GeneratedProgram).Assembly)");
+                        w.WriteLine(".Run();");
+                        w.Indent--;
                     }
                     else
                     {
@@ -1454,7 +1484,8 @@ record AssemblyCommandModel(
 record EntryPointModel(
     bool HasToolPackage,
     string? ConfigOverridePath,
-    string? EnvironmentVariablePrefix);
+    string? EnvironmentVariablePrefix,
+    bool ProducesOutput);
 
 record AccessPathSegment(
     string MemberName,
