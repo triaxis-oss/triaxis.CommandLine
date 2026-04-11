@@ -14,7 +14,7 @@ Tool.CreateBuilder(args)
       │
       ▼
 IToolBuilder  ─ (IHostBuilder)
-      │  .UseSerilog() / .UseVerbosityOptions() / .UseObjectOutput() / .AddCommandsFromAssembly()
+      │  .UseSerilog() / .UseVerbosityOptions() / .UseObjectOutput() / .UseDefaultConfiguration() / .AddCommandsFromAssembly()
       │  .ConfigureServices(...) / .ConfigureAppConfiguration(...) / .AddMiddleware(...)
       ▼
 Run() / RunAsync()     ← extension methods on IToolBuilder

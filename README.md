@@ -70,8 +70,12 @@ dotnet run -- hello -n Alice -v           # -v raises log level to Debug
 dotnet run -- hello --help                # System.CommandLine generated help
 ```
 
-`UseDefaults()` composes `UseSerilog()`, `UseVerbosityOptions()`, `UseObjectOutput()` and
-`AddCommandsFromAssembly()` — see [The `Tool` meta-package](#the-tool-meta-package) below.
+`UseDefaults()` composes `UseSerilog()`, `UseVerbosityOptions()`, `UseObjectOutput()`,
+`UseDefaultConfiguration()` and `AddCommandsFromAssembly()` — see [The `Tool`
+meta-package](#the-tool-meta-package) below. The source-generated entry point chains the
+individual helpers directly instead of calling `UseDefaults`, and omits `UseObjectOutput`
+(along with the YamlDotNet dependency) when no command produces output, so the formatter
+stack can be trimmed.
 
 ## Building blocks
 
@@ -248,7 +252,8 @@ System.CommandLine; the `Execute(CancellationToken)` signature is not recognized
 ### Configuration
 
 `IToolBuilder.Configuration` exposes an `IConfigurationManager` that is also registered into DI
-as `IConfiguration`. `UseDefaults()` wires it up with:
+as `IConfiguration`. `UseDefaults()` — and its extracted `UseDefaultConfiguration()` helper
+— wire it up with:
 
 - `appsettings.json` next to the executable (optional)
 - An optional override file under `ApplicationData` / `LocalApplicationData`
@@ -259,6 +264,18 @@ Tool.CreateBuilder(args)
     .UseDefaults(
         configOverridePath: "MyTool/appsettings.json",
         environmentVariablePrefix: "MYTOOL_")
+    .Run();
+```
+
+Or, when you want finer control (e.g. to skip `UseObjectOutput` so YamlDotNet can be
+trimmed), call the helpers directly — this is what the source-generated `Main` does:
+
+```csharp
+Tool.CreateBuilder(args)
+    .UseSerilog()
+    .UseVerbosityOptions()
+    .UseDefaultConfiguration(environmentVariablePrefix: "MYTOOL_")
+    .AddCommandsFromAssembly()
     .Run();
 ```
 
@@ -429,28 +446,40 @@ builder
     .UseSerilog()
     .UseVerbosityOptions()
     .UseObjectOutput()
-    .AddCommandsFromAssembly(commandsAssembly ?? Assembly.GetCallingAssembly());
-// + appsettings.json, override file, and env vars wired into Configuration
+    .AddCommandsFromAssembly(commandsAssembly ?? Assembly.GetCallingAssembly())
+    .UseDefaultConfiguration(configOverridePath, environmentVariablePrefix);
+// UseDefaultConfiguration adds appsettings.json, the override file, and env vars
 ```
 
 Use it when you want the opinionated defaults; compose the individual `Use*` extensions when
-you need finer control (for example when shipping a library of commands without Serilog).
+you need finer control (for example when shipping a library of commands without Serilog, or
+when you want `triaxis.CommandLine.ObjectOutput` to be trimmable).
+
+The source-generated entry point does **not** call `UseDefaults`. Instead it chains the
+individual helpers and omits `.UseObjectOutput()` when every `[Command]` class returns
+`void`/`Task`/`int`/`Task<int>`, so the ObjectOutput + YamlDotNet graph becomes
+unreachable and the trimmer can drop it. Keep that in mind if you add more work to
+`UseDefaults`: it only runs for hand-written entry points that call it explicitly.
 
 ### Source-generated entry point
 
 When the consuming project is an executable (`OutputType=Exe`) and has no user-written
 `Main`, the source generator emits one for you. You can therefore delete `Program.cs` from
 any tool that would otherwise contain nothing but the canonical one-liner — the generator
-produces an equivalent `Main` that calls
-`Tool.CreateBuilder(args).UseDefaults(…).Run()` (or falls back to
-`AddCommandsFromAssembly().Run()` when only the base `triaxis.CommandLine` package is
-referenced, without the `Tool` meta-package).
+produces an equivalent `Main` that chains
+`.UseSerilog().UseVerbosityOptions()[.UseObjectOutput()].UseDefaultConfiguration().AddCommandsFromAssembly(...).Run()`.
+The `.UseObjectOutput()` call is emitted only when at least one `[Command]` class has a
+return type other than `void`/`Task`/`int`/`Task<int>` — projects whose commands all
+return one of those can trim `triaxis.CommandLine.ObjectOutput` (and `YamlDotNet`) out of
+the published binary. The generator falls back to `AddCommandsFromAssembly().Run()` when
+only the base `triaxis.CommandLine` package is referenced, without the `Tool`
+meta-package.
 
 Writing your own `Main` is always fine: if one already exists the generator skips
 entry-point emission, so you never get a "multiple entry points" error.
 
-The remaining `UseDefaults` parameters that the generator cannot infer on its own can be
-supplied via MSBuild properties:
+The `UseDefaultConfiguration` parameters that the generator cannot infer on its own can
+be supplied via MSBuild properties:
 
 ```xml
 <PropertyGroup>

@@ -112,8 +112,19 @@ Steps:
 
 Because this runs **inside** the middleware chain, any middleware registered *before*
 `UseObjectOutput` runs before output happens and can replace `InvocationResult` (e.g. to
-filter, map, or redact rows). `UseObjectOutput` is appended by `UseDefaults`, so by default
+filter, map, or redact rows). `UseObjectOutput` is appended by `UseDefaults` and by the
+source-generated entry point (when at least one command produces output), so by default
 it is near the inner end of the chain.
+
+> **Trimming note.** The source-generated entry point (`GeneratedProgram.g.cs`) chains
+> the individual helpers directly instead of calling `UseDefaults`, and it only emits
+> `.UseObjectOutput()` when at least one `[Command]` class has a return type other than
+> `void`, `Task`, `int`, or `Task<int>`. In projects where every command is a void/int
+> return, `triaxis.CommandLine.ObjectOutput` (and therefore `YamlDotNet`) becomes
+> unreachable and can be dropped by the trimmer. Hand-written entry points that call
+> `UseDefaults()` still pull in the full stack — use the generated entry point or the
+> individual helpers (`UseSerilog().UseVerbosityOptions().UseDefaultConfiguration().AddCommandsFromAssembly(...)`)
+> to get the trimming benefit.
 
 If a command sets `context.InvocationResult` to a non-generic wrapper (the empty ones, or a
 `DataTable` result wrapped as `ValueCommandInvocationResult<DataTable>`), the generic
