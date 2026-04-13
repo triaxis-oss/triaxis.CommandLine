@@ -19,6 +19,14 @@ public class CommandTreeNode(string name)
     public List<CommandTreeNode> Subcommands { get; } = [];
 
     /// <summary>
+    /// When <see langword="false"/> the node is not applied to the target tree.
+    /// Source generators set this to a dynamic expression (e.g. an
+    /// <c>OperatingSystem.IsWindows()</c> check) so commands annotated with
+    /// <c>[SupportedOSPlatform]</c> only get registered on matching platforms.
+    /// </summary>
+    public bool IsSupported { get; set; } = true;
+
+    /// <summary>
     /// Applies this node's properties to an existing <see cref="Command"/>,
     /// creating fresh System.CommandLine types for all arguments, options, and subcommands.
     /// Subcommands with matching names are merged recursively.
@@ -68,6 +76,11 @@ public class CommandTreeNode(string name)
 
         foreach (var childNode in Subcommands)
         {
+            if (!childNode.IsSupported)
+            {
+                continue;
+            }
+
             var existing = target.Subcommands.FirstOrDefault(c =>
                 string.Equals(c.Name, childNode.Name, StringComparison.OrdinalIgnoreCase));
             if (existing is not null)

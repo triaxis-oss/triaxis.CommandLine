@@ -26,8 +26,18 @@ public class CommandTreeGenerator : IIncrementalGenerator
         var compilationInfo = context.CompilationProvider.Select(static (c, _) =>
         {
             var hasUnsafeAccessor = c.GetTypeByMetadataName("System.Runtime.CompilerServices.UnsafeAccessorAttribute") is not null;
+            // OperatingSystem.IsOSPlatform(string) was added in .NET 5; when unavailable
+            // the generator falls back to RuntimeInformation.IsOSPlatform(OSPlatform).
+            var hasOperatingSystemIsOSPlatform = c.GetTypeByMetadataName("System.OperatingSystem")?
+                .GetMembers("IsOSPlatform")
+                .OfType<IMethodSymbol>()
+                .Any(m => m.IsStatic && m.Parameters.Length == 1
+                    && m.Parameters[0].Type.SpecialType == SpecialType.System_String) ?? false;
             var assemblyCommands = ExtractAssemblyCommands(c);
-            return (AssemblyName: c.AssemblyName ?? "", HasUnsafeAccessor: hasUnsafeAccessor, AssemblyCommands: assemblyCommands);
+            return (AssemblyName: c.AssemblyName ?? "",
+                    HasUnsafeAccessor: hasUnsafeAccessor,
+                    HasOperatingSystemIsOSPlatform: hasOperatingSystemIsOSPlatform,
+                    AssemblyCommands: assemblyCommands);
         });
         var combined = collected.Combine(compilationInfo);
 
@@ -39,7 +49,8 @@ public class CommandTreeGenerator : IIncrementalGenerator
                 return;
             }
 
-            var source = GenerateSource(commands, info.AssemblyCommands, info.AssemblyName, info.HasUnsafeAccessor);
+            var source = GenerateSource(commands, info.AssemblyCommands, info.AssemblyName,
+                info.HasUnsafeAccessor, info.HasOperatingSystemIsOSPlatform);
             spc.AddSource("GeneratedCommandTree.g.cs", source);
         });
 
@@ -247,6 +258,36 @@ public class CommandTreeGenerator : IIncrementalGenerator
             description = descAttr?.ConstructorArguments.FirstOrDefault().Value?.ToString();
         }
 
+        // Collect [SupportedOSPlatform("...")] attributes, walking the base-type chain
+        // and stopping at the derived-most type that declares any — that type wins and
+        // any base-class platform sets are hidden. Multiple attributes on that type
+        // combine with a logical OR. The generator emits the equivalent
+        // System.OperatingSystem check as CommandTreeNode.IsSupported so gated commands
+        // only get registered on matching platforms.
+        //
+        // SupportedOSPlatformAttribute declares Inherited=false, but a base-class check
+        // is what users intuitively expect (e.g. a WindowsServiceBase that's
+        // "windows"-only), so we walk the hierarchy explicitly.
+        string[]? supportedPlatforms = null;
+        for (var current = typeSymbol; current is not null; current = current.BaseType)
+        {
+            if (current.ToDisplayString() is "object" or "System.Object")
+            {
+                break;
+            }
+            var onThisType = current.GetAttributes()
+                .Where(a => a.AttributeClass?.ToDisplayString() == "System.Runtime.Versioning.SupportedOSPlatformAttribute")
+                .Select(a => a.ConstructorArguments.FirstOrDefault().Value?.ToString())
+                .Where(s => !string.IsNullOrEmpty(s))
+                .Select(s => s!)
+                .ToArray();
+            if (onThisType.Length > 0)
+            {
+                supportedPlatforms = onThisType;
+                break;
+            }
+        }
+
         var members = new List<MemberModel>();
         for (var current = typeSymbol; current is not null; current = current.BaseType)
         {
@@ -265,6 +306,7 @@ public class CommandTreeGenerator : IIncrementalGenerator
             path!,
             description,
             aliases,
+            supportedPlatforms,
             members.ToImmutableArray(),
             executeMethod,
             ctorParams);
@@ -657,7 +699,7 @@ public class CommandTreeGenerator : IIncrementalGenerator
         return null;
     }
 
-    private static string GenerateSource(ImmutableArray<CommandModel> commands, ImmutableArray<AssemblyCommandModel> assemblyCommands, string assemblyName, bool hasUnsafeAccessor)
+    private static string GenerateSource(ImmutableArray<CommandModel> commands, ImmutableArray<AssemblyCommandModel> assemblyCommands, string assemblyName, bool hasUnsafeAccessor, bool hasOperatingSystemIsOSPlatform)
     {
         var sw = new StringWriter();
         var w = new IndentedTextWriter(sw);
@@ -693,7 +735,7 @@ public class CommandTreeGenerator : IIncrementalGenerator
                 // Tree factory — builds the command tree model and returns the root
                 w.Block("private static CommandTreeNode CreateCommandTree(Func<IServiceProvider> getServiceProvider)", () =>
                 {
-                    GenerateTreeConstruction(w, commands, assemblyCommands);
+                    GenerateTreeConstruction(w, commands, assemblyCommands, hasOperatingSystemIsOSPlatform);
                 });
                 w.WriteLine();
             });
@@ -716,7 +758,8 @@ public class CommandTreeGenerator : IIncrementalGenerator
     /// </summary>
     private static void GenerateTreeConstruction(IndentedTextWriter w,
         ImmutableArray<CommandModel> commands,
-        ImmutableArray<AssemblyCommandModel> assemblyCommands)
+        ImmutableArray<AssemblyCommandModel> assemblyCommands,
+        bool hasOperatingSystemIsOSPlatform)
     {
         // Build a generation-time tree from all command paths and assembly commands
         var root = new GenTreeNode("");
@@ -743,21 +786,23 @@ public class CommandTreeGenerator : IIncrementalGenerator
 
         // Emit the tree as a CommandTreeNode with nested initializers
         w.Write("return new CommandTreeNode(\"\")");
-        EmitNodeInitializer(w, root, suffix: ";");
+        EmitNodeInitializer(w, root, hasOperatingSystemIsOSPlatform, suffix: ";");
     }
 
     /// <summary>
     /// Emits the object initializer block for a tree node.
     /// </summary>
-    private static void EmitNodeInitializer(IndentedTextWriter w, GenTreeNode node, string suffix = "")
+    private static void EmitNodeInitializer(IndentedTextWriter w, GenTreeNode node, bool hasOperatingSystemIsOSPlatform, string suffix = "")
     {
         var children = node.Children.OrderBy(c => c.Key, StringComparer.OrdinalIgnoreCase)
             .Select(c => c.Value).ToArray();
 
         var desc = node.AssemblyCommand?.Description ?? node.Command?.Description;
         var aliases = node.AssemblyCommand?.Aliases ?? node.Command?.Aliases;
+        var supportedPlatforms = node.Command?.SupportedPlatforms;
         var hasAction = node.Command is not null;
-        var hasContent = desc is not null || aliases is { Length: > 0 } || hasAction || children.Length > 0;
+        var hasContent = desc is not null || aliases is { Length: > 0 }
+            || supportedPlatforms is { Length: > 0 } || hasAction || children.Length > 0;
 
         if (!hasContent)
         {
@@ -776,6 +821,22 @@ public class CommandTreeGenerator : IIncrementalGenerator
             if (aliases is { Length: > 0 })
             {
                 w.WriteLine($"Aliases = {FormatStringArrayInline(aliases)},");
+            }
+
+            if (supportedPlatforms is { Length: > 0 })
+            {
+                var (expr, needsCA1418Suppression) = FormatPlatformCheck(supportedPlatforms, hasOperatingSystemIsOSPlatform);
+                if (needsCA1418Suppression)
+                {
+                    // Scope the suppression to exactly the one line that calls the
+                    // string-based IsOSPlatform with an unrecognized platform name.
+                    w.WriteLine("#pragma warning disable CA1418 // Unknown platform name passed through from user-authored [SupportedOSPlatform]");
+                }
+                w.WriteLine($"IsSupported = {expr},");
+                if (needsCA1418Suppression)
+                {
+                    w.WriteLine("#pragma warning restore CA1418");
+                }
             }
 
             if (node.Command is { } cmd)
@@ -827,11 +888,104 @@ public class CommandTreeGenerator : IIncrementalGenerator
                     foreach (var child in children)
                     {
                         w.Write($"new CommandTreeNode({FormatString(child.Name)})");
-                        EmitNodeInitializer(w, child, suffix: ",");
+                        EmitNodeInitializer(w, child, hasOperatingSystemIsOSPlatform, suffix: ",");
                     }
                 });
             }
         });
+    }
+
+    /// <summary>
+    /// Emits a boolean expression that is <see langword="true"/> when the current OS matches
+    /// any of the <paramref name="platforms"/>. On net5+ this uses the dedicated typed
+    /// methods on <c>System.OperatingSystem</c> (e.g. <c>IsWindows()</c>). On older TFMs
+    /// the generator falls back to <c>RuntimeInformation.IsOSPlatform(...)</c>, preferring
+    /// the predefined <c>OSPlatform</c> fields for known platforms.
+    /// Returns the generated expression and a flag indicating whether the net5+ path
+    /// fell back to <c>OperatingSystem.IsOSPlatform(string)</c> for any entry — the caller
+    /// wraps the line in <c>#pragma warning disable CA1418</c> when that's the case.
+    /// </summary>
+    private static (string Expression, bool NeedsCA1418Suppression) FormatPlatformCheck(
+        string[] platforms, bool hasOperatingSystemIsOSPlatform)
+    {
+        if (!hasOperatingSystemIsOSPlatform)
+        {
+            return (string.Join(" || ", platforms.Select(FormatRuntimeInformationPlatformCheck)), false);
+        }
+
+        var parts = new string[platforms.Length];
+        var hasFallback = false;
+        for (var i = 0; i < platforms.Length; i++)
+        {
+            parts[i] = FormatOperatingSystemPlatformCheck(platforms[i], out var fellBack);
+            hasFallback |= fellBack;
+        }
+        return (string.Join(" || ", parts), hasFallback);
+    }
+
+    /// <summary>
+    /// Maps <c>[SupportedOSPlatform]</c> names to <c>System.OperatingSystem.Is&lt;X&gt;()</c>
+    /// method suffixes, preserving the BCL's exact casing (<c>IOS</c>, <c>TvOS</c>, etc.).
+    /// </summary>
+    private static readonly Dictionary<string, string> s_osMethods =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["windows"] = "Windows",
+            ["macos"] = "MacOS",
+            ["linux"] = "Linux",
+            ["freebsd"] = "FreeBSD",
+            ["android"] = "Android",
+            ["ios"] = "IOS",
+            ["tvos"] = "TvOS",
+            ["watchos"] = "WatchOS",
+            ["maccatalyst"] = "MacCatalyst",
+            ["browser"] = "Browser",
+            ["wasi"] = "Wasi",
+        };
+
+    /// <summary>
+    /// Predefined fields on <c>System.Runtime.InteropServices.OSPlatform</c>, used by the
+    /// netstandard/netfx fallback.
+    /// </summary>
+    private static readonly Dictionary<string, string> s_osPlatformFields =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["windows"] = "Windows",
+            ["linux"] = "Linux",
+            ["macos"] = "OSX",
+            ["osx"] = "OSX",
+            ["freebsd"] = "FreeBSD",
+        };
+
+    /// <summary>
+    /// Extracts the platform name from a <c>[SupportedOSPlatform]</c> value, dropping any
+    /// version suffix (e.g. <c>windows10.0</c> -> <c>windows</c>). Only the base platform
+    /// name participates in command gating.
+    /// </summary>
+    private static string GetPlatformName(string platform)
+        => new string(platform.TakeWhile(c => !char.IsDigit(c)).ToArray());
+
+    private static string FormatOperatingSystemPlatformCheck(string platform, out bool fellBackToStringApi)
+    {
+        var name = GetPlatformName(platform);
+        if (s_osMethods.TryGetValue(name, out var suffix))
+        {
+            fellBackToStringApi = false;
+            return $"global::System.OperatingSystem.Is{suffix}()";
+        }
+        // Unknown platform name — no dedicated method exists. Pass the value through so
+        // the generator stays forward-compatible with names the BCL may add.
+        fellBackToStringApi = true;
+        return $"global::System.OperatingSystem.IsOSPlatform({FormatString(platform)})";
+    }
+
+    private static string FormatRuntimeInformationPlatformCheck(string platform)
+    {
+        var name = GetPlatformName(platform);
+        var osPlatformExpr = s_osPlatformFields.TryGetValue(name, out var field)
+            ? $"global::System.Runtime.InteropServices.OSPlatform.{field}"
+            : $"global::System.Runtime.InteropServices.OSPlatform.Create({FormatString(name.ToUpperInvariant())})";
+        return $"global::System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform({osPlatformExpr})";
     }
 
     private static void EmitArgOptInitializer(IndentedTextWriter w, MemberModel member)
@@ -1475,6 +1629,7 @@ record CommandModel(
     string[] Path,
     string? Description,
     string[]? Aliases,
+    string[]? SupportedPlatforms,
     ImmutableArray<MemberModel> Members,
     ExecuteMethodModel ExecuteMethod,
     ImmutableArray<ConstructorParameterModel> ConstructorParameters);
