@@ -145,6 +145,9 @@ public class MigrateCommand
   `IEnumerable<T>`, `IAsyncEnumerable<T>`, `Task<T>`, `Task<IEnumerable<T>>`, and
   `System.Data.DataTable`.
 - `CommandAttribute` properties: `Path`, `Aliases`, `Description`.
+- `[SupportedOSPlatform("windows"|"linux"|"macos"|...)]` on a command class (or on a
+  base class) gates its registration: the command only appears when the current OS
+  matches one of the listed platforms. Multiple attributes combine with a logical OR.
 
 Commands are discovered via `AddCommandsFromAssembly()`. Discovery is entirely
 source-generated — the `triaxis.CommandLine` package ships a Roslyn source generator under

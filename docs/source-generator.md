@@ -203,6 +203,54 @@ pre-sorted). When multiple assemblies contribute commands under the same parent 
 creation (e.g. in tests or for commands not handled by the generator). It walks the
 `RootCommand` tree, creating and inserting subcommands in sorted position.
 
+## Platform-gated commands
+
+Commands annotated with one or more
+[`[SupportedOSPlatform]`](https://learn.microsoft.com/dotnet/api/system.runtime.versioning.supportedosplatformattribute)
+attributes are only registered when the current OS matches. The generator emits
+the OR of the platform checks directly as the `IsSupported` initializer on the
+corresponding `CommandTreeNode`:
+
+```csharp
+[Command("service")]
+[SupportedOSPlatform("windows")]
+public class ServiceCommand
+{
+    public Task ExecuteAsync() => /* ... */ ;
+}
+```
+
+```csharp
+new CommandTreeNode("service")
+{
+    IsSupported = global::System.OperatingSystem.IsWindows(),
+    Action = new service_Action(getServiceProvider),
+}
+```
+
+`CommandTreeNode.ApplyTo` skips any child whose `IsSupported` is `false`, so the
+command doesn't appear in help output or parse as a valid verb on non-matching
+platforms. `IsSupported` defaults to `true`; the generator only emits it when
+platform attributes are present.
+
+- Multiple `[SupportedOSPlatform]` attributes combine with a logical OR.
+- Attributes on **base classes** are inherited — the generator walks the base
+  chain explicitly (`SupportedOSPlatformAttribute` declares `Inherited=false`,
+  but inheritance is what users expect when a shared base class establishes the
+  platform constraint).
+- Attributes are looked up on the derived-most type that declares any — the
+  innermost `[SupportedOSPlatform]` set wins and base-class sets are hidden.
+- On net5+ the generator uses the **typed** `System.OperatingSystem` methods
+  (`IsWindows()`, `IsLinux()`, `IsMacOS()`, `IsBrowser()`, `IsAndroid()`,
+  `IsIOS()`, `IsTvOS()`, `IsWatchOS()`, `IsMacCatalyst()`, `IsFreeBSD()`,
+  `IsWasi()`). Version suffixes on the attribute (e.g. `windows10.0`) are
+  stripped — only the platform name participates in the check. Unknown platform
+  names fall back to the string-based `IsOSPlatform("...")`.
+- On older TFMs the generator falls back to
+  `RuntimeInformation.IsOSPlatform(...)`, preferring the predefined
+  `OSPlatform.Windows` / `.Linux` / `.OSX` / `.FreeBSD` fields for known names
+  and `OSPlatform.Create(...)` otherwise.
+
 ## Assembly-level `[Command]`
 
 `[Command]` can be applied to the assembly itself. The generator walks
