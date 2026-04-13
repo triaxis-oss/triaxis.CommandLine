@@ -48,9 +48,22 @@ public class CommandTreeNode(string name)
             target.Arguments.Add(argDef.Create());
         }
 
+        // Insert before any recursive options already present on the target so
+        // recursive options (e.g. --help, --verbosity, --output) stay last —
+        // callers are free to add them to the root before or after the command
+        // tree is applied, and the resulting order is always local-first.
+        var insertIndex = target.Options.Count;
+        for (var i = 0; i < target.Options.Count; i++)
+        {
+            if (target.Options[i].Recursive)
+            {
+                insertIndex = i;
+                break;
+            }
+        }
         foreach (var optDef in Options)
         {
-            target.Options.Add(optDef.Create());
+            target.Options.Insert(insertIndex++, optDef.Create());
         }
 
         foreach (var childNode in Subcommands)

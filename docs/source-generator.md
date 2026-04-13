@@ -199,6 +199,17 @@ Subcommands are inserted in sorted position (searching from the end, since the i
 pre-sorted). When multiple assemblies contribute commands under the same parent path,
 `ApplyTo` merges them recursively — matching subcommands by name (case-insensitive).
 
+Locally declared options are inserted ahead of any recursive option already present on
+the target command. Together with `AddRecursiveOption` — which places user-added
+recursive options ahead of System.CommandLine's built-in `HelpOption`/`VersionOption`
+on the root — this gives each command's help output a stable most-specific-to-least-
+specific ordering (locals, then user recursive globals, then `--help`/`--version`).
+Because System.CommandLine renders inherited recursive options on subcommands in the
+exact order they appear on the ancestor's `Options` list, getting the root order
+right is the only thing needed — no per-subcommand reordering, and nothing moves
+after initial registration (which matters because `ChildSymbolList<T>` has no safe
+reorder path: Remove+Add and the indexer setter both double-register the parent).
+
 `ToolBuilder.GetCommand(params string[] path)` is still available for manual command
 creation (e.g. in tests or for commands not handled by the generator). It walks the
 `RootCommand` tree, creating and inserting subcommands in sorted position.

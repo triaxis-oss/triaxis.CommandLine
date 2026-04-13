@@ -123,6 +123,9 @@ public class CommandTreeGenerator : IIncrementalGenerator
                         // triaxis.CommandLine.ObjectOutput + YamlDotNet graph — is only
                         // referenced when a command actually produces output. That lets
                         // trimming drop the unused formatting stack entirely.
+                        // Command discovery runs first so the recursive options added
+                        // by UseVerbosityOptions / UseObjectOutput are appended *after*
+                        // every local option in the root command's option list.
                         var configParts = new List<string>();
                         if (model.ConfigOverridePath is not null)
                         {
@@ -136,6 +139,7 @@ public class CommandTreeGenerator : IIncrementalGenerator
 
                         w.WriteLine("return global::triaxis.CommandLine.Tool.CreateBuilder(args)");
                         w.Indent++;
+                        w.WriteLine(".AddCommandsFromAssembly(typeof(GeneratedProgram).Assembly)");
                         w.WriteLine(".UseSerilog()");
                         w.WriteLine(".UseVerbosityOptions()");
                         if (model.ProducesOutput)
@@ -143,7 +147,6 @@ public class CommandTreeGenerator : IIncrementalGenerator
                             w.WriteLine(".UseObjectOutput()");
                         }
                         w.WriteLine($".UseDefaultConfiguration({configArgs})");
-                        w.WriteLine(".AddCommandsFromAssembly(typeof(GeneratedProgram).Assembly)");
                         w.WriteLine(".Run();");
                         w.Indent--;
                     }

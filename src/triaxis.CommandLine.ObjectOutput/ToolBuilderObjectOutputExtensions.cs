@@ -17,7 +17,10 @@ public static class ToolBuilderObjectOutputExtensions
     {
         var optOutput = OutputFormatOption;
 
-        builder.RootCommand.Options.Add(optOutput);
+        // Insert ahead of the System.CommandLine defaults (--help / --version) so
+        // help output lists --output alongside the other user-configured recursive
+        // options, ahead of the builtins, on every inheriting subcommand.
+        builder.AddRecursiveOption(optOutput);
 
         builder.AddMiddleware(ObjectOutputMiddleware);
         builder.ConfigureServices(services =>

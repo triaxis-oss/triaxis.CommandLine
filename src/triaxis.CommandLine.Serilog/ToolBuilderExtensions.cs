@@ -67,9 +67,12 @@ public static class ToolBuilderExtensions
 
     public static IToolBuilder UseVerbosityOptions(this IToolBuilder builder)
     {
-        builder.RootCommand.Options.Add(VerbosityOptions.Verbosity);
-        builder.RootCommand.Options.Add(VerbosityOptions.Verbose);
-        builder.RootCommand.Options.Add(VerbosityOptions.Quiet);
+        // Insert ahead of System.CommandLine's built-in --help / --version so help
+        // output renders the user-configured recursive options before the defaults
+        // — both on the root command and on every subcommand that inherits them.
+        builder.AddRecursiveOption(VerbosityOptions.Verbosity);
+        builder.AddRecursiveOption(VerbosityOptions.Verbose);
+        builder.AddRecursiveOption(VerbosityOptions.Quiet);
         return builder;
     }
 
