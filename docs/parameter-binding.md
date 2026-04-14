@@ -103,9 +103,13 @@ Key points:
    jump table).
 2. **Only explicit values overwrite defaults.** Arguments check `Tokens.Count > 0`;
    options check `Implicit: false`.
-3. **`required` / `init` members** are set in the object initializer via
-   `parseResult.GetValue<T>(name)` before the binding loop runs. Non-required
-   init-only members use field accessors for conditional binding.
+3. **`required` / `init` members** declared directly on the command are set in
+   the object initializer via `parseResult.GetValue<T>(name)` before the binding
+   loop runs. Members inside a nested `[Options]` type are *always* bound through
+   the loop — even if `required`/`init` — because the container may already be
+   pre-initialized by the user (e.g. `[Options] private readonly Foo _opts = new() { Req = null! }`),
+   in which case the generator's create-if-null branch never runs. Their accessors
+   write through the backing field so init-only members can be set after construction.
 4. **Non-public members** use `UnsafeAccessor` (net8.0+) or cached
    `FieldInfo`/`PropertyInfo` — see [source-generator.md](source-generator.md#reaching-non-public-members).
 
