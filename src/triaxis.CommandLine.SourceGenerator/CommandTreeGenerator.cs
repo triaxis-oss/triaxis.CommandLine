@@ -1396,8 +1396,10 @@ public class CommandTreeGenerator : IIncrementalGenerator
     /// Called once after instance creation, before any binding.
     /// </summary>
     /// <summary>
-    /// Builds a new-expression for an [Options] type, including required children
-    /// and required nested [Options] in the initializer.
+    /// Builds a new-expression for an [Options] type. Required children and required
+    /// nested [Options] are included in the initializer as <c>default!</c> placeholders
+    /// to satisfy the <c>required</c> modifier — the real values are assigned later
+    /// through the regular parseResult bind loop (see <see cref="GenerateOptionsPathResolution"/>).
     /// </summary>
     private static string FormatOptionsCreateExpr(AccessPathSegment seg, AccessPathSegment[] prefix, int depth, MemberModel[] allMembers)
     {
@@ -1415,7 +1417,7 @@ public class CommandTreeGenerator : IIncrementalGenerator
             .ToArray();
 
         var initParts = requiredChildren
-            .Select(m => $"{m.MemberName} = parseResult.GetValue<{m.MemberTypeFqn}>({FormatString(GetCliName(m))})")
+            .Select(m => $"{m.MemberName} = default!")
             .Concat(requiredNestedOpts.Select(s => $"{s.MemberName} = null!"))
             .ToArray();
 
