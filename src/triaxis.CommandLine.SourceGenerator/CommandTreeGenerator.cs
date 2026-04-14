@@ -1164,9 +1164,14 @@ public class CommandTreeGenerator : IIncrementalGenerator
                 // Eagerly resolve [Options] nested objects
                 GenerateOptionsPathResolution(w, args, opts, pathAccessors);
 
-                // Bind explicit argument/option values from parse results
-                var bindableArgs = args.Where(a => !a.NeedsInitializer).ToArray();
-                var bindableOpts = opts.Where(o => !o.NeedsInitializer).ToArray();
+                // Bind explicit argument/option values from parse results.
+                // Members inside an [Options] container are always bound here — even if
+                // `required`/`init` — because the container may be pre-initialized by the
+                // user, in which case the object initializer in the null-branch of the
+                // container's path resolution never runs. Their accessors write through
+                // the backing field, so init-only members can be set post-construction.
+                var bindableArgs = args.Where(a => !a.NeedsInitializer || a.AccessPath.Length > 0).ToArray();
+                var bindableOpts = opts.Where(o => !o.NeedsInitializer || o.AccessPath.Length > 0).ToArray();
 
                 if (bindableArgs.Length > 0 || bindableOpts.Length > 0)
                 {
