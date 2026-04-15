@@ -19,6 +19,8 @@ public class StandaloneCommandTests
         BuilderMain.ResolvedPort = 0;
         BuilderMain.TargetPropertiesHadInvocationContext = false;
         BuilderMain.DelegateObservedInvocationContext = null;
+        DestructiveMain.TargetKey = null;
+        DestructiveMain.ToolKey = null;
     }
 
     [Test]
@@ -87,6 +89,34 @@ public class StandaloneCommandTests
             "ApplyTo should seed InvocationContextKey on the target's Properties.");
         Assert.That(BuilderMain.DelegateObservedInvocationContext?.ParseResult, Is.SameAs(builder.Parse()),
             "A ConfigureServices delegate on the target should be able to call ctx.GetInvocationContext().");
+    }
+
+    [Test]
+    public async Task MainAsync_ApplyTo_IsolatesToolConfigurationFromTarget()
+    {
+        var builder = Tool.CreateBuilder(["destructive-main"]);
+        // Simulate a deferred tool-side delegate (UseMomentumOperationsConfiguration-style)
+        // that destructively clears sources and installs its own. Against a non-isolated
+        // replay this would wipe the target's own sources too.
+        ((IHostBuilder)builder).ConfigureAppConfiguration((_, cfg) =>
+        {
+            cfg.Sources.Clear();
+            cfg.AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["tool_key"] = "tool_value",
+            });
+        });
+        builder.AddCommandsFromAssembly(typeof(StandaloneCommandTests).Assembly);
+
+        await builder.RunAsync();
+
+        // The destructive delegate ran against the tool's scratch builder only — the
+        // target's own user-added source survived.
+        Assert.That(DestructiveMain.TargetKey, Is.EqualTo("target_value"),
+            "A destructive tool-side delegate must not wipe user-added sources on the target.");
+        // And the tool layer's contribution is still visible on the target.
+        Assert.That(DestructiveMain.ToolKey, Is.EqualTo("tool_value"),
+            "The tool's scratch configuration should be merged onto the target as a single source.");
     }
 
     [Test]
@@ -201,46 +231,74 @@ public class BuilderMain
         ResolvedPort = Port;
         return Task.FromResult(0);
     }
+}
 
-    private sealed class TestHostBuilder : IHostBuilder
+[Command("destructive-main")]
+public class DestructiveMain
+{
+    public static string? TargetKey { get; set; }
+    public static string? ToolKey { get; set; }
+
+    public Task MainAsync(IToolBuilder builder)
     {
-        private readonly List<Action<HostBuilderContext, IConfigurationBuilder>> _appCfg = [];
-        private readonly List<Action<HostBuilderContext, IServiceCollection>> _configureServices = [];
-
-        public IDictionary<object, object> Properties { get; } = new Dictionary<object, object>();
-
-        public IHostBuilder ConfigureHostConfiguration(Action<IConfigurationBuilder> _) => this;
-
-        public IHostBuilder ConfigureAppConfiguration(Action<HostBuilderContext, IConfigurationBuilder> d)
-        { _appCfg.Add(d); return this; }
-
-        public IHostBuilder ConfigureServices(Action<HostBuilderContext, IServiceCollection> d)
-        { _configureServices.Add(d); return this; }
-
-        public IHostBuilder UseServiceProviderFactory<TContainerBuilder>(IServiceProviderFactory<TContainerBuilder> _) where TContainerBuilder : notnull => throw new NotSupportedException();
-        public IHostBuilder UseServiceProviderFactory<TContainerBuilder>(Func<HostBuilderContext, IServiceProviderFactory<TContainerBuilder>> _) where TContainerBuilder : notnull => throw new NotSupportedException();
-        public IHostBuilder ConfigureContainer<TContainerBuilder>(Action<HostBuilderContext, TContainerBuilder> _) => throw new NotSupportedException();
-        IHost IHostBuilder.Build() => throw new NotSupportedException();
-
-        public IServiceProvider BuildServices()
+        var target = new TestHostBuilder();
+        // The target owns its own config source — simulating a user-added --config
+        // YAML on a WebApplicationBuilder. A destructive tool-side delegate must
+        // NOT be able to reach in and clear it.
+        ((IHostBuilder)target).ConfigureAppConfiguration((_, cfg) =>
         {
-            var cfgBuilder = new ConfigurationBuilder();
-            var ctx = new HostBuilderContext(Properties) { Configuration = new ConfigurationManager() };
-            foreach (var a in _appCfg)
+            cfg.AddInMemoryCollection(new Dictionary<string, string?>
             {
-                a(ctx, cfgBuilder);
-            }
-            IConfiguration cfg = cfgBuilder.Build();
-            ctx.Configuration = cfg;
+                ["target_key"] = "target_value",
+            });
+        });
+        builder.ApplyTo(target);
+        var services = target.BuildServices();
+        var config = services.GetRequiredService<IConfiguration>();
+        TargetKey = config["target_key"];
+        ToolKey = config["tool_key"];
+        return Task.CompletedTask;
+    }
+}
 
-            var services = new ServiceCollection();
-            services.AddSingleton(cfg);
-            foreach (var a in _configureServices)
-            {
-                a(ctx, services);
-            }
-            return services.BuildServiceProvider();
+internal sealed class TestHostBuilder : IHostBuilder
+{
+    private readonly List<Action<HostBuilderContext, IConfigurationBuilder>> _appCfg = [];
+    private readonly List<Action<HostBuilderContext, IServiceCollection>> _configureServices = [];
+
+    public IDictionary<object, object> Properties { get; } = new Dictionary<object, object>();
+
+    public IHostBuilder ConfigureHostConfiguration(Action<IConfigurationBuilder> _) => this;
+
+    public IHostBuilder ConfigureAppConfiguration(Action<HostBuilderContext, IConfigurationBuilder> d)
+    { _appCfg.Add(d); return this; }
+
+    public IHostBuilder ConfigureServices(Action<HostBuilderContext, IServiceCollection> d)
+    { _configureServices.Add(d); return this; }
+
+    public IHostBuilder UseServiceProviderFactory<TContainerBuilder>(IServiceProviderFactory<TContainerBuilder> _) where TContainerBuilder : notnull => throw new NotSupportedException();
+    public IHostBuilder UseServiceProviderFactory<TContainerBuilder>(Func<HostBuilderContext, IServiceProviderFactory<TContainerBuilder>> _) where TContainerBuilder : notnull => throw new NotSupportedException();
+    public IHostBuilder ConfigureContainer<TContainerBuilder>(Action<HostBuilderContext, TContainerBuilder> _) => throw new NotSupportedException();
+    IHost IHostBuilder.Build() => throw new NotSupportedException();
+
+    public IServiceProvider BuildServices()
+    {
+        var cfgBuilder = new ConfigurationBuilder();
+        var ctx = new HostBuilderContext(Properties) { Configuration = new ConfigurationManager() };
+        foreach (var a in _appCfg)
+        {
+            a(ctx, cfgBuilder);
         }
+        IConfiguration cfg = cfgBuilder.Build();
+        ctx.Configuration = cfg;
+
+        var services = new ServiceCollection();
+        services.AddSingleton(cfg);
+        foreach (var a in _configureServices)
+        {
+            a(ctx, services);
+        }
+        return services.BuildServiceProvider();
     }
 }
 

@@ -103,16 +103,33 @@ A `Task` return yields exit code `0`; `Task<int>` returns the value.
 
 `ApplyTo` replays the builder's configuration sources, service registrations, and
 deferred `IHostBuilder` callbacks onto any `IHostBuilder` — typically the `Host`
-property of a `WebApplicationBuilder`. The replay order mirrors what `ToolBuilder.Build()`
-would have done:
+property of a `WebApplicationBuilder`.
 
-1. Direct configuration sources (anything added to `builder.Configuration` via
-   `IConfigurationBuilder` APIs).
-2. Deferred `ConfigureAppConfiguration` callbacks (e.g. from `UseDefaultConfiguration`).
-3. Direct service descriptors (anything added via `builder.ConfigureServices(Action<IServiceCollection>)`),
-   plus the current `ParseResult` as a singleton.
-4. Deferred `ConfigureServices(HostBuilderContext, IServiceCollection)` callbacks
-   (e.g. the Serilog factory from `UseSerilog`).
+The replay is **isolated**. The tool's contribution is materialised first, against a
+scratch `HostBuilderContext` with the tool's own `Properties`:
+
+1. A fresh `ConfigurationBuilder` is seeded with the tool's direct configuration
+   sources, then handed to every deferred `ConfigureAppConfiguration` callback
+   (e.g. from `UseDefaultConfiguration`). Everything produced is `Build()`-ed into a
+   standalone `IConfigurationRoot`.
+2. A fresh `IServiceCollection` is seeded with the tool's direct service descriptors
+   and the current `ParseResult` as a singleton, then handed to every deferred
+   `ConfigureServices(HostBuilderContext, IServiceCollection)` callback (e.g. the
+   Serilog factory from `UseSerilog`). During this step the scratch
+   `HostBuilderContext.Configuration` is the built tool configuration from step 1 —
+   matching what `ToolBuilder.Build()` exposes to the same callbacks.
+
+The scratch configuration is then attached to the target via a single
+`ConfigureAppConfiguration` callback (`cfg.AddConfiguration(toolConfiguration)`),
+and the scratch services are added as a single bulk `ConfigureServices` callback.
+
+Because the tool's deferred delegates run against a scratch builder, destructive
+operations like `cfg.Sources.Clear()` inside a `UseXxx` extension only see the
+tool's own sources and cannot reach the target's — including user-added sources
+like a `--config` YAML or anything the caller appended to
+`WebApplicationBuilder.Configuration`. The target controls precedence by ordering
+its own registrations relative to the `ApplyTo` call: anything added before
+`ApplyTo` is overridden by the tool's layer; anything added after overrides it.
 
 CLI-only state — the middleware chain, `ICommandExecutor`, `ToolHost` itself — is
 intentionally omitted: those concepts make no sense on an alternate host.
