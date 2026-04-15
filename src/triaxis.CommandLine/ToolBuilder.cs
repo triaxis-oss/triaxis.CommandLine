@@ -92,6 +92,12 @@ class ToolBuilder : IToolBuilder, IHostBuilder
         // Make sure ParseResult exists; it will be registered on the target side below.
         var parseResult = Parse();
 
+        // Seed the build-time InvocationContext on the target's Properties so that any
+        // deferred IHostBuilder callback running against the target's HostBuilderContext
+        // (e.g. the Serilog factory calling ctx.GetInvocationContext()) can observe the
+        // parsed command line — mirroring what Build() does for the tool's own host.
+        target.Properties[HostBuilderContextExtensions.InvocationContextKey] = new InvocationContext(parseResult);
+
         // Direct configuration sources — carry over first so deferred delegates see them.
         if (_configuration.Sources.Count > 0)
         {
