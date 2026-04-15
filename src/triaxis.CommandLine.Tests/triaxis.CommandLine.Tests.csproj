@@ -8,13 +8,24 @@
 
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
+    <!-- We compile the generator source directly for its tests; the extended
+         analyzer rules don't apply inside the test project itself. -->
+    <NoWarn>$(NoWarn);RS1036</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\triaxis.CommandLine\triaxis.CommandLine.csproj" />
   </ItemGroup>
 
+  <!-- Compile the source-generator source file into the test assembly so generator
+       behaviour can be exercised directly via CSharpGeneratorDriver. -->
   <ItemGroup>
+    <Compile Include="..\triaxis.CommandLine.SourceGenerator\CommandTreeGenerator.cs"
+             Link="SourceGenerator\CommandTreeGenerator.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" />
     <PackageReference Include="NUnit" />
     <PackageReference Include="NUnit3TestAdapter" />

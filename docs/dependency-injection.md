@@ -56,6 +56,38 @@ Or with access to the `HostBuilderContext` (standard `IHostBuilder` overload):
 `IServiceCollection`; the `IHostBuilder` overload (`Action<HostBuilderContext, IServiceCollection>`)
 defers until `Build()`.
 
+### Registering services with the generated entry point
+
+If you rely on the [source-generated `Main`](source-generator.md#generated-entry-point)
+there's no obvious place to call `ConfigureServices` — the whole point of the generated
+entry point is that you don't write one. Mark any static method with
+`[ConfigureServices]` and the generator will wire it into the chain for you:
+
+```csharp
+public static class Startup
+{
+    [ConfigureServices]
+    public static void Register(IServiceCollection services)
+    {
+        services.AddHttpClient();
+        services.AddSingleton<IMyService, MyService>();
+    }
+}
+```
+
+Requirements:
+
+- Must be `static`.
+- Must return `void`.
+- Must take exactly one parameter of type `IServiceCollection`.
+- Must be accessible from the generated code (`public` or `internal` — the generated
+  entry point lives in the same assembly).
+
+Methods that don't match are silently ignored so the attribute stays a no-op marker
+rather than a compile-time guard. Multiple `[ConfigureServices]` methods across the
+assembly are supported; the generator emits them in a stable order (ordinal by
+declaring type's fully-qualified name, then by method name).
+
 `TryAddTransient` / `TryAddSingleton` in the library means you can replace any of the
 defaults from `ConfigureServices`:
 

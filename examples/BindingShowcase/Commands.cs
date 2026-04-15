@@ -256,7 +256,7 @@ public class CollectionsCommand
 // ═══════════════════════════════════════════════════════════════════
 
 [Command("ctor-inject", Description = "Constructor injection")]
-public class CtorInjectCommand(ILogger<CtorInjectCommand> logger, IServiceProvider services)
+public class CtorInjectCommand(ILogger<CtorInjectCommand> logger, IServiceProvider services, IGreeter greeter)
 {
     [Option("--name")]
     public string Name { get; set; } = "World";
@@ -264,8 +264,31 @@ public class CtorInjectCommand(ILogger<CtorInjectCommand> logger, IServiceProvid
     public Task ExecuteAsync()
     {
         logger.LogInformation("Services available: {HasServices}", services is not null);
-        Console.WriteLine($"Hello {Name} (via ctor injection)!");
+        Console.WriteLine(greeter.Greet(Name));
         return Task.CompletedTask;
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// [ConfigureServices] hook — registers services with the generated entry point
+// ═══════════════════════════════════════════════════════════════════
+
+public interface IGreeter
+{
+    string Greet(string name);
+}
+
+public class HelloGreeter : IGreeter
+{
+    public string Greet(string name) => $"Hello {name} (via ctor injection)!";
+}
+
+public static class ShowcaseStartup
+{
+    [ConfigureServices]
+    public static void Register(IServiceCollection services)
+    {
+        services.AddSingleton<IGreeter, HelloGreeter>();
     }
 }
 
