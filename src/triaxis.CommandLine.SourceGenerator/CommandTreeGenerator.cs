@@ -1161,10 +1161,16 @@ public class CommandTreeGenerator : IIncrementalGenerator
                     w.WriteLine(FormatWrite(memberAccessors[MemberKey(inject)], "instance", $"provider.GetRequiredService<{serviceType}>()") + ";");
                 }
 
-                // Eagerly resolve [Options] nested objects
-                GenerateOptionsPathResolution(w, args, opts, pathAccessors);
+                // Eagerly resolve [Options] nested objects. This also primes required
+                // members inside each container from `parseResult.GetValue<T>(name)` —
+                // that value is either the user-supplied one or the option's declared
+                // default, and it's written through the backing-field accessor so
+                // init-only members work even after the container was pre-initialized.
+                GenerateOptionsPathResolution(w, args, opts, pathAccessors, memberAccessors);
 
-                // Bind explicit argument/option values from parse results
+                // Bind explicit argument/option values from parse results. Required
+                // members (direct or nested) were already set in the object initializer
+                // (direct) or primed by `GenerateOptionsPathResolution` (nested).
                 var bindableArgs = args.Where(a => !a.NeedsInitializer).ToArray();
                 var bindableOpts = opts.Where(o => !o.NeedsInitializer).ToArray();
 
@@ -1391,8 +1397,10 @@ public class CommandTreeGenerator : IIncrementalGenerator
     /// Called once after instance creation, before any binding.
     /// </summary>
     /// <summary>
-    /// Builds a new-expression for an [Options] type, including required children
-    /// and required nested [Options] in the initializer.
+    /// Builds a new-expression for an [Options] type. Required children and required
+    /// nested [Options] are included in the initializer as <c>default!</c> placeholders
+    /// to satisfy the <c>required</c> modifier — the real values are assigned later
+    /// through the regular parseResult bind loop (see <see cref="GenerateOptionsPathResolution"/>).
     /// </summary>
     private static string FormatOptionsCreateExpr(AccessPathSegment seg, AccessPathSegment[] prefix, int depth, MemberModel[] allMembers)
     {
@@ -1410,7 +1418,7 @@ public class CommandTreeGenerator : IIncrementalGenerator
             .ToArray();
 
         var initParts = requiredChildren
-            .Select(m => $"{m.MemberName} = parseResult.GetValue<{m.MemberTypeFqn}>({FormatString(GetCliName(m))})")
+            .Select(m => $"{m.MemberName} = default!")
             .Concat(requiredNestedOpts.Select(s => $"{s.MemberName} = null!"))
             .ToArray();
 
@@ -1419,7 +1427,7 @@ public class CommandTreeGenerator : IIncrementalGenerator
             : $"new {seg.MemberTypeFqn}()";
     }
 
-    private static void GenerateOptionsPathResolution(IndentedTextWriter w, MemberModel[] args, MemberModel[] opts, Dictionary<string, Accessor> pathAccessors)
+    private static void GenerateOptionsPathResolution(IndentedTextWriter w, MemberModel[] args, MemberModel[] opts, Dictionary<string, Accessor> pathAccessors, Dictionary<string, Accessor> memberAccessors)
     {
         var allMembers = args.Concat(opts).ToArray();
         var resolved = new HashSet<string>();
@@ -1465,6 +1473,22 @@ public class CommandTreeGenerator : IIncrementalGenerator
                 {
                     // Read-only: expect pre-initialized
                     w.WriteLine($"var {varName} = {readExpr} ?? throw new InvalidOperationException(\"[Options] property '{seg.MemberName}' returned null but has no setter\");");
+                }
+
+                // Prime required members at this depth from the parse result. This covers
+                // the case where the [Options] container was pre-initialized by the user
+                // (so the `default!` placeholders in the create expression above never ran)
+                // and also ensures missing optional CLI values fall through to the option's
+                // declared default via `parseResult.GetValue<T>(name)`.
+                var primeMembers = allMembers
+                    .Where(m => m.AccessPath.Length == depth
+                        && m.NeedsInitializer
+                        && m.AccessPath.Select(s => s.MemberName).SequenceEqual(prefix.Select(s => s.MemberName)))
+                    .ToArray();
+                foreach (var prim in primeMembers)
+                {
+                    var primAccessor = memberAccessors[MemberKey(prim)];
+                    w.WriteLine(FormatWrite(primAccessor, varName, $"parseResult.GetValue<{prim.MemberTypeFqn}>({FormatString(GetCliName(prim))})") + ";");
                 }
             }
         }

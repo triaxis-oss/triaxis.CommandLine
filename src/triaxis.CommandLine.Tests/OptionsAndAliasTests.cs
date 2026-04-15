@@ -84,6 +84,30 @@ public class DbPingCommand
     }
 }
 
+public class SetUserPasswordOptions
+{
+    [Option("--login-name")]
+    public required string LoginName { get; init; }
+
+    [Option("--password")]
+    public required string Password { get; init; }
+}
+
+[Command("setpw")]
+public class SetUserPasswordCommand
+{
+    public static SetUserPasswordOptions? LastOptions;
+
+    [Options]
+    private readonly SetUserPasswordOptions _options = new() { LoginName = null!, Password = null! };
+
+    public Task ExecuteAsync()
+    {
+        LastOptions = new SetUserPasswordOptions { LoginName = _options.LoginName, Password = _options.Password };
+        return Task.CompletedTask;
+    }
+}
+
 [Command("endpoint")]
 public class EndpointCommand
 {
@@ -112,6 +136,7 @@ public class OptionsAndAliasTests
     {
         DbPingCommand.LastConfig = null;
         EndpointCommand.LastConfig = null;
+        SetUserPasswordCommand.LastOptions = null;
     }
 
     private static IToolBuilder CreateBuilder(string[] args)
@@ -216,6 +241,22 @@ public class OptionsAndAliasTests
 
         // --first, then [Options] DbConfig expanded in place, then --last
         Assert.That(optionNames, Is.EqualTo(new[] { "--first", "--connection-string", "--timeout", "--last" }));
+    }
+
+    [Test]
+    public async Task PreInitializedOptionsField_BindsRequiredInitOnlyMembers()
+    {
+        // Regression: when the [Options] field is pre-initialized with placeholder
+        // values for required init-only members (`new() { X = null!, Y = null! }`),
+        // the generated create-if-null branch never executes and the required members
+        // must still be bound via the regular parseResult loop.
+        var builder = CreateBuilder(["setpw", "--login-name", "alice", "--password", "s3cret"]);
+        var exit = await builder.RunAsync();
+
+        Assert.That(exit, Is.EqualTo(0));
+        Assert.That(SetUserPasswordCommand.LastOptions, Is.Not.Null);
+        Assert.That(SetUserPasswordCommand.LastOptions!.LoginName, Is.EqualTo("alice"));
+        Assert.That(SetUserPasswordCommand.LastOptions.Password, Is.EqualTo("s3cret"));
     }
 
     [Test]
