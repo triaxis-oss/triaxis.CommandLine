@@ -22,6 +22,7 @@ public interface IToolBuilder : IHostBuilder
     IToolBuilder ConfigureServices(Action<IServiceCollection> configure);
     Func<IServiceProvider> GetServiceProviderAccessor();
     ParseResult Parse();
+    IHostBuilder ApplyTo(IHostBuilder target);
 }
 ```
 
@@ -55,6 +56,87 @@ There are **two** `ConfigureServices` overloads:
 Both are composable — call them as many times as you want. The deferred overload sees the
 fully assembled `HostBuilderContext`, including the build-time `InvocationContext` (see
 below).
+
+### Standalone commands (`MainAsync`)
+
+A command can opt out of the CLI-side service provider entirely by declaring `MainAsync`
+instead of `ExecuteAsync`/`Execute`. When the matched command is standalone, `Build()`
+short-circuits before constructing a service provider — the CLI host is never built,
+no middleware runs, and the command takes full responsibility for its own lifecycle.
+
+```csharp
+[Command("serve")]
+public class ServeCommand
+{
+    [Option("--port")] public int Port { get; set; } = 5000;
+
+    public async Task<int> MainAsync(IToolBuilder builder, CancellationToken ct)
+    {
+        var web = WebApplication.CreateBuilder();
+        builder.ApplyTo(web.Host);             // replay CLI configuration/services
+        web.WebHost.UseUrls($"http://*:{Port}");
+
+        await using var app = web.Build();
+        app.MapGet("/", () => "hello");
+        await app.RunAsync(ct);
+        return 0;
+    }
+}
+```
+
+#### Recognised signatures
+
+`MainAsync` may take any combination of `IToolBuilder` and `CancellationToken`
+(in that order), and may return `Task` or `Task<int>`:
+
+```csharp
+public Task MainAsync();
+public Task MainAsync(CancellationToken ct);
+public Task MainAsync(IToolBuilder builder);
+public Task MainAsync(IToolBuilder builder, CancellationToken ct);
+public Task<int> MainAsync( …same four shapes… );
+```
+
+A `Task` return yields exit code `0`; `Task<int>` returns the value.
+
+#### `IToolBuilder.ApplyTo(IHostBuilder)`
+
+`ApplyTo` replays the builder's configuration sources, service registrations, and
+deferred `IHostBuilder` callbacks onto any `IHostBuilder` — typically the `Host`
+property of a `WebApplicationBuilder`. The replay order mirrors what `ToolBuilder.Build()`
+would have done:
+
+1. Direct configuration sources (anything added to `builder.Configuration` via
+   `IConfigurationBuilder` APIs).
+2. Deferred `ConfigureAppConfiguration` callbacks (e.g. from `UseDefaultConfiguration`).
+3. Direct service descriptors (anything added via `builder.ConfigureServices(Action<IServiceCollection>)`),
+   plus the current `ParseResult` as a singleton.
+4. Deferred `ConfigureServices(HostBuilderContext, IServiceCollection)` callbacks
+   (e.g. the Serilog factory from `UseSerilog`).
+
+CLI-only state — the middleware chain, `ICommandExecutor`, `ToolHost` itself — is
+intentionally omitted: those concepts make no sense on an alternate host.
+
+#### Constraints and diagnostics
+
+The source generator validates standalone commands and emits errors for:
+
+| ID | Condition |
+|---|---|
+| `TXCL001` | Class has `[Inject]` members — DI is unavailable on standalone commands. |
+| `TXCL002` | Class has a constructor with parameters — standalone commands require a parameterless constructor. |
+| `TXCL003` | Class declares both `MainAsync` and `ExecuteAsync`/`Execute`. |
+
+`[Argument]`, `[Option]`, and `[Options]` still bind as usual from `ParseResult` — the
+only capability removed is constructor/member DI.
+
+#### Cancellation
+
+For now, `StandaloneHost` passes `CancellationToken.None` to `MainAsync`. Standalone
+commands are expected to wire their own process-termination handling if needed (e.g.
+via `Console.CancelKeyPress` or `PosixSignalRegistration`). Full cancellation flow
+on par with `ToolHost` (which benefits from System.CommandLine's `ProcessTerminationTimeout`)
+is a follow-up.
 
 ### Reusable `IHostBuilder` extensions
 

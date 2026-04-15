@@ -49,6 +49,23 @@ public class CommandTreeGenerator : IIncrementalGenerator
                 return;
             }
 
+            // Surface any validation diagnostics recorded during model extraction.
+            // Commands with diagnostics are still passed through to GenerateSource so
+            // the tree keeps a node for them (improving IDE experience), but the code
+            // generator skips emitting their *_Action bodies.
+            foreach (var command in commands.Where(c => !c.Diagnostics.IsDefaultOrEmpty))
+            {
+                foreach (var diag in command.Diagnostics)
+                {
+                    var colon = diag.IndexOf(':');
+                    var id = colon > 0 ? diag.Substring(0, colon) : "TXCL000";
+                    var message = colon > 0 ? diag.Substring(colon + 1) : diag;
+                    var descriptor = new DiagnosticDescriptor(id, "Command generator validation", message,
+                        category: "triaxis.CommandLine", DiagnosticSeverity.Error, isEnabledByDefault: true);
+                    spc.ReportDiagnostic(Diagnostic.Create(descriptor, Location.None));
+                }
+            }
+
             var source = GenerateSource(commands, info.AssemblyCommands, info.AssemblyName,
                 info.HasUnsafeAccessor, info.HasOperatingSystemIsOSPlatform);
             spc.AddSource("GeneratedCommandTree.g.cs", source);
@@ -298,8 +315,34 @@ public class CommandTreeGenerator : IIncrementalGenerator
             CollectMembers(current, members, ct);
         }
 
-        var executeMethod = DetectExecuteMethod(typeSymbol);
+        var (executeMethod, isStandalone) = DetectEntryPoint(typeSymbol);
         var ctorParams = ExtractConstructorParameters(typeSymbol);
+
+        // Validate standalone commands: no [Inject], parameterless ctor, no co-existing
+        // ExecuteAsync/Execute. Collect diagnostic messages here and surface them in the
+        // RegisterSourceOutput callback (which has access to ReportDiagnostic).
+        var diagnostics = ImmutableArray<string>.Empty;
+        if (isStandalone)
+        {
+            var diagBuilder = ImmutableArray.CreateBuilder<string>();
+            if (members.Any(m => m.Kind == MemberKind.Inject))
+            {
+                diagBuilder.Add($"TXCL001:Command '{typeSymbol.Name}' declares MainAsync so it runs without a service provider; [Inject] members are not supported on standalone commands.");
+            }
+            if (!ctorParams.IsEmpty)
+            {
+                diagBuilder.Add($"TXCL002:Command '{typeSymbol.Name}' declares MainAsync but has a constructor with parameters; standalone commands require a parameterless constructor.");
+            }
+            // Reject if the class also defines ExecuteAsync / Execute — the two are mutually
+            // exclusive, and silently preferring MainAsync would be surprising.
+            var hasExecute = typeSymbol.GetMembers("ExecuteAsync").OfType<IMethodSymbol>().Any(m => m.Parameters.Length <= 1)
+                || typeSymbol.GetMembers("Execute").OfType<IMethodSymbol>().Any(m => m.Parameters.Length == 0);
+            if (hasExecute)
+            {
+                diagBuilder.Add($"TXCL003:Command '{typeSymbol.Name}' declares both MainAsync and ExecuteAsync/Execute; pick one entry point.");
+            }
+            diagnostics = diagBuilder.ToImmutable();
+        }
 
         return new CommandModel(
             typeSymbol.ToDisplayString(FqnFormat),
@@ -309,7 +352,9 @@ public class CommandTreeGenerator : IIncrementalGenerator
             supportedPlatforms,
             members.ToImmutableArray(),
             executeMethod,
-            ctorParams);
+            ctorParams,
+            IsStandalone: isStandalone,
+            Diagnostics: diagnostics);
     }
 
     private static ImmutableArray<ConstructorParameterModel> ExtractConstructorParameters(INamedTypeSymbol typeSymbol)
@@ -338,8 +383,44 @@ public class CommandTreeGenerator : IIncrementalGenerator
             .ToImmutableArray();
     }
 
-    private static ExecuteMethodModel DetectExecuteMethod(INamedTypeSymbol typeSymbol)
+    private static (ExecuteMethodModel Method, bool IsStandalone) DetectEntryPoint(INamedTypeSymbol typeSymbol)
     {
+        // Check MainAsync overloads first — their presence marks the command as
+        // "standalone" (no service provider, no middleware). Recognised shapes:
+        //   MainAsync()
+        //   MainAsync(CancellationToken)
+        //   MainAsync(IToolBuilder)
+        //   MainAsync(IToolBuilder, CancellationToken)
+        // All variants may return Task or Task<int>.
+        foreach (var m in typeSymbol.GetMembers("MainAsync").OfType<IMethodSymbol>())
+        {
+            var acceptsBuilder = false;
+            var acceptsCt = false;
+            var shapeOk = m.Parameters.Length switch
+            {
+                0 => true,
+                1 => IsCtParam(m.Parameters[0], ref acceptsCt) || IsBuilderParam(m.Parameters[0], ref acceptsBuilder),
+                2 => IsBuilderParam(m.Parameters[0], ref acceptsBuilder) && IsCtParam(m.Parameters[1], ref acceptsCt),
+                _ => false,
+            };
+            if (!shapeOk)
+            {
+                continue;
+            }
+
+            var (kind, innerType) = AnalyzeReturnType(m.ReturnType);
+            // MainAsync must return Task or Task<int>; other return shapes fall through
+            // to the default path below (which will produce a diagnostic in the caller).
+            if (kind is not (ReturnKind.Task or ReturnKind.TaskOfInt))
+            {
+                continue;
+            }
+
+            return (new ExecuteMethodModel("MainAsync", true, acceptsCt,
+                m.ReturnType.ToDisplayString(FqnFormat), kind, innerType,
+                AcceptsToolBuilder: acceptsBuilder), IsStandalone: true);
+        }
+
         // Check ExecuteAsync(CancellationToken) first
         foreach (var m in typeSymbol.GetMembers("ExecuteAsync").OfType<IMethodSymbol>())
         {
@@ -347,9 +428,9 @@ public class CommandTreeGenerator : IIncrementalGenerator
                 m.Parameters[0].Type.ToDisplayString() == "System.Threading.CancellationToken")
             {
                 var (kind, innerType) = AnalyzeReturnType(m.ReturnType);
-                return new ExecuteMethodModel("ExecuteAsync", true, true,
+                return (new ExecuteMethodModel("ExecuteAsync", true, true,
                     m.ReturnType.ToDisplayString(FqnFormat),
-                    kind, innerType);
+                    kind, innerType), IsStandalone: false);
             }
         }
 
@@ -359,9 +440,9 @@ public class CommandTreeGenerator : IIncrementalGenerator
             if (m.Parameters.Length == 0)
             {
                 var (kind, innerType) = AnalyzeReturnType(m.ReturnType);
-                return new ExecuteMethodModel("ExecuteAsync", true, false,
+                return (new ExecuteMethodModel("ExecuteAsync", true, false,
                     m.ReturnType.ToDisplayString(FqnFormat),
-                    kind, innerType);
+                    kind, innerType), IsStandalone: false);
             }
         }
 
@@ -371,13 +452,33 @@ public class CommandTreeGenerator : IIncrementalGenerator
             if (m.Parameters.Length == 0)
             {
                 var (kind, innerType) = AnalyzeReturnType(m.ReturnType);
-                return new ExecuteMethodModel("Execute", false, false,
+                return (new ExecuteMethodModel("Execute", false, false,
                     m.ReturnType.ToDisplayString(FqnFormat),
-                    kind, innerType);
+                    kind, innerType), IsStandalone: false);
             }
         }
 
-        return new ExecuteMethodModel("ExecuteAsync", true, false, "global::System.Threading.Tasks.Task", ReturnKind.Task, null);
+        return (new ExecuteMethodModel("ExecuteAsync", true, false, "global::System.Threading.Tasks.Task", ReturnKind.Task, null), IsStandalone: false);
+
+        static bool IsCtParam(IParameterSymbol p, ref bool accepts)
+        {
+            if (p.Type.ToDisplayString() == "System.Threading.CancellationToken")
+            {
+                accepts = true;
+                return true;
+            }
+            return false;
+        }
+
+        static bool IsBuilderParam(IParameterSymbol p, ref bool accepts)
+        {
+            if (p.Type.ToDisplayString() == "triaxis.CommandLine.IToolBuilder")
+            {
+                accepts = true;
+                return true;
+            }
+            return false;
+        }
     }
 
     private static (ReturnKind Kind, string? InnerTypeFqn) AnalyzeReturnType(ITypeSymbol returnType)
@@ -741,9 +842,13 @@ public class CommandTreeGenerator : IIncrementalGenerator
             });
             w.WriteLine();
 
-            // Per-command action classes
+            // Per-command action classes (skip commands whose validation already failed)
             foreach (var cmd in commands)
             {
+                if (!cmd.Diagnostics.IsDefaultOrEmpty)
+                {
+                    continue;
+                }
                 GenerateCommandAction(w, cmd, hasUnsafeAccessor);
             }
         });
@@ -839,13 +944,15 @@ public class CommandTreeGenerator : IIncrementalGenerator
                 }
             }
 
-            if (node.Command is { } cmd)
+            if (node.Command is { } cmd && cmd.Diagnostics.IsDefaultOrEmpty)
             {
                 var safeName = GetSafeName(cmd);
                 var args = GetArguments(cmd);
                 var opts = GetOptions(cmd);
 
-                w.WriteLine($"Action = new {safeName}_Action(getServiceProvider),");
+                w.WriteLine(cmd.IsStandalone
+                    ? $"Action = new {safeName}_Action(),"
+                    : $"Action = new {safeName}_Action(getServiceProvider),");
                 if (args.Length > 0)
                 {
                     w.Block("Arguments =", suffix: ",", body: () =>
@@ -1045,6 +1152,12 @@ public class CommandTreeGenerator : IIncrementalGenerator
 
     private static void GenerateCommandAction(IndentedTextWriter w, CommandModel cmd, bool hasUnsafeAccessor)
     {
+        if (cmd.IsStandalone)
+        {
+            GenerateStandaloneCommandAction(w, cmd, hasUnsafeAccessor);
+            return;
+        }
+
         var safeName = GetSafeName(cmd);
         var args = GetArguments(cmd);
         var opts = GetOptions(cmd);
@@ -1228,6 +1341,178 @@ public class CommandTreeGenerator : IIncrementalGenerator
         });
 
         }); // end class block
+        w.WriteLine();
+    }
+
+    /// <summary>
+    /// Emits the action class for a standalone command (one that declares <c>MainAsync</c>
+    /// instead of <c>ExecuteAsync</c>/<c>Execute</c>). The generated class implements
+    /// <see cref="IStandaloneAction"/>; <c>ToolBuilder.Build()</c> uses that marker to
+    /// short-circuit and skip building the CLI-side service provider.
+    /// </summary>
+    private static void GenerateStandaloneCommandAction(IndentedTextWriter w, CommandModel cmd, bool hasUnsafeAccessor)
+    {
+        var safeName = GetSafeName(cmd);
+        var args = GetArguments(cmd);
+        var opts = GetOptions(cmd);
+        var exec = cmd.ExecuteMethod;
+
+        w.Block($"internal sealed class {safeName}_Action : AsynchronousCommandLineAction, IStandaloneAction", () =>
+        {
+            // Accessors — same as regular commands, just no [Inject] members to worry about.
+            var memberAccessors = new Dictionary<string, Accessor>();
+            foreach (var member in args.Concat(opts).Where(m => m.AccessPath.Length == 0 && !m.NeedsInitializer))
+            {
+                memberAccessors[MemberKey(member)] = EmitAccessor(
+                    w, member.DeclaringTypeFqn, member.MemberName, member.MemberTypeFqn,
+                    member.IsField, member.IsPublic, member.HasSetter,
+                    $"__access_{GetMemberFieldName(member)}", hasUnsafeAccessor);
+            }
+
+            var pathAccessors = new Dictionary<string, Accessor>();
+            foreach (var member in args.Concat(opts))
+            {
+                foreach (var seg in member.AccessPath)
+                {
+                    var key = seg.OwnerTypeFqn + "." + seg.MemberName;
+                    if (pathAccessors.ContainsKey(key))
+                    {
+                        continue;
+                    }
+                    pathAccessors[key] = EmitAccessor(
+                        w, seg.OwnerTypeFqn, seg.MemberName, seg.MemberTypeFqn,
+                        seg.IsField, seg.IsPublic, seg.HasSetter,
+                        $"__access_path_{seg.MemberName}", hasUnsafeAccessor);
+                }
+            }
+
+            foreach (var member in args.Concat(opts).Where(m => m.AccessPath.Length > 0))
+            {
+                var lastSeg = member.AccessPath[member.AccessPath.Length - 1];
+                memberAccessors[MemberKey(member)] = EmitAccessor(
+                    w, lastSeg.MemberTypeFqn, member.MemberName, member.MemberTypeFqn,
+                    member.IsField, member.IsPublic, member.HasSetter,
+                    $"__access_{GetMemberFieldName(member)}", hasUnsafeAccessor);
+            }
+
+            // IStandaloneAction entry point — called by StandaloneHost with the owning builder.
+            w.Block("public Task<int> InvokeAsync(IToolBuilder builder, ParseResult parseResult, CancellationToken cancellationToken)", () =>
+            {
+                w.WriteLine("return InvokeInternalAsync(builder, parseResult, cancellationToken);");
+            });
+            w.WriteLine();
+
+            // AsynchronousCommandLineAction fallback — used when the action is invoked via
+            // the raw System.CommandLine pipeline (e.g. parseResult.InvokeAsync()) with no
+            // IToolBuilder available. Commands whose MainAsync requires IToolBuilder will
+            // throw through this path; those that don't just run normally.
+            w.Block("public override Task<int> InvokeAsync(ParseResult parseResult, CancellationToken cancellationToken)", () =>
+            {
+                w.WriteLine("return InvokeInternalAsync(null, parseResult, cancellationToken);");
+            });
+            w.WriteLine();
+
+            w.Block("private async Task<int> InvokeInternalAsync(IToolBuilder? builder, ParseResult parseResult, CancellationToken cancellationToken)", () =>
+            {
+                if (exec.AcceptsToolBuilder)
+                {
+                    w.WriteLine("if (builder is null) throw new global::System.InvalidOperationException(" +
+                        $"\"Standalone command '{cmd.TypeName}' declares MainAsync(IToolBuilder, ...) but was invoked without a builder. Use IToolBuilder.Run/RunAsync.\"" +
+                        ");");
+                    w.WriteLine();
+                }
+
+                // Required direct args/opts go in the object initializer (same as regular path).
+                var requiredDirectArgs = args.Where(m => m.NeedsInitializer && m.AccessPath.Length == 0).ToArray();
+                var requiredDirectOpts = opts.Where(m => m.NeedsInitializer && m.AccessPath.Length == 0).ToArray();
+                var requiredOptionsProps = args.Concat(opts)
+                    .Where(m => m.AccessPath.Length > 0 && m.AccessPath[0].IsMemberRequired)
+                    .Select(m => m.AccessPath[0])
+                    .Distinct()
+                    .ToArray();
+
+                var hasInitializer = requiredDirectArgs.Length > 0 || requiredDirectOpts.Length > 0
+                    || requiredOptionsProps.Length > 0;
+
+                if (hasInitializer)
+                {
+                    w.Block($"var instance = new {cmd.TypeName}", () =>
+                    {
+                        foreach (var member in requiredDirectArgs.Concat(requiredDirectOpts))
+                        {
+                            w.WriteLine($"{member.MemberName} = parseResult.GetValue<{member.MemberTypeFqn}>({FormatString(GetCliName(member))}),");
+                        }
+                        foreach (var seg in requiredOptionsProps)
+                        {
+                            var prefix = new[] { seg };
+                            var allMembers = args.Concat(opts).ToArray();
+                            w.WriteLine($"{seg.MemberName} = {FormatOptionsCreateExpr(seg, prefix, 1, allMembers)},");
+                        }
+                    }, suffix: ";");
+                }
+                else
+                {
+                    w.WriteLine($"var instance = new {cmd.TypeName}();");
+                }
+                w.WriteLine();
+
+                // [Options] resolution (primes required nested members from parseResult).
+                GenerateOptionsPathResolution(w, args, opts, pathAccessors, memberAccessors);
+
+                // Bind non-required args/options from parseResult — same foreach as regular.
+                var bindableArgs = args.Where(a => !a.NeedsInitializer).ToArray();
+                var bindableOpts = opts.Where(o => !o.NeedsInitializer).ToArray();
+
+                if (bindableArgs.Length > 0 || bindableOpts.Length > 0)
+                {
+                    w.Block("foreach (var __result in parseResult.CommandResult.Children)", () =>
+                    {
+                        if (bindableArgs.Length > 0)
+                        {
+                            w.Block("if (__result is ArgumentResult { Tokens.Count: > 0 } __ar) switch (__ar.Argument.Name)", () =>
+                            {
+                                foreach (var arg in bindableArgs)
+                                {
+                                    var assign = FormatMemberAssignment(arg, $"__ar.GetValueOrDefault<{arg.MemberTypeFqn}>()", memberAccessors[MemberKey(arg)]);
+                                    w.WriteLine($"case {FormatString(GetCliName(arg))}: {assign} break;");
+                                }
+                            });
+                        }
+                        if (bindableOpts.Length > 0)
+                        {
+                            w.Block("if (__result is OptionResult { Implicit: false } __or) switch (__or.Option.Name)", () =>
+                            {
+                                foreach (var opt in bindableOpts)
+                                {
+                                    var assign = FormatMemberAssignment(opt, $"__or.GetValueOrDefault<{opt.MemberTypeFqn}>()", memberAccessors[MemberKey(opt)]);
+                                    w.WriteLine($"case {FormatString(GetCliName(opt))}: {assign} break;");
+                                }
+                            });
+                        }
+                    });
+                    w.WriteLine();
+                }
+
+                // Call MainAsync with the right shape.
+                var callArgs = (exec.AcceptsToolBuilder, exec.AcceptsCancellationToken) switch
+                {
+                    (true, true) => "builder!, cancellationToken",
+                    (true, false) => "builder!",
+                    (false, true) => "cancellationToken",
+                    (false, false) => "",
+                };
+
+                if (exec.ReturnKind == ReturnKind.TaskOfInt)
+                {
+                    w.WriteLine($"return await instance.MainAsync({callArgs});");
+                }
+                else
+                {
+                    w.WriteLine($"await instance.MainAsync({callArgs});");
+                    w.WriteLine("return 0;");
+                }
+            });
+        });
         w.WriteLine();
     }
 
@@ -1646,7 +1931,8 @@ record ExecuteMethodModel(
     bool AcceptsCancellationToken,
     string ReturnTypeFqn,
     ReturnKind ReturnKind,
-    string? InnerTypeFqn);
+    string? InnerTypeFqn,
+    bool AcceptsToolBuilder = false);
 
 record CommandModel(
     string TypeName,
@@ -1656,7 +1942,9 @@ record CommandModel(
     string[]? SupportedPlatforms,
     ImmutableArray<MemberModel> Members,
     ExecuteMethodModel ExecuteMethod,
-    ImmutableArray<ConstructorParameterModel> ConstructorParameters);
+    ImmutableArray<ConstructorParameterModel> ConstructorParameters,
+    bool IsStandalone = false,
+    ImmutableArray<string> Diagnostics = default);
 
 record AssemblyCommandModel(
     string[] Path,

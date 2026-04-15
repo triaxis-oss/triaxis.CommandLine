@@ -10,7 +10,12 @@ public static class ToolBuilderRunExtensions
         host.Start();
         try
         {
-            return ((ToolHost)host).Invoke();
+            return host switch
+            {
+                ToolHost th => th.Invoke(),
+                StandaloneHost sh => sh.Invoke(),
+                _ => throw new InvalidOperationException($"Unsupported host type '{host.GetType()}'."),
+            };
         }
         finally
         {
@@ -24,7 +29,12 @@ public static class ToolBuilderRunExtensions
         await host.StartAsync();
         try
         {
-            return await ((ToolHost)host).InvokeAsync();
+            return host switch
+            {
+                ToolHost th => await th.InvokeAsync(),
+                StandaloneHost sh => await sh.InvokeAsync(),
+                _ => throw new InvalidOperationException($"Unsupported host type '{host.GetType()}'."),
+            };
         }
         finally
         {

@@ -27,4 +27,20 @@ public interface IToolBuilder : IHostBuilder
     /// called will not be reflected in the returned result.
     /// </remarks>
     ParseResult Parse();
+
+    /// <summary>
+    /// Replays this builder's configuration sources, service registrations, and deferred
+    /// <see cref="IHostBuilder"/> callbacks onto another <see cref="IHostBuilder"/> so an
+    /// alternate host (e.g. a <c>WebApplication</c>) can reuse the same bootstrap.
+    /// </summary>
+    /// <remarks>
+    /// Replayed in the same order <see cref="IHostBuilder.Build"/> would apply them: direct
+    /// configuration sources first, then deferred <c>ConfigureAppConfiguration</c> callbacks,
+    /// then direct service descriptors (plus the current <see cref="ParseResult"/> as a
+    /// singleton), then deferred <c>ConfigureServices(HostBuilderContext, IServiceCollection)</c>
+    /// callbacks. Command-line specific state (the middleware chain, <c>ICommandExecutor</c>,
+    /// <c>ToolHost</c>) is intentionally omitted.
+    /// </remarks>
+    /// <returns>The target builder, for fluent chaining on the alternate host side.</returns>
+    IHostBuilder ApplyTo(IHostBuilder target);
 }
