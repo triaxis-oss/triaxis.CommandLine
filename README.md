@@ -10,6 +10,8 @@ for quickly bootstrapping modern .NET command line tools. It adds:
 - Object output formatting (`Table` / `Wide` / `Json` / `Yaml` / `Raw`) via a single `--output` flag
 - A middleware pipeline around command execution
 - Cooperative cancellation on Ctrl+C / SIGTERM
+- Standalone `MainAsync` commands that own their own host (e.g. ASP.NET Core inside
+  a subcommand)
 
 ## Packages
 
@@ -94,6 +96,8 @@ public interface IToolBuilder : IHostBuilder
     IToolBuilder AddMiddleware(InvocationMiddleware middleware);
     IToolBuilder ConfigureServices(Action<IServiceCollection> configure);
     Func<IServiceProvider> GetServiceProviderAccessor();
+    ParseResult Parse();
+    IHostBuilder ApplyTo(IHostBuilder target);
 }
 ```
 
@@ -155,6 +159,42 @@ source-generated — the `triaxis.CommandLine` package ships a Roslyn source gen
 `[ModuleInitializer]` that registers them all. `AddCommandsFromAssembly` throws if no
 generated registration is present, which in practice only happens if the assembly was
 compiled without a reference to the package.
+
+#### Standalone commands (`MainAsync`)
+
+A `[Command]` class can declare a `MainAsync` method instead of `Execute`/`ExecuteAsync`.
+The generator emits an action that skips the DI container and middleware pipeline
+entirely and passes the `IToolBuilder` straight through, letting the command stand up
+its own host. `IToolBuilder.ApplyTo(IHostBuilder)` replays every configuration source,
+service registration, and `IHostBuilder` callback onto the alternate host so the CLI
+and the standalone command share the same bootstrap:
+
+```csharp
+[Command("serve", Description = "Runs the greeter as an HTTP server.")]
+public class ServeCommand
+{
+    [Option("--port")] public int Port { get; set; } = 5000;
+
+    public async Task<int> MainAsync(IToolBuilder builder, CancellationToken ct)
+    {
+        var web = WebApplication.CreateBuilder();
+        web.Logging.ClearProviders();     // drop ASP.NET Core's defaults
+        builder.ApplyTo(web.Host);        // replay CLI-side config / services / Serilog
+        web.WebHost.UseUrls($"http://localhost:{Port}");
+
+        var app = web.Build();
+        app.MapGet("/", (IGreeter g) => g.Greet("World"));
+        await app.RunAsync(ct);
+        return 0;
+    }
+}
+```
+
+Recognized signatures are `MainAsync([IToolBuilder,] [CancellationToken])` returning
+`Task` or `Task<int>`. Standalone commands can still use `[Argument]`/`[Option]`/`[Options]`
+binding, but cannot mix with `[Inject]` members or constructor DI — their whole point is
+that no service provider is constructed on the CLI side. See
+[`examples/WebHost`](./examples/WebHost) for a full walkthrough.
 
 ### Arguments and options
 
@@ -231,6 +271,24 @@ Tool.CreateBuilder(args)
     })
     .Run();
 ```
+
+When you rely on the source-generated entry point (no hand-written `Main`), mark any
+static method with `[ConfigureServices]` and the generator folds it into the chain
+for you:
+
+```csharp
+public static class Startup
+{
+    [ConfigureServices]
+    public static void Register(IServiceCollection services)
+        => services.AddSingleton<IMyService, MyService>();
+}
+```
+
+The method must be `static`, return `void`, and take a single `IServiceCollection`
+parameter. Multiple hooks across the assembly are supported; the generator emits
+them in a stable ordinal order (by declaring type's fully-qualified name, then by
+method name).
 
 Inside a command, take services through the constructor as usual, or use the `[Inject]`
 attribute on any field or property. `[Inject]` is particularly handy on reusable base
@@ -519,6 +577,7 @@ Deeper dives into how the library is put together live under [`docs/`](./docs):
 - [Parameter binding](./docs/parameter-binding.md)
 - [Command discovery and the source generator](./docs/source-generator.md)
 - [Dependency injection and `[Inject]`](./docs/dependency-injection.md)
+- [Hosting, `IHostBuilder`, and `ApplyTo`](./docs/hosting.md)
 - [Middleware and the command executor](./docs/middleware.md)
 - [Object output pipeline](./docs/object-output.md)
 
@@ -531,9 +590,17 @@ Runnable examples live under [`examples/`](./examples):
 - [`examples/ObjectOutput`](./examples/ObjectOutput) — every supported return shape
   (`IEnumerable`, `IAsyncEnumerable`, `Task<IEnumerable>`, tuples, `DataTable`, manual
   `IObjectOutputHandler`) and the `--output` formatter matrix.
+- [`examples/BindingShowcase`](./examples/BindingShowcase) — every parameter-binding
+  variant (public/private, required, init-only, `[Options]` grouping, nested
+  `[Options]`, collections, constructor injection, aliases, nested command paths) plus
+  the `[ConfigureServices]` hook.
+- [`examples/WebHost`](./examples/WebHost) — a standalone `MainAsync` subcommand that
+  runs an ASP.NET Core server while sharing the CLI's configuration, Serilog wiring,
+  and DI container via `IToolBuilder.ApplyTo(web.Host)`.
 - [`examples/hello.cs`](./examples/hello.cs) — a single-file .NET 10 "dotnet run app.cs"
-  tool (no `.csproj`, no `Main`, shebang-executable). Uses `[assembly: ToolDefaults(...)]`
-  to configure the generated bootstrap.
+  tool (no `.csproj`, no `Main`, shebang-executable). MSBuild properties such as
+  `TriaxisCommandLineEnvironmentVariablePrefix` can be supplied via `#:property` if
+  the generated bootstrap needs them.
 
 Build and run:
 
@@ -541,6 +608,8 @@ Build and run:
 dotnet build examples/Examples.sln
 dotnet run --project examples/Hello -- hello Alice
 dotnet run --project examples/ObjectOutput -- enumerable -o Json
+dotnet run --project examples/BindingShowcase -- ctor-inject --name Alice
+dotnet run --project examples/WebHost -- serve --port 5000
 dotnet run examples/hello.cs -- greet --name Alice
 ./examples/hello.cs greet --name Alice        # after chmod +x
 ```
