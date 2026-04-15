@@ -109,6 +109,61 @@ public class ToolBuilderTests
     }
 
     [Test]
+    public void Parse_ReturnsParseResultForCurrentArguments()
+    {
+        var builder = Tool.CreateBuilder(["foo", "bar"]);
+        builder.GetCommand("foo");
+
+        var parseResult = builder.Parse();
+
+        Assert.That(parseResult, Is.Not.Null);
+        Assert.That(parseResult.CommandResult.Command.Name, Is.EqualTo("foo"));
+    }
+
+    [Test]
+    public void Parse_IsIdempotent_ReturnsSameInstanceOnRepeatedCalls()
+    {
+        var builder = Tool.CreateBuilder(["foo"]);
+        builder.GetCommand("foo");
+
+        var first = builder.Parse();
+        var second = builder.Parse();
+
+        Assert.That(second, Is.SameAs(first));
+    }
+
+    [Test]
+    public void Parse_BeforeBuild_ExposesParseResultForEarlyInspection()
+    {
+        var builder = Tool.CreateBuilder(["alpha"]);
+        builder.GetCommand("alpha");
+        builder.GetCommand("beta");
+
+        var parseResult = builder.Parse();
+
+        Assert.That(parseResult.CommandResult.Command.Name, Is.EqualTo("alpha"));
+    }
+
+    [Test]
+    public async Task Parse_CachedResultIsReusedByBuild()
+    {
+        // If Build() re-parsed, it would see a different tree when we mutate the
+        // RootCommand after calling Parse(). Verify that the cached parse wins.
+        var builder = Tool.CreateBuilder(["lifetime-resolve"]);
+        var capture = new LifetimeCapture();
+        builder.ConfigureServices(s => s.AddSingleton(capture));
+        builder.AddCommandsFromAssembly(typeof(ToolBuilderTests).Assembly);
+
+        var parsedEarly = builder.Parse();
+
+        await builder.RunAsync();
+
+        Assert.That(capture.Lifetime, Is.Not.Null,
+            "the cached parse result should have been reused and the command should have executed");
+        Assert.That(parsedEarly.CommandResult.Command.Name, Is.EqualTo("lifetime-resolve"));
+    }
+
+    [Test]
     public async Task HostApplicationLifetime_IsResolvable_DuringCommandExecution()
     {
         var capture = new LifetimeCapture();

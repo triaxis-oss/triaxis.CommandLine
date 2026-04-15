@@ -22,6 +22,7 @@ class ToolBuilder : IToolBuilder, IHostBuilder
     private readonly List<Action<HostBuilderContext, IConfigurationBuilder>> _appConfigActions = [];
     private readonly List<Action<HostBuilderContext, IServiceCollection>> _hostConfigureServicesActions = [];
     private IServiceProvider? _serviceProvider;
+    private ParseResult? _parseResult;
 
     public IConfigurationManager Configuration => _configuration;
 
@@ -81,6 +82,27 @@ class ToolBuilder : IToolBuilder, IHostBuilder
 
     public Func<IServiceProvider> GetServiceProviderAccessor() => () => _serviceProvider!;
 
+    public ParseResult Parse()
+    {
+        if (_parseResult is not null)
+        {
+            return _parseResult;
+        }
+
+        // Parse with invariant culture so numeric/date conversions are locale-independent
+        var savedCulture = CultureInfo.CurrentCulture;
+        CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
+        try
+        {
+            _parseResult = _root.Parse(_args);
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = savedCulture;
+        }
+        return _parseResult;
+    }
+
     #region IHostBuilder
 
     IDictionary<object, object> IHostBuilder.Properties => _properties;
@@ -114,18 +136,7 @@ class ToolBuilder : IToolBuilder, IHostBuilder
 
     IHost IHostBuilder.Build()
     {
-        // Parse with invariant culture so numeric/date conversions are locale-independent
-        var savedCulture = CultureInfo.CurrentCulture;
-        CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
-        ParseResult parseResult;
-        try
-        {
-            parseResult = _root.Parse(_args);
-        }
-        finally
-        {
-            CultureInfo.CurrentCulture = savedCulture;
-        }
+        var parseResult = Parse();
 
         var hostBuilderContext = new HostBuilderContext(_properties)
         {
