@@ -361,6 +361,38 @@ is kept as a convenience one-liner for hand-written `Main`s, but **it is not use
 generated entry point** — if you add work to `UseDefaults`, it won't run for consumers
 that rely on generation.
 
+### Service registration via `[ConfigureServices]`
+
+Any static method in the assembly tagged with `[ConfigureServices]` is folded into the
+generated chain as a `.ConfigureServices(...)` call, letting projects register their own
+services without hand-writing a `Main`:
+
+```csharp
+public static class Startup
+{
+    [ConfigureServices]
+    public static void Register(IServiceCollection services)
+        => services.AddSingleton<IMyService, MyService>();
+}
+```
+
+```csharp
+return global::triaxis.CommandLine.Tool.CreateBuilder(args)
+    .AddCommandsFromAssembly(typeof(GeneratedProgram).Assembly)
+    .UseSerilog()
+    .UseVerbosityOptions()
+    .UseDefaultConfiguration()
+    .ConfigureServices(global::Startup.Register)
+    .Run();
+```
+
+The method must be `static`, return `void`, and take a single
+`Microsoft.Extensions.DependencyInjection.IServiceCollection` parameter. Other shapes are
+ignored. Multiple hooks across the assembly are emitted in a stable ordinal order (by
+declaring type's fully-qualified name, then by method name). The hooks participate in the
+fallback path too (when only the base `triaxis.CommandLine` package is referenced, without
+`UseDefaults`).
+
 Both gates (output kind + existing entry point) are checked against the pre-generator
 compilation, so a user-provided `Main` always wins — generated files from this generator
 are not in the compilation that `GetEntryPoint` sees, so there is no feedback loop and no

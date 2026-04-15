@@ -83,12 +83,25 @@ public class CommandTreeGenerator : IIncrementalGenerator
                     EnvironmentVariablePrefix: string.IsNullOrEmpty(envPrefix) ? (string?)null : envPrefix);
         });
 
+        // Discover static methods marked with [ConfigureServices] so the generated
+        // entry point can invoke them as service-registration hooks without the user
+        // having to hand-write a Main just to call .ConfigureServices().
+        var configureServicesHooks = context.SyntaxProvider
+            .ForAttributeWithMetadataName(
+                "triaxis.CommandLine.ConfigureServicesAttribute",
+                predicate: static (node, _) => node is MethodDeclarationSyntax,
+                transform: static (ctx, _) => ExtractConfigureServicesHook(ctx))
+            .Where(static m => m is not null)
+            .Select(static (m, _) => m!)
+            .Collect();
+
         var entryPointModel = context.CompilationProvider
             .Combine(entryPointProps)
             .Combine(collected)
+            .Combine(configureServicesHooks)
             .Select(static (pair, ct) =>
             {
-                var ((compilation, props), commands) = pair;
+                var (((compilation, props), commands), hooks) = pair;
                 if (compilation.Options.OutputKind != OutputKind.ConsoleApplication)
                 {
                     return null;
@@ -111,10 +124,20 @@ public class CommandTreeGenerator : IIncrementalGenerator
                         ReturnKind.Int or
                         ReturnKind.TaskOfInt));
 
+                // Stable emission order so generator output is deterministic across
+                // reorderings of source files.
+                var orderedHooks = hooks.IsDefaultOrEmpty
+                    ? ImmutableArray<ConfigureServicesHookModel>.Empty
+                    : hooks
+                        .OrderBy(h => h.DeclaringTypeFqn, StringComparer.Ordinal)
+                        .ThenBy(h => h.MethodName, StringComparer.Ordinal)
+                        .ToImmutableArray();
+
                 return new EntryPointModel(hasToolPackage,
                     hasToolPackage ? props.ConfigOverridePath : null,
                     hasToolPackage ? props.EnvironmentVariablePrefix : null,
-                    producesOutput);
+                    producesOutput,
+                    orderedHooks);
             });
 
         context.RegisterSourceOutput(entryPointModel, static (spc, model) =>
@@ -175,12 +198,25 @@ public class CommandTreeGenerator : IIncrementalGenerator
                             w.WriteLine(".UseObjectOutput()");
                         }
                         w.WriteLine($".UseDefaultConfiguration({configArgs})");
+                        EmitConfigureServicesHooks(w, model.ConfigureServicesHooks);
                         w.WriteLine(".Run();");
                         w.Indent--;
                     }
                     else
                     {
-                        w.WriteLine("return global::triaxis.CommandLine.Tool.CreateBuilder(args).AddCommandsFromAssembly(typeof(GeneratedProgram).Assembly).Run();");
+                        if (model.ConfigureServicesHooks.IsDefaultOrEmpty)
+                        {
+                            w.WriteLine("return global::triaxis.CommandLine.Tool.CreateBuilder(args).AddCommandsFromAssembly(typeof(GeneratedProgram).Assembly).Run();");
+                        }
+                        else
+                        {
+                            w.WriteLine("return global::triaxis.CommandLine.Tool.CreateBuilder(args)");
+                            w.Indent++;
+                            w.WriteLine(".AddCommandsFromAssembly(typeof(GeneratedProgram).Assembly)");
+                            EmitConfigureServicesHooks(w, model.ConfigureServicesHooks);
+                            w.WriteLine(".Run();");
+                            w.Indent--;
+                        }
                     }
                 });
             });
@@ -188,6 +224,53 @@ public class CommandTreeGenerator : IIncrementalGenerator
 
         w.Flush();
         return sw.ToString();
+    }
+
+    private static void EmitConfigureServicesHooks(IndentedTextWriter w, ImmutableArray<ConfigureServicesHookModel> hooks)
+    {
+        if (hooks.IsDefaultOrEmpty)
+        {
+            return;
+        }
+        foreach (var hook in hooks)
+        {
+            w.WriteLine($".ConfigureServices({hook.DeclaringTypeFqn}.{hook.MethodName})");
+        }
+    }
+
+    private static ConfigureServicesHookModel? ExtractConfigureServicesHook(GeneratorAttributeSyntaxContext ctx)
+    {
+        if (ctx.TargetSymbol is not IMethodSymbol method)
+        {
+            return null;
+        }
+
+        // The generated Main calls the method as a delegate, so only static methods with
+        // the expected signature are usable. Non-matching shapes are silently skipped —
+        // accessibility problems surface as ordinary compile errors at the call site.
+        if (!method.IsStatic)
+        {
+            return null;
+        }
+
+        if (method.Parameters.Length != 1)
+        {
+            return null;
+        }
+
+        if (method.Parameters[0].Type.ToDisplayString() != "Microsoft.Extensions.DependencyInjection.IServiceCollection")
+        {
+            return null;
+        }
+
+        if (method.ReturnType.SpecialType != SpecialType.System_Void)
+        {
+            return null;
+        }
+
+        return new ConfigureServicesHookModel(
+            method.ContainingType.ToDisplayString(FqnFormat),
+            method.Name);
     }
 
     private static ImmutableArray<AssemblyCommandModel> ExtractAssemblyCommands(Compilation compilation)
@@ -1955,7 +2038,12 @@ record EntryPointModel(
     bool HasToolPackage,
     string? ConfigOverridePath,
     string? EnvironmentVariablePrefix,
-    bool ProducesOutput);
+    bool ProducesOutput,
+    ImmutableArray<ConfigureServicesHookModel> ConfigureServicesHooks);
+
+record ConfigureServicesHookModel(
+    string DeclaringTypeFqn,
+    string MethodName);
 
 record AccessPathSegment(
     string MemberName,
