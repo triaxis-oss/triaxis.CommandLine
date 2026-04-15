@@ -2,6 +2,9 @@ namespace triaxis.CommandLine.ToolTests;
 
 using System.CommandLine;
 using System.CommandLine.Help;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 
 [TestFixture]
 public class UseDefaultConfigurationTests
@@ -106,6 +109,28 @@ public class UseDefaultConfigurationTests
 
         Assert.That(opt.Parents.Count(), Is.EqualTo(1),
             "A freshly registered recursive option should have exactly one parent.");
+    }
+
+    [Test]
+    public void UseDefaultConfiguration_OnPlainHostBuilder_AppliesEnvironmentVariables()
+    {
+        // The extension should be usable on any IHostBuilder, so an alternate host
+        // (e.g. WebApplication.CreateBuilder(args).Host) can reuse the same
+        // configuration bootstrap.
+        Environment.SetEnvironmentVariable("TXHOSTCFG_plainkey", "plainvalue");
+        try
+        {
+            using var host = Host.CreateDefaultBuilder()
+                .UseDefaultConfiguration(environmentVariablePrefix: "TXHOSTCFG_")
+                .Build();
+
+            var configuration = host.Services.GetRequiredService<IConfiguration>();
+            Assert.That(configuration["plainkey"], Is.EqualTo("plainvalue"));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("TXHOSTCFG_plainkey", null);
+        }
     }
 
     [Test]

@@ -1,6 +1,7 @@
 namespace triaxis.CommandLine.Serilog.Tests;
 
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
 [TestFixture]
@@ -103,5 +104,49 @@ public class UseSerilogTests
         var builder = Tool.CreateBuilder([]);
         var result = builder.UseSerilog();
         Assert.That(result, Is.SameAs(builder));
+    }
+
+    [Test]
+    public void UseSerilog_OnPlainHostBuilder_RegistersLoggerFactory()
+    {
+        // The UseSerilog extension should be usable on any IHostBuilder, not only
+        // IToolBuilder — so that an alternate host (e.g. WebApplication.Host) can
+        // reuse the same logging bootstrap.
+        using var host = Host.CreateDefaultBuilder()
+            .UseSerilog()
+            .Build();
+
+        var factory = host.Services.GetRequiredService<ILoggerFactory>();
+        Assert.That(factory, Is.Not.Null);
+
+        // ParseResult is not registered on a plain host, so verbosity falls back to
+        // whatever ReadFrom.Configuration / defaults produce — logging must still
+        // be resolvable without throwing.
+        var logger = factory.CreateLogger("test");
+        Assert.That(logger, Is.Not.Null);
+    }
+
+    [Test]
+    public async Task UseSerilog_OnPlainHostBuilder_WithoutParseResult_UsesDefaultLevel()
+    {
+        // Verbosity wiring reads ParseResult from DI; on alternate hosts where that
+        // service is not registered, UseSerilog must gracefully skip the verbosity
+        // override instead of throwing.
+        using var host = Host.CreateDefaultBuilder()
+            .UseSerilog()
+            .Build();
+        await host.StartAsync();
+        try
+        {
+            var logger = host.Services.GetRequiredService<ILogger<UseSerilogTests>>();
+            // Information is Serilog's default; verify it's enabled and constructing
+            // the provider did not throw (which it would if GetRequiredService<ParseResult>
+            // were still used).
+            Assert.That(logger.IsEnabled(LogLevel.Information), Is.True);
+        }
+        finally
+        {
+            await host.StopAsync();
+        }
     }
 }

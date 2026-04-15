@@ -3,6 +3,7 @@ namespace triaxis.CommandLine;
 using System.Reflection;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.FileProviders;
+using Microsoft.Extensions.Hosting;
 
 public static class ToolBuilderExtensions
 {
@@ -46,34 +47,49 @@ public static class ToolBuilderExtensions
     /// <param name="environmentVariablePrefix">
     /// Optional prefix for environment-variable configuration (e.g. <c>"MYTOOL_"</c>).
     /// </param>
+    /// <remarks>
+    /// Targets <see cref="IHostBuilder"/> so the same configuration bootstrap can be reused
+    /// by alternate hosts (e.g. <c>WebApplication.CreateBuilder(args).Host.UseDefaultConfiguration(...)</c>).
+    /// For <see cref="IToolBuilder"/> an overload of the same name preserves the fluent CLI chain.
+    /// </remarks>
+    public static IHostBuilder UseDefaultConfiguration(this IHostBuilder builder,
+        string? configOverridePath = null,
+        string? environmentVariablePrefix = null)
+    {
+        builder.ConfigureAppConfiguration((_, config) =>
+        {
+            config.SetBasePath(AppContext.BaseDirectory);
+            config.AddJsonFile("appsettings.json", optional: true);
+
+            if (configOverridePath is not null)
+            {
+                void AddOverrideConfig(Environment.SpecialFolder folder)
+                {
+                    var path = Path.Combine(Environment.GetFolderPath(folder), configOverridePath);
+                    if (File.Exists(path))
+                    {
+                        config.AddJsonFile(new PhysicalFileProvider(Path.GetDirectoryName(path)!), Path.GetFileName(path), optional: false, reloadOnChange: false);
+                    }
+                }
+
+                AddOverrideConfig(Environment.SpecialFolder.ApplicationData);
+                AddOverrideConfig(Environment.SpecialFolder.LocalApplicationData);
+            }
+
+            if (environmentVariablePrefix is not null)
+            {
+                config.AddEnvironmentVariables(environmentVariablePrefix);
+            }
+        });
+
+        return builder;
+    }
+
     public static IToolBuilder UseDefaultConfiguration(this IToolBuilder builder,
         string? configOverridePath = null,
         string? environmentVariablePrefix = null)
     {
-        var config = builder.Configuration;
-        config.SetBasePath(AppContext.BaseDirectory);
-        config.AddJsonFile("appsettings.json", optional: true);
-
-        if (configOverridePath is not null)
-        {
-            void AddOverrideConfig(Environment.SpecialFolder folder)
-            {
-                var path = Path.Combine(Environment.GetFolderPath(folder), configOverridePath);
-                if (File.Exists(path))
-                {
-                    config.AddJsonFile(new PhysicalFileProvider(Path.GetDirectoryName(path)), Path.GetFileName(path), optional: false, reloadOnChange: false);
-                }
-            }
-
-            AddOverrideConfig(Environment.SpecialFolder.ApplicationData);
-            AddOverrideConfig(Environment.SpecialFolder.LocalApplicationData);
-        }
-
-        if (environmentVariablePrefix is not null)
-        {
-            config.AddEnvironmentVariables(environmentVariablePrefix);
-        }
-
+        ((IHostBuilder)builder).UseDefaultConfiguration(configOverridePath, environmentVariablePrefix);
         return builder;
     }
 }

@@ -56,6 +56,38 @@ Both are composable — call them as many times as you want. The deferred overlo
 fully assembled `HostBuilderContext`, including the build-time `InvocationContext` (see
 below).
 
+### Reusable `IHostBuilder` extensions
+
+`UseSerilog` and `UseDefaultConfiguration` target `IHostBuilder` directly, so the same
+configuration and logging bootstrap can be applied to any generic host — for example a
+web host built for a specific subcommand:
+
+```csharp
+var builder = Tool.CreateBuilder(args).UseDefaults();
+var parse = builder.Parse();
+if (parse.CommandResult.Command.Name == "serve")
+{
+    var web = WebApplication.CreateBuilder(args);
+    web.Host
+        .UseDefaultConfiguration(environmentVariablePrefix: "MYTOOL_")
+        .UseSerilog();
+    var app = web.Build();
+    app.MapGet("/", () => "hello");
+    return await app.RunAsync().ContinueWith(_ => 0);
+}
+return await builder.RunAsync();
+```
+
+`UseSerilog` reads `ParseResult` from DI when present (to apply `--verbosity` / `-v` /
+`-q` / `VerbosityOptions`). On alternate hosts where `ParseResult` is not registered,
+the verbosity override is skipped and the minimum level falls back to whatever
+`ReadFrom.Configuration` and your `configure` callback produced.
+
+The CLI-specific extensions — `UseVerbosityOptions`, `UseObjectOutput`,
+`AddCommandsFromAssembly`, `AddRecursiveOption` — remain `IToolBuilder`-only because
+they mutate the `RootCommand` tree or the command-executor middleware chain, neither of
+which exists on a generic host.
+
 ### Early access to `ParseResult`
 
 `Parse()` runs System.CommandLine's parser against the current `RootCommand` tree and
