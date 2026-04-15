@@ -12,19 +12,18 @@ using Serilog.Sinks.SystemConsole.Themes;
 
 public static class ToolBuilderExtensions
 {
-    public static IToolBuilder UseSerilog(this IToolBuilder builder, bool useShortContext = false, Action<IConfiguration, LoggerConfiguration>? configure = null)
+    public static IHostBuilder UseSerilog(this IHostBuilder builder, bool useShortContext = false, Action<IConfiguration, LoggerConfiguration>? configure = null)
         => builder.UseSerilog(useShortContext, configure is null ? null : (context, loggerConfig) => configure(context.Configuration, loggerConfig));
 
-    public static IToolBuilder UseSerilog(this IToolBuilder builder, Action<HostBuilderContext, LoggerConfiguration> configure)
+    public static IHostBuilder UseSerilog(this IHostBuilder builder, Action<HostBuilderContext, LoggerConfiguration> configure)
         => builder.UseSerilog(useShortContext: false, configure);
 
-    public static IToolBuilder UseSerilog(this IToolBuilder builder, bool useShortContext, Action<HostBuilderContext, LoggerConfiguration>? configure)
+    public static IHostBuilder UseSerilog(this IHostBuilder builder, bool useShortContext, Action<HostBuilderContext, LoggerConfiguration>? configure)
     {
         // Capture the HostBuilderContext via IHostBuilder.ConfigureServices(HostBuilderContext, ...)
         // so the Serilog factory can close over it instead of resolving it from DI (it's a
         // build-time object that shouldn't leak into the runtime container).
-        IHostBuilder hostBuilder = builder;
-        hostBuilder.ConfigureServices((hostBuilderContext, services) => services.AddLogging(logging =>
+        builder.ConfigureServices((hostBuilderContext, services) => services.AddLogging(logging =>
         {
             logging.SetMinimumLevel(LogLevel.Trace);
             logging.Services.AddSingleton<ILoggerProvider>(sp =>
@@ -55,13 +54,39 @@ public static class ToolBuilderExtensions
 
                 configure?.Invoke(hostBuilderContext, loggerConfig);
 
-                var level = VerbosityOptions.GetEffectiveLevel(sp.GetRequiredService<ParseResult>());
-                loggerConfig.MinimumLevel.Is(LevelConvert.ToSerilogLevel(level));
+                // ParseResult is only registered when the host is a triaxis.CommandLine
+                // ToolHost; for alternate hosts (e.g. WebApplication) it may be absent,
+                // in which case we leave the minimum level to whatever ReadFrom.Configuration
+                // and the user-supplied configure callback produced.
+                var parseResult = sp.GetService<ParseResult>();
+                if (parseResult is not null)
+                {
+                    var level = VerbosityOptions.GetEffectiveLevel(parseResult);
+                    loggerConfig.MinimumLevel.Is(LevelConvert.ToSerilogLevel(level));
+                }
 
                 return new SerilogLoggerProvider(loggerConfig.CreateLogger(), dispose: true);
             });
         }));
 
+        return builder;
+    }
+
+    public static IToolBuilder UseSerilog(this IToolBuilder builder, bool useShortContext = false, Action<IConfiguration, LoggerConfiguration>? configure = null)
+    {
+        ((IHostBuilder)builder).UseSerilog(useShortContext, configure);
+        return builder;
+    }
+
+    public static IToolBuilder UseSerilog(this IToolBuilder builder, Action<HostBuilderContext, LoggerConfiguration> configure)
+    {
+        ((IHostBuilder)builder).UseSerilog(configure);
+        return builder;
+    }
+
+    public static IToolBuilder UseSerilog(this IToolBuilder builder, bool useShortContext, Action<HostBuilderContext, LoggerConfiguration>? configure)
+    {
+        ((IHostBuilder)builder).UseSerilog(useShortContext, configure);
         return builder;
     }
 
