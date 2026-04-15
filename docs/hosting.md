@@ -21,6 +21,7 @@ public interface IToolBuilder : IHostBuilder
     IToolBuilder AddMiddleware(InvocationMiddleware middleware);
     IToolBuilder ConfigureServices(Action<IServiceCollection> configure);
     Func<IServiceProvider> GetServiceProviderAccessor();
+    ParseResult Parse();
 }
 ```
 
@@ -54,6 +55,27 @@ There are **two** `ConfigureServices` overloads:
 Both are composable — call them as many times as you want. The deferred overload sees the
 fully assembled `HostBuilderContext`, including the build-time `InvocationContext` (see
 below).
+
+### Early access to `ParseResult`
+
+`Parse()` runs System.CommandLine's parser against the current `RootCommand` tree and
+caches the result. Calling it before `Build()` lets callers inspect the parsed command
+line — for example to short-circuit into an entirely different host (a web host, a
+worker host) when a specific subcommand is matched:
+
+```csharp
+var builder = Tool.CreateBuilder(args).UseDefaults();
+var parse = builder.Parse();
+if (parse.CommandResult.Command.Name == "serve")
+{
+    return await RunWebAsync(parse, args);
+}
+return await builder.RunAsync();
+```
+
+`Parse()` is idempotent — the returned `ParseResult` is cached, and `Build()` reuses
+the cached instance. Once `Parse()` has been called, further modifications to
+`RootCommand` are not reflected in the returned result.
 
 ### What is *not* supported
 
