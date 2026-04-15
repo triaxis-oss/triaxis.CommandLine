@@ -25,6 +25,7 @@ public static class HostBuilderContextExtensions
 
         throw new InvalidOperationException(
             "No InvocationContext is available on this HostBuilderContext. "
-            + "GetInvocationContext() can only be called from IHostBuilder callbacks invoked by ToolBuilder.");
+            + "GetInvocationContext() can only be called from IHostBuilder callbacks invoked by "
+            + "ToolBuilder, or on a host that received the InvocationContext via IToolBuilder.ApplyTo.");
     }
 }

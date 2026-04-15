@@ -17,6 +17,8 @@ public class StandaloneCommandTests
         BuilderMain.ReceivedBuilder = null;
         BuilderMain.ConfigValue = null;
         BuilderMain.ResolvedPort = 0;
+        BuilderMain.TargetPropertiesHadInvocationContext = false;
+        BuilderMain.DelegateObservedInvocationContext = null;
     }
 
     [Test]
@@ -81,6 +83,10 @@ public class StandaloneCommandTests
         Assert.That(BuilderMain.ResolvedPort, Is.EqualTo(8080));
         Assert.That(BuilderMain.ConfigValue, Is.EqualTo("apply_value"),
             "ApplyTo should carry the CLI-side configuration sources onto the alternate host.");
+        Assert.That(BuilderMain.TargetPropertiesHadInvocationContext, Is.True,
+            "ApplyTo should seed InvocationContextKey on the target's Properties.");
+        Assert.That(BuilderMain.DelegateObservedInvocationContext?.ParseResult, Is.SameAs(builder.Parse()),
+            "A ConfigureServices delegate on the target should be able to call ctx.GetInvocationContext().");
     }
 
     [Test]
@@ -162,6 +168,8 @@ public class BuilderMain
     public static IToolBuilder? ReceivedBuilder { get; set; }
     public static string? ConfigValue { get; set; }
     public static int ResolvedPort { get; set; }
+    public static bool TargetPropertiesHadInvocationContext { get; set; }
+    public static InvocationContext? DelegateObservedInvocationContext { get; set; }
 
     public Task<int> MainAsync(IToolBuilder builder, CancellationToken ct)
     {
@@ -169,7 +177,15 @@ public class BuilderMain
 
         // Verify ApplyTo propagates direct config sources and services to an alternate host.
         var target = new TestHostBuilder();
+        // A consumer-registered delegate on the target side should be able to observe
+        // the InvocationContext that ApplyTo seeded.
+        ((IHostBuilder)target).ConfigureServices((ctx, _) =>
+        {
+            DelegateObservedInvocationContext = ctx.GetInvocationContext();
+        });
         builder.ApplyTo(target);
+        TargetPropertiesHadInvocationContext =
+            target.Properties.ContainsKey("triaxis.CommandLine.InvocationContext");
         var services = target.BuildServices();
         var config = services.GetRequiredService<IConfiguration>();
         ConfigValue = config["apply_key"];

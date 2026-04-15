@@ -117,6 +117,13 @@ would have done:
 CLI-only state — the middleware chain, `ICommandExecutor`, `ToolHost` itself — is
 intentionally omitted: those concepts make no sense on an alternate host.
 
+`ApplyTo` also seeds the build-time `InvocationContext` into the target's
+`IHostBuilder.Properties`, under the same key `ToolBuilder.Build()` uses on its own
+host. That means any deferred `IHostBuilder` callback running against the target's
+`HostBuilderContext` — including ones added by the consumer on the target side —
+can call `ctx.GetInvocationContext()` and observe the parsed command line, just as
+they would on the CLI-side host.
+
 #### Constraints and diagnostics
 
 The source generator validates standalone commands and emits errors for:
