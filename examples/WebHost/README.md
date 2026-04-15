@@ -11,8 +11,11 @@ serve   →  MainAsync(IToolBuilder, CancellationToken), runs its own WebApplica
 
 Key points:
 
-- **Services registered once, at the builder level** (`Program.cs`): `IGreeter` is
-  declared with `.ConfigureServices(s => s.AddSingleton<IGreeter, ConfigurableGreeter>())`
+- **No hand-written `Main`**: the project uses the source-generated entry point.
+  The environment-variable prefix (`WEBHOST_`) is supplied via the MSBuild property
+  `TriaxisCommandLineEnvironmentVariablePrefix` in `WebHost.csproj`.
+- **Services registered once** via a `[ConfigureServices]` hook in `Greeter.cs`:
+  `IGreeter` is declared with `services.AddSingleton<IGreeter, ConfigurableGreeter>()`
   and is available to both the CLI command and the ASP.NET Core endpoints.
 - **Identical Serilog formatting** across both commands. The standalone `serve`
   command calls `web.Logging.ClearProviders()` before `builder.ApplyTo(web.Host)`

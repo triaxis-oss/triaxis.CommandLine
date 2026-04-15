@@ -5,6 +5,9 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <!-- Picked up by the source-generated entry point; baked into the
+         UseDefaultConfiguration call as the environment-variable prefix. -->
+    <TriaxisCommandLineEnvironmentVariablePrefix>WEBHOST_</TriaxisCommandLineEnvironmentVariablePrefix>
   </PropertyGroup>
 
   <ItemGroup>

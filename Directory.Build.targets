@@ -5,4 +5,12 @@
                       OutputItemType="Analyzer"
                       ReferenceOutputAssembly="false" />
   </ItemGroup>
+
+  <!-- Expose the generator's MSBuild inputs to in-repo projects. For consumers that
+       reference the NuGet package these come from buildTransitive/triaxis.CommandLine.targets,
+       but that file isn't imported by plain ProjectReferences, so we mirror it here. -->
+  <ItemGroup Condition="'$(IsRoslynComponent)' != 'true'">
+    <CompilerVisibleProperty Include="TriaxisCommandLineConfigOverridePath" />
+    <CompilerVisibleProperty Include="TriaxisCommandLineEnvironmentVariablePrefix" />
+  </ItemGroup>
 </Project>

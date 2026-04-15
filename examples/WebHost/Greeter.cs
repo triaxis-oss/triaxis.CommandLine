@@ -1,6 +1,8 @@
 namespace WebHost;
 
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using triaxis.CommandLine;
 
 public interface IGreeter
 {
@@ -19,3 +21,18 @@ public class ConfigurableGreeter(IConfiguration configuration) : IGreeter
         return template.Replace("{name}", name);
     }
 }
+
+/// <summary>
+/// Service-registration hook picked up by the source-generated entry point. Every
+/// command in this assembly (the CLI <c>status</c> and the standalone <c>serve</c>)
+/// sees the same <see cref="IGreeter"/> instance.
+/// </summary>
+internal static class Startup
+{
+    [ConfigureServices]
+    public static void Register(IServiceCollection services)
+    {
+        services.AddSingleton<IGreeter, ConfigurableGreeter>();
+    }
+}
+
