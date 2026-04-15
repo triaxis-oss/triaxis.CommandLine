@@ -165,9 +165,15 @@ compiled without a reference to the package.
 A `[Command]` class can declare a `MainAsync` method instead of `Execute`/`ExecuteAsync`.
 The generator emits an action that skips the DI container and middleware pipeline
 entirely and passes the `IToolBuilder` straight through, letting the command stand up
-its own host. `IToolBuilder.ApplyTo(IHostBuilder)` replays every configuration source,
-service registration, and `IHostBuilder` callback onto the alternate host so the CLI
-and the standalone command share the same bootstrap:
+its own host. `IToolBuilder.ApplyTo(IHostBuilder)` replays the tool's configuration
+sources and service registrations onto the alternate host. The tool's own deferred
+delegates (from `UseSerilog`, `UseDefaultConfiguration`, etc.) run in isolation against
+a scratch builder, so destructive operations inside those extensions cannot reach
+target-owned state. `ApplyTo` also seeds the build-time `InvocationContext` into the
+target's `IHostBuilder.Properties`, so `ctx.GetInvocationContext()` works for any
+deferred callback registered on the target side. The target controls precedence:
+anything registered before `ApplyTo` is overridden by the tool's layer; anything
+registered after overrides it.
 
 ```csharp
 [Command("serve", Description = "Runs the greeter as an HTTP server.")]
