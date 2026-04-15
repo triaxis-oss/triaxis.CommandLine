@@ -34,12 +34,18 @@ public interface IToolBuilder : IHostBuilder
     /// alternate host (e.g. a <c>WebApplication</c>) can reuse the same bootstrap.
     /// </summary>
     /// <remarks>
-    /// Replayed in the same order <see cref="IHostBuilder.Build"/> would apply them: direct
-    /// configuration sources first, then deferred <c>ConfigureAppConfiguration</c> callbacks,
-    /// then direct service descriptors (plus the current <see cref="ParseResult"/> as a
-    /// singleton), then deferred <c>ConfigureServices(HostBuilderContext, IServiceCollection)</c>
-    /// callbacks. Command-line specific state (the middleware chain, <c>ICommandExecutor</c>,
-    /// <c>ToolHost</c>) is intentionally omitted.
+    /// The replay is isolated: the tool's configuration is built into a standalone
+    /// <see cref="IConfigurationRoot"/> and its services into a standalone
+    /// <see cref="Microsoft.Extensions.DependencyInjection.IServiceCollection"/> against a
+    /// scratch <see cref="HostBuilderContext"/>. The tool's contribution is then spliced
+    /// onto the target as a single configuration source and a single bulk service
+    /// registration, plus the current <see cref="ParseResult"/> as a singleton. Destructive
+    /// operations inside the tool's deferred delegates (e.g. <c>cfg.Sources.Clear()</c>)
+    /// therefore affect only the tool's scratch state and cannot reach user-added sources
+    /// or services on the target. The target controls precedence by ordering its own
+    /// registrations relative to the <see cref="ApplyTo"/> call. Command-line specific
+    /// state (the middleware chain, <c>ICommandExecutor</c>, <c>ToolHost</c>) is
+    /// intentionally omitted.
     /// </remarks>
     /// <returns>The target builder, for fluent chaining on the alternate host side.</returns>
     IHostBuilder ApplyTo(IHostBuilder target);

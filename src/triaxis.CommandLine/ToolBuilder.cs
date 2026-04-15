@@ -89,7 +89,7 @@ class ToolBuilder : IToolBuilder, IHostBuilder
             throw new ArgumentNullException(nameof(target));
         }
 
-        // Make sure ParseResult exists; it will be registered on the target side below.
+        // Make sure ParseResult exists; it is registered on the target side below.
         var parseResult = Parse();
 
         // Seed the build-time InvocationContext on the target's Properties so that any
@@ -98,38 +98,60 @@ class ToolBuilder : IToolBuilder, IHostBuilder
         // parsed command line — mirroring what Build() does for the tool's own host.
         target.Properties[HostBuilderContextExtensions.InvocationContextKey] = new InvocationContext(parseResult);
 
-        // Direct configuration sources — carry over first so deferred delegates see them.
-        if (_configuration.Sources.Count > 0)
+        // Replay the tool's deferred delegates in isolation. Running them against the
+        // target directly lets destructive operations (e.g. cfg.Sources.Clear() inside a
+        // UseXxx extension) reach into state the target owns — including user-added
+        // configuration sources. Building the tool's contribution into a scratch
+        // ConfigurationRoot + ServiceCollection keeps "sources" and "services" meaning
+        // only the tool's own sources/services when those delegates run, and lets the
+        // target compose its own state around a single merge point whose ordering it
+        // controls.
+        _properties[HostBuilderContextExtensions.InvocationContextKey] = new InvocationContext(parseResult);
+        var scratchContext = new HostBuilderContext(_properties)
         {
-            target.ConfigureAppConfiguration((_, cfg) =>
-            {
-                foreach (var source in _configuration.Sources)
-                {
-                    cfg.Add(source);
-                }
-            });
-        }
+            Configuration = _configuration,
+        };
 
+        var scratchCfgBuilder = new ConfigurationBuilder();
+        foreach (var source in _configuration.Sources)
+        {
+            scratchCfgBuilder.Add(source);
+        }
         foreach (var action in _appConfigActions)
         {
-            target.ConfigureAppConfiguration(action);
+            action(scratchContext, scratchCfgBuilder);
         }
+        IConfigurationRoot toolConfiguration = scratchCfgBuilder.Build();
 
-        target.ConfigureServices((_, services) =>
+        // The ConfigureServices delegates see the fully built tool configuration on the
+        // scratch HostBuilderContext — matching what the regular Build() path provides.
+        scratchContext.Configuration = toolConfiguration;
+
+        var scratchServices = new ServiceCollection();
+        foreach (var descriptor in _services)
         {
-            foreach (var descriptor in _services)
-            {
-                services.Add(descriptor);
-            }
-            // Make the parsed command line visible on the alternate host for handlers
-            // that want to branch on it (mirrors what ToolHost exposes).
-            services.AddSingleton(parseResult);
-        });
+            scratchServices.Add(descriptor);
+        }
+        // Make the parsed command line visible on the alternate host for handlers that
+        // want to branch on it (mirrors what ToolHost exposes).
+        scratchServices.AddSingleton(parseResult);
 
         foreach (var action in _hostConfigureServicesActions)
         {
-            target.ConfigureServices(action);
+            action(scratchContext, scratchServices);
         }
+
+        // Splice the tool's contribution into the target as a single configuration
+        // source and a single bulk service registration. The target owns the order of
+        // these relative to anything else it adds.
+        target.ConfigureAppConfiguration((_, cfg) => cfg.AddConfiguration(toolConfiguration));
+        target.ConfigureServices((_, services) =>
+        {
+            foreach (var descriptor in scratchServices)
+            {
+                services.Add(descriptor);
+            }
+        });
 
         return target;
     }
