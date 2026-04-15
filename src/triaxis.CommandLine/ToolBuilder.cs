@@ -82,6 +82,52 @@ class ToolBuilder : IToolBuilder, IHostBuilder
 
     public Func<IServiceProvider> GetServiceProviderAccessor() => () => _serviceProvider!;
 
+    public IHostBuilder ApplyTo(IHostBuilder target)
+    {
+        if (target is null)
+        {
+            throw new ArgumentNullException(nameof(target));
+        }
+
+        // Make sure ParseResult exists; it will be registered on the target side below.
+        var parseResult = Parse();
+
+        // Direct configuration sources — carry over first so deferred delegates see them.
+        if (_configuration.Sources.Count > 0)
+        {
+            target.ConfigureAppConfiguration((_, cfg) =>
+            {
+                foreach (var source in _configuration.Sources)
+                {
+                    cfg.Add(source);
+                }
+            });
+        }
+
+        foreach (var action in _appConfigActions)
+        {
+            target.ConfigureAppConfiguration(action);
+        }
+
+        target.ConfigureServices((_, services) =>
+        {
+            foreach (var descriptor in _services)
+            {
+                services.Add(descriptor);
+            }
+            // Make the parsed command line visible on the alternate host for handlers
+            // that want to branch on it (mirrors what ToolHost exposes).
+            services.AddSingleton(parseResult);
+        });
+
+        foreach (var action in _hostConfigureServicesActions)
+        {
+            target.ConfigureServices(action);
+        }
+
+        return target;
+    }
+
     public ParseResult Parse()
     {
         if (_parseResult is not null)
@@ -137,6 +183,18 @@ class ToolBuilder : IToolBuilder, IHostBuilder
     IHost IHostBuilder.Build()
     {
         var parseResult = Parse();
+
+        // Short-circuit for commands that own their own host: no service provider,
+        // no middleware, no ToolHost — the command's MainAsync runs with access to
+        // this builder so it can replay registrations onto its own host.
+        //
+        // Use parseResult.Action (the resolved action System.CommandLine will invoke)
+        // rather than the command's own Action so built-in actions like --help / --version
+        // aren't short-circuited: they keep rendering through the regular ToolHost path.
+        if (parseResult.Action is IStandaloneAction standalone)
+        {
+            return new StandaloneHost(this, standalone, parseResult);
+        }
 
         var hostBuilderContext = new HostBuilderContext(_properties)
         {

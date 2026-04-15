@@ -125,7 +125,55 @@ internal sealed class hello_Action(Func<IServiceProvider> getServiceProvider) : 
 }
 ```
 
-Key points:
+## Standalone commands (`MainAsync`)
+
+When a `[Command]` class declares `MainAsync` instead of `ExecuteAsync`/`Execute`, the
+generator emits a different action shape that implements `IStandaloneAction`. The
+resulting action has no `getServiceProvider` constructor parameter and skips the
+middleware/executor path entirely:
+
+```csharp
+internal sealed class serve_Action : AsynchronousCommandLineAction, IStandaloneAction
+{
+    public Task<int> InvokeAsync(IToolBuilder builder, ParseResult parseResult, CancellationToken cancellationToken)
+        => InvokeInternalAsync(builder, parseResult, cancellationToken);
+
+    public override Task<int> InvokeAsync(ParseResult parseResult, CancellationToken cancellationToken)
+        => InvokeInternalAsync(null, parseResult, cancellationToken);
+
+    private async Task<int> InvokeInternalAsync(IToolBuilder? builder, ParseResult parseResult, CancellationToken cancellationToken)
+    {
+        // (optional) throw if MainAsync requires builder and it's null
+        var instance = new ServeCommand();
+        // bind [Argument]/[Option]/[Options] from parseResult — same loop as regular commands
+        await instance.MainAsync(builder!, cancellationToken);
+        return 0;
+    }
+}
+```
+
+`ToolBuilder.Build()` pattern-matches `IStandaloneAction` and returns a minimal
+`StandaloneHost` instead of the full `ToolHost` — no service provider is ever built.
+
+### Discovery and validation
+
+The generator recognises any `MainAsync` overload that:
+
+- has zero to two parameters in the order `(IToolBuilder?, CancellationToken?)`, and
+- returns `Task` or `Task<int>`.
+
+and reports these errors when the shape is otherwise invalid:
+
+| ID | Condition |
+|---|---|
+| `TXCL001` | Class has `[Inject]` members on a `MainAsync` command. |
+| `TXCL002` | Class has a constructor with parameters on a `MainAsync` command. |
+| `TXCL003` | Class declares both `MainAsync` and `ExecuteAsync`/`Execute`. |
+
+Standalone commands still use the same `[Argument]`/`[Option]`/`[Options]` binding
+machinery — only the DI- and middleware-related pieces are dropped.
+
+## Key points
 
 - **`CommandTreeNode`** is a lightweight model — no System.CommandLine types are created
   in the generated tree. `ApplyTo(Command)` creates fresh `Argument<T>`/`Option<T>`
