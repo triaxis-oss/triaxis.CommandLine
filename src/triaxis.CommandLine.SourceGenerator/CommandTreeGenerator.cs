@@ -468,51 +468,26 @@ public class CommandTreeGenerator : IIncrementalGenerator
 
     private static (ExecuteMethodModel Method, bool IsStandalone) DetectEntryPoint(INamedTypeSymbol typeSymbol)
     {
-        // Check MainAsync overloads first — their presence marks the command as
-        // "standalone" (no service provider, no middleware). Recognised shapes:
+        // Walk the type hierarchy from the command type up through its base classes
+        // and pick the first supported entry point encountered — any supported method
+        // on a more derived class wins over anything on a base class, regardless of
+        // shape. Within a single type the preference order is MainAsync (marks the
+        // command as "standalone" — no service provider, no middleware) over
+        // ExecuteAsync(CancellationToken) over ExecuteAsync() over Execute().
+        // Recognised MainAsync shapes are:
         //   MainAsync()
         //   MainAsync(CancellationToken)
         //   MainAsync(IToolBuilder)
         //   MainAsync(IToolBuilder, CancellationToken)
-        // All variants may return Task or Task<int>.
-        foreach (var m in typeSymbol.GetMembers("MainAsync").OfType<IMethodSymbol>())
-        {
-            var acceptsBuilder = false;
-            var acceptsCt = false;
-            var shapeOk = m.Parameters.Length switch
-            {
-                0 => true,
-                1 => IsCtParam(m.Parameters[0], ref acceptsCt) || IsBuilderParam(m.Parameters[0], ref acceptsBuilder),
-                2 => IsBuilderParam(m.Parameters[0], ref acceptsBuilder) && IsCtParam(m.Parameters[1], ref acceptsCt),
-                _ => false,
-            };
-            if (!shapeOk)
-            {
-                continue;
-            }
-
-            var (kind, innerType) = AnalyzeReturnType(m.ReturnType);
-            // MainAsync must return Task or Task<int>; other return shapes fall through
-            // to the default path below (which will produce a diagnostic in the caller).
-            if (kind is not (ReturnKind.Task or ReturnKind.TaskOfInt))
-            {
-                continue;
-            }
-
-            return (new ExecuteMethodModel("MainAsync", true, acceptsCt,
-                m.ReturnType.ToDisplayString(FqnFormat), kind, innerType,
-                AcceptsToolBuilder: acceptsBuilder), IsStandalone: true);
-        }
-
-        // Walk the type hierarchy from the command type up through its base classes
-        // and pick the first supported entry point encountered — any supported method
-        // on a more derived class wins over anything on a base class, regardless of
-        // shape. Within a single type, we still prefer ExecuteAsync(CancellationToken)
-        // over ExecuteAsync() over Execute(). Private members on base types aren't
-        // callable from the generated sibling action class, so we skip them.
+        // All variants may return Task or Task<int>. Private members on base types
+        // aren't callable from the generated sibling action class, so we skip them.
         for (var current = typeSymbol; current is not null && current.SpecialType != SpecialType.System_Object; current = current.BaseType)
         {
             var isBase = !SymbolEqualityComparer.Default.Equals(current, typeSymbol);
+            var mainAsyncCandidates = current.GetMembers("MainAsync")
+                .OfType<IMethodSymbol>()
+                .Where(m => !isBase || m.DeclaredAccessibility != Accessibility.Private)
+                .ToArray();
             var executeAsyncCandidates = current.GetMembers("ExecuteAsync")
                 .OfType<IMethodSymbol>()
                 .Where(m => !isBase || m.DeclaredAccessibility != Accessibility.Private)
@@ -521,6 +496,35 @@ public class CommandTreeGenerator : IIncrementalGenerator
                 .OfType<IMethodSymbol>()
                 .Where(m => !isBase || m.DeclaredAccessibility != Accessibility.Private)
                 .ToArray();
+
+            foreach (var m in mainAsyncCandidates)
+            {
+                var acceptsBuilder = false;
+                var acceptsCt = false;
+                var shapeOk = m.Parameters.Length switch
+                {
+                    0 => true,
+                    1 => IsCtParam(m.Parameters[0], ref acceptsCt) || IsBuilderParam(m.Parameters[0], ref acceptsBuilder),
+                    2 => IsBuilderParam(m.Parameters[0], ref acceptsBuilder) && IsCtParam(m.Parameters[1], ref acceptsCt),
+                    _ => false,
+                };
+                if (!shapeOk)
+                {
+                    continue;
+                }
+
+                var (kind, innerType) = AnalyzeReturnType(m.ReturnType);
+                // MainAsync must return Task or Task<int>; other return shapes fall through
+                // to the default path below (which will produce a diagnostic in the caller).
+                if (kind is not (ReturnKind.Task or ReturnKind.TaskOfInt))
+                {
+                    continue;
+                }
+
+                return (new ExecuteMethodModel("MainAsync", true, acceptsCt,
+                    m.ReturnType.ToDisplayString(FqnFormat), kind, innerType,
+                    AcceptsToolBuilder: acceptsBuilder), IsStandalone: true);
+            }
 
             foreach (var m in executeAsyncCandidates)
             {
