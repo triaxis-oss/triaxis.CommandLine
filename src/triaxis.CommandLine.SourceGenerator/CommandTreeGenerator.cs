@@ -504,40 +504,56 @@ public class CommandTreeGenerator : IIncrementalGenerator
                 AcceptsToolBuilder: acceptsBuilder), IsStandalone: true);
         }
 
-        // Check ExecuteAsync(CancellationToken) first
-        foreach (var m in typeSymbol.GetMembers("ExecuteAsync").OfType<IMethodSymbol>())
+        // Walk the type hierarchy from the command type up through its base classes
+        // and pick the first supported entry point encountered — any supported method
+        // on a more derived class wins over anything on a base class, regardless of
+        // shape. Within a single type, we still prefer ExecuteAsync(CancellationToken)
+        // over ExecuteAsync() over Execute(). Private members on base types aren't
+        // callable from the generated sibling action class, so we skip them.
+        for (var current = typeSymbol; current is not null && current.SpecialType != SpecialType.System_Object; current = current.BaseType)
         {
-            if (m.Parameters.Length == 1 &&
-                m.Parameters[0].Type.ToDisplayString() == "System.Threading.CancellationToken")
-            {
-                var (kind, innerType) = AnalyzeReturnType(m.ReturnType);
-                return (new ExecuteMethodModel("ExecuteAsync", true, true,
-                    m.ReturnType.ToDisplayString(FqnFormat),
-                    kind, innerType), IsStandalone: false);
-            }
-        }
+            var isBase = !SymbolEqualityComparer.Default.Equals(current, typeSymbol);
+            var executeAsyncCandidates = current.GetMembers("ExecuteAsync")
+                .OfType<IMethodSymbol>()
+                .Where(m => !isBase || m.DeclaredAccessibility != Accessibility.Private)
+                .ToArray();
+            var executeCandidates = current.GetMembers("Execute")
+                .OfType<IMethodSymbol>()
+                .Where(m => !isBase || m.DeclaredAccessibility != Accessibility.Private)
+                .ToArray();
 
-        // Check ExecuteAsync()
-        foreach (var m in typeSymbol.GetMembers("ExecuteAsync").OfType<IMethodSymbol>())
-        {
-            if (m.Parameters.Length == 0)
+            foreach (var m in executeAsyncCandidates)
             {
-                var (kind, innerType) = AnalyzeReturnType(m.ReturnType);
-                return (new ExecuteMethodModel("ExecuteAsync", true, false,
-                    m.ReturnType.ToDisplayString(FqnFormat),
-                    kind, innerType), IsStandalone: false);
+                if (m.Parameters.Length == 1 &&
+                    m.Parameters[0].Type.ToDisplayString() == "System.Threading.CancellationToken")
+                {
+                    var (kind, innerType) = AnalyzeReturnType(m.ReturnType);
+                    return (new ExecuteMethodModel("ExecuteAsync", true, true,
+                        m.ReturnType.ToDisplayString(FqnFormat),
+                        kind, innerType), IsStandalone: false);
+                }
             }
-        }
 
-        // Check Execute()
-        foreach (var m in typeSymbol.GetMembers("Execute").OfType<IMethodSymbol>())
-        {
-            if (m.Parameters.Length == 0)
+            foreach (var m in executeAsyncCandidates)
             {
-                var (kind, innerType) = AnalyzeReturnType(m.ReturnType);
-                return (new ExecuteMethodModel("Execute", false, false,
-                    m.ReturnType.ToDisplayString(FqnFormat),
-                    kind, innerType), IsStandalone: false);
+                if (m.Parameters.Length == 0)
+                {
+                    var (kind, innerType) = AnalyzeReturnType(m.ReturnType);
+                    return (new ExecuteMethodModel("ExecuteAsync", true, false,
+                        m.ReturnType.ToDisplayString(FqnFormat),
+                        kind, innerType), IsStandalone: false);
+                }
+            }
+
+            foreach (var m in executeCandidates)
+            {
+                if (m.Parameters.Length == 0)
+                {
+                    var (kind, innerType) = AnalyzeReturnType(m.ReturnType);
+                    return (new ExecuteMethodModel("Execute", false, false,
+                        m.ReturnType.ToDisplayString(FqnFormat),
+                        kind, innerType), IsStandalone: false);
+                }
             }
         }
 
