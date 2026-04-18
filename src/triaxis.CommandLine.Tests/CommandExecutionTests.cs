@@ -146,6 +146,64 @@ public class CtorInjectedCommand(EchoState state)
     }
 }
 
+public abstract class BaseEchoCommandWithCt
+{
+    [Inject]
+    public EchoState State { get; set; } = null!;
+
+    public Task ExecuteAsync(CancellationToken cancellationToken)
+    {
+        State.WasRun = true;
+        State.Name = $"base-ct:{cancellationToken.CanBeCanceled}";
+        return Task.CompletedTask;
+    }
+}
+
+[Command("inherit-ct")]
+public class InheritCtCommand : BaseEchoCommandWithCt
+{
+}
+
+public abstract class BaseEchoCommandSync
+{
+    [Inject]
+    public EchoState State { get; set; } = null!;
+
+    public void Execute()
+    {
+        State.WasRun = true;
+        State.Name = "base-sync";
+    }
+}
+
+[Command("inherit-sync")]
+public class InheritSyncCommand : BaseEchoCommandSync
+{
+}
+
+public abstract class BaseWithAsync
+{
+    [Inject]
+    public EchoState State { get; set; } = null!;
+
+    public Task ExecuteAsync()
+    {
+        State.WasRun = true;
+        State.Name = "base-async";
+        return Task.CompletedTask;
+    }
+}
+
+[Command("derived-sync-wins")]
+public class DerivedSyncOverridesBaseAsync : BaseWithAsync
+{
+    public new void Execute()
+    {
+        State.WasRun = true;
+        State.Name = "derived-sync";
+    }
+}
+
 [TestFixture]
 public class CommandExecutionTests
 {
@@ -367,5 +425,44 @@ public class CommandExecutionTests
         {
             Console.SetOut(prevOut);
         }
+    }
+
+    [Test]
+    public async Task Run_InheritedExecuteAsync_WithCancellationToken_IsDetected()
+    {
+        var state = new EchoState();
+        var builder = CreateBuilder(["inherit-ct"], state);
+
+        var exitCode = await builder.RunAsync();
+
+        Assert.That(exitCode, Is.EqualTo(0));
+        Assert.That(state.WasRun, Is.True);
+        Assert.That(state.Name, Is.EqualTo("base-ct:True"));
+    }
+
+    [Test]
+    public async Task Run_InheritedSyncExecute_IsDetected()
+    {
+        var state = new EchoState();
+        var builder = CreateBuilder(["inherit-sync"], state);
+
+        var exitCode = await builder.RunAsync();
+
+        Assert.That(exitCode, Is.EqualTo(0));
+        Assert.That(state.WasRun, Is.True);
+        Assert.That(state.Name, Is.EqualTo("base-sync"));
+    }
+
+    [Test]
+    public async Task Run_DerivedSyncExecute_WinsOverBaseExecuteAsync()
+    {
+        var state = new EchoState();
+        var builder = CreateBuilder(["derived-sync-wins"], state);
+
+        var exitCode = await builder.RunAsync();
+
+        Assert.That(exitCode, Is.EqualTo(0));
+        Assert.That(state.WasRun, Is.True);
+        Assert.That(state.Name, Is.EqualTo("derived-sync"));
     }
 }

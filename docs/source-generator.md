@@ -125,6 +125,28 @@ internal sealed class hello_Action(Func<IServiceProvider> getServiceProvider) : 
 }
 ```
 
+### Entry-point detection
+
+The generator picks the command's entry point by walking the type hierarchy
+from the command class up through its base classes. Any supported method on a
+more derived class always wins over anything declared on a base — a derived
+`Execute()` beats a base `ExecuteAsync()`, for example. Within a single type,
+the preference order is `ExecuteAsync(CancellationToken)` → `ExecuteAsync()` →
+`Execute()`. `private` base-class members are skipped because the generated
+sibling action class can't call them. This is what lets a shared abstract base
+class provide the entry point:
+
+```csharp
+public abstract class MyCommandBase
+{
+    [Inject] public ILogger<MyCommandBase> Log { get; set; } = null!;
+    public Task ExecuteAsync(CancellationToken ct) => /* ... */;
+}
+
+[Command("do-thing")]
+public class DoThingCommand : MyCommandBase { }
+```
+
 ## Standalone commands (`MainAsync`)
 
 When a `[Command]` class declares `MainAsync` instead of `ExecuteAsync`/`Execute`, the
