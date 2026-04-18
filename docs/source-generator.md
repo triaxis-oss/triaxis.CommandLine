@@ -131,10 +131,11 @@ The generator picks the command's entry point by walking the type hierarchy
 from the command class up through its base classes. Any supported method on a
 more derived class always wins over anything declared on a base — a derived
 `Execute()` beats a base `ExecuteAsync()`, for example. Within a single type,
-the preference order is `ExecuteAsync(CancellationToken)` → `ExecuteAsync()` →
-`Execute()`. `private` base-class members are skipped because the generated
-sibling action class can't call them. This is what lets a shared abstract base
-class provide the entry point:
+the preference order is `MainAsync` (see below) → `ExecuteAsync(CancellationToken)`
+→ `ExecuteAsync()` → `Execute()`. `private` base-class members are skipped
+because the generated sibling action class can't call them. This is what lets
+a shared abstract base class provide the entry point — including a `MainAsync`
+on the base, which still resolves the derived command as standalone:
 
 ```csharp
 public abstract class MyCommandBase

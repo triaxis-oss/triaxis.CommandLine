@@ -21,6 +21,7 @@ public class StandaloneCommandTests
         BuilderMain.DelegateObservedInvocationContext = null;
         DestructiveMain.TargetKey = null;
         DestructiveMain.ToolKey = null;
+        BaseMainAsync.Ran = false;
     }
 
     [Test]
@@ -117,6 +118,24 @@ public class StandaloneCommandTests
         // And the tool layer's contribution is still visible on the target.
         Assert.That(DestructiveMain.ToolKey, Is.EqualTo("tool_value"),
             "The tool's scratch configuration should be merged onto the target as a single source.");
+    }
+
+    [Test]
+    public async Task MainAsync_InheritedFromBaseClass_IsDetected()
+    {
+        var builder = Tool.CreateBuilder(["inherit-main"]);
+        builder.AddCommandsFromAssembly(typeof(StandaloneCommandTests).Assembly);
+
+        using (var host = ((IHostBuilder)builder).Build())
+        {
+            Assert.That(host, Is.InstanceOf<StandaloneHost>(),
+                "A command that only inherits MainAsync from a base class must still resolve as standalone.");
+        }
+
+        var exit = await builder.RunAsync();
+
+        Assert.That(exit, Is.EqualTo(0));
+        Assert.That(BaseMainAsync.Ran, Is.True);
     }
 
     [Test]
@@ -306,4 +325,20 @@ internal sealed class TestHostBuilder : IHostBuilder
 public class RegularCommand
 {
     public Task ExecuteAsync() => Task.CompletedTask;
+}
+
+public abstract class BaseMainAsync
+{
+    public static bool Ran { get; set; }
+
+    public Task MainAsync()
+    {
+        Ran = true;
+        return Task.CompletedTask;
+    }
+}
+
+[Command("inherit-main")]
+public class InheritMainCommand : BaseMainAsync
+{
 }
