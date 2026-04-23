@@ -733,6 +733,13 @@ public class CommandTreeGenerator : IIncrementalGenerator
                     continue;
                 }
 
+                // Preserve the originally declared type (e.g. "int?") for accessor
+                // signatures and reflection casts. The unwrapped form below (e.g. "int")
+                // is what System.CommandLine uses for parsing — but the actual backing
+                // field/property is still typed as the nullable form, so [UnsafeAccessor]
+                // must match that signature exactly or it fails at runtime.
+                var declaredTypeFqn = memberType.ToDisplayString(FqnFormat);
+
                 var isNullable = false;
                 if (memberType is INamedTypeSymbol nts &&
                     nts.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T &&
@@ -767,7 +774,7 @@ public class CommandTreeGenerator : IIncrementalGenerator
                         var required = GetNamedArgBool(attr, "Required");
                         var requiredIsSet = attr.NamedArguments.Any(n => n.Key == "Required");
                         members.Add(new MemberModel(
-                            MemberKind.Argument, member.Name, memberTypeFqn, isField, isPublic, hasSetter, isInitOnly,
+                            MemberKind.Argument, member.Name, memberTypeFqn, declaredTypeFqn, isField, isPublic, hasSetter, isInitOnly,
                             declaringTypeFqn, name, desc, null,
                             requiredIsSet ? required : null,
                             isMemberRequired, isCollection, isNullable,
@@ -785,7 +792,7 @@ public class CommandTreeGenerator : IIncrementalGenerator
                         var required = GetNamedArgBool(attr, "Required");
                         var requiredIsSet = attr.NamedArguments.Any(n => n.Key == "Required");
                         members.Add(new MemberModel(
-                            MemberKind.Option, member.Name, memberTypeFqn, isField, isPublic, hasSetter, isInitOnly,
+                            MemberKind.Option, member.Name, memberTypeFqn, declaredTypeFqn, isField, isPublic, hasSetter, isInitOnly,
                             declaringTypeFqn, name, desc, optAliases,
                             requiredIsSet ? required : null,
                             isMemberRequired, isCollection, isNullable,
@@ -797,7 +804,7 @@ public class CommandTreeGenerator : IIncrementalGenerator
                         if (memberType is INamedTypeSymbol nestedType)
                         {
                             var segment = new AccessPathSegment(
-                                member.Name, memberTypeFqn, isField, isPublic, hasSetter, isMemberRequired, declaringTypeFqn);
+                                member.Name, memberTypeFqn, declaredTypeFqn, isField, isPublic, hasSetter, isMemberRequired, declaringTypeFqn);
                             var newPath = (accessPath ?? Array.Empty<AccessPathSegment>()).Append(segment).ToArray();
                             for (var current = nestedType; current is not null; current = current.BaseType)
                             {
@@ -814,7 +821,7 @@ public class CommandTreeGenerator : IIncrementalGenerator
                     {
                         var injectType = GetNamedArgType(attr, "Type");
                         members.Add(new MemberModel(
-                            MemberKind.Inject, member.Name, memberTypeFqn, isField, isPublic, hasSetter, isInitOnly,
+                            MemberKind.Inject, member.Name, memberTypeFqn, declaredTypeFqn, isField, isPublic, hasSetter, isInitOnly,
                             declaringTypeFqn, null, null, null, null, isMemberRequired, false, false,
                             0, injectType, accessPath ?? Array.Empty<AccessPathSegment>()));
                         break;
@@ -1279,7 +1286,7 @@ public class CommandTreeGenerator : IIncrementalGenerator
         {
             var owner = member.DeclaringTypeFqn;
             memberAccessors[MemberKey(member)] = EmitAccessor(
-                w, owner, member.MemberName, member.MemberTypeFqn,
+                w, owner, member.MemberName, member.DeclaredTypeFqn,
                 member.IsField, member.IsPublic, member.HasSetter,
                 $"__access_{GetMemberFieldName(member)}", hasUnsafeAccessor);
         }
@@ -1296,7 +1303,7 @@ public class CommandTreeGenerator : IIncrementalGenerator
                     continue;
                 }
                 pathAccessors[key] = EmitAccessor(
-                    w, seg.OwnerTypeFqn, seg.MemberName, seg.MemberTypeFqn,
+                    w, seg.OwnerTypeFqn, seg.MemberName, seg.DeclaredTypeFqn,
                     seg.IsField, seg.IsPublic, seg.HasSetter,
                     $"__access_path_{seg.MemberName}", hasUnsafeAccessor);
             }
@@ -1307,7 +1314,7 @@ public class CommandTreeGenerator : IIncrementalGenerator
         {
             var lastSeg = member.AccessPath[member.AccessPath.Length - 1];
             memberAccessors[MemberKey(member)] = EmitAccessor(
-                w, lastSeg.MemberTypeFqn, member.MemberName, member.MemberTypeFqn,
+                w, lastSeg.MemberTypeFqn, member.MemberName, member.DeclaredTypeFqn,
                 member.IsField, member.IsPublic, member.HasSetter,
                 $"__access_{GetMemberFieldName(member)}", hasUnsafeAccessor);
         }
@@ -1467,7 +1474,7 @@ public class CommandTreeGenerator : IIncrementalGenerator
             foreach (var member in args.Concat(opts).Where(m => m.AccessPath.Length == 0 && !m.NeedsInitializer))
             {
                 memberAccessors[MemberKey(member)] = EmitAccessor(
-                    w, member.DeclaringTypeFqn, member.MemberName, member.MemberTypeFqn,
+                    w, member.DeclaringTypeFqn, member.MemberName, member.DeclaredTypeFqn,
                     member.IsField, member.IsPublic, member.HasSetter,
                     $"__access_{GetMemberFieldName(member)}", hasUnsafeAccessor);
             }
@@ -1483,7 +1490,7 @@ public class CommandTreeGenerator : IIncrementalGenerator
                         continue;
                     }
                     pathAccessors[key] = EmitAccessor(
-                        w, seg.OwnerTypeFqn, seg.MemberName, seg.MemberTypeFqn,
+                        w, seg.OwnerTypeFqn, seg.MemberName, seg.DeclaredTypeFqn,
                         seg.IsField, seg.IsPublic, seg.HasSetter,
                         $"__access_path_{seg.MemberName}", hasUnsafeAccessor);
                 }
@@ -1493,7 +1500,7 @@ public class CommandTreeGenerator : IIncrementalGenerator
             {
                 var lastSeg = member.AccessPath[member.AccessPath.Length - 1];
                 memberAccessors[MemberKey(member)] = EmitAccessor(
-                    w, lastSeg.MemberTypeFqn, member.MemberName, member.MemberTypeFqn,
+                    w, lastSeg.MemberTypeFqn, member.MemberName, member.DeclaredTypeFqn,
                     member.IsField, member.IsPublic, member.HasSetter,
                     $"__access_{GetMemberFieldName(member)}", hasUnsafeAccessor);
             }
@@ -1622,6 +1629,9 @@ public class CommandTreeGenerator : IIncrementalGenerator
     /// <summary>
     /// Emits the minimal accessor declaration needed for a member/segment and returns an
     /// <see cref="Accessor"/> describing how to read/write it inline at call sites.
+    /// <paramref name="memberTypeFqn"/> must be the originally declared type (e.g. "int?"
+    /// rather than the unwrapped "int") so that the [UnsafeAccessor] signature matches the
+    /// actual backing field/property and reflection casts produce the correct value.
     /// </summary>
     private static Accessor EmitAccessor(IndentedTextWriter w, string ownerTypeFqn,
         string memberName, string memberTypeFqn,
@@ -2068,6 +2078,7 @@ record ConfigureServicesHookModel(
 record AccessPathSegment(
     string MemberName,
     string MemberTypeFqn,
+    string DeclaredTypeFqn,
     bool IsField,
     bool IsPublic,
     bool HasSetter,
@@ -2078,6 +2089,7 @@ record MemberModel(
     MemberKind Kind,
     string MemberName,
     string MemberTypeFqn,
+    string DeclaredTypeFqn,
     bool IsField,
     bool IsPublic,
     bool HasSetter,

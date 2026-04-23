@@ -239,6 +239,11 @@ private static extern string __access_get_Name(HelloCommand instance);
 
 This is zero-reflection, zero-boxing, and JIT-friendly.
 
+The accessor signature uses the member's originally declared type — including `Nullable<T>`
+wrappers — so a `int? Count { get; init; }` becomes `ref int? __access_Count(...)`, matching
+the actual backing field. (The unwrapped `T` is only used for parsing, e.g.
+`OptionDefinition<int>` and `parseResult.GetValue<int>(...)`.)
+
 ### Reflection fallback (netstandard / older TFMs)
 
 When `UnsafeAccessor` is not available the generator emits cached `FieldInfo` /

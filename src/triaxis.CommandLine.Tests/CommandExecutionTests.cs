@@ -101,6 +101,26 @@ public class NullableOptCommand
     }
 }
 
+[Command("nullable-init-opt")]
+public class NullableInitOptCommand
+{
+    [Option("--count", Required = false)]
+    public int? Count { get; init; }
+
+    [Option("--label", Required = false)]
+    public string? Label { get; init; }
+
+    [Inject]
+    public EchoState State { get; set; } = null!;
+
+    public Task ExecuteAsync()
+    {
+        State.WasRun = true;
+        State.Name = $"{Count?.ToString() ?? "(null)"}:{Label ?? "(null)"}";
+        return Task.CompletedTask;
+    }
+}
+
 [Command(Description = "Root-level command with no path")]
 public class RootLevelCommand
 {
@@ -369,6 +389,32 @@ public class CommandExecutionTests
 
         Assert.That(exitCode, Is.EqualTo(0));
         Assert.That(state.Name, Is.EqualTo("hello"));
+    }
+
+    [Test]
+    public async Task Run_NullableInitOnlyOption_IsNullWhenNotSpecified()
+    {
+        var state = new EchoState();
+        var builder = CreateBuilder(["nullable-init-opt"], state);
+
+        var exitCode = await builder.RunAsync();
+
+        Assert.That(exitCode, Is.EqualTo(0));
+        Assert.That(state.WasRun, Is.True);
+        Assert.That(state.Name, Is.EqualTo("(null):(null)"));
+    }
+
+    [Test]
+    public async Task Run_NullableInitOnlyOption_IsSetWhenSpecified()
+    {
+        var state = new EchoState();
+        var builder = CreateBuilder(["nullable-init-opt", "--count", "42", "--label", "hi"], state);
+
+        var exitCode = await builder.RunAsync();
+
+        Assert.That(exitCode, Is.EqualTo(0));
+        Assert.That(state.WasRun, Is.True);
+        Assert.That(state.Name, Is.EqualTo("42:hi"));
     }
 
     [Test]
