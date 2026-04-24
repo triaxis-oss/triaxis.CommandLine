@@ -211,7 +211,9 @@ machinery — only the DI- and middleware-related pieces are dropped.
 - **`[Inject]`** is inlined as `instance.Member = provider.GetRequiredService<TService>();`
   (or an accessor-wrapped variant for non-public members).
 - **`required` / `init`** members are set in the object initializer via
-  `parseResult.GetValue<T>(name)`; non-required init-only members use field accessors.
+  `parseResult.GetValue<T>(name)`; non-required init-only members use field accessors
+  for auto-properties, or a `set_` method accessor when the property has explicit
+  accessor bodies (no compiler-synthesized backing field).
 
 ## Reaching non-public members
 
@@ -235,6 +237,15 @@ private static extern ref string __access_Name(HelloCommand instance);
 
 [UnsafeAccessor(UnsafeAccessorKind.Method, Name = "get_Name")]
 private static extern string __access_get_Name(HelloCommand instance);
+```
+
+Properties with explicit accessor bodies (i.e. a user-written `get`/`init` block) have
+no synthesized `<Name>k__BackingField`, so the generator switches to a `set_` method
+accessor — reads still go through the public getter:
+
+```csharp
+[UnsafeAccessor(UnsafeAccessorKind.Method, Name = "set_Path")]
+private static extern void __access_Path(CustomInitCommand instance, string value);
 ```
 
 This is zero-reflection, zero-boxing, and JIT-friendly.

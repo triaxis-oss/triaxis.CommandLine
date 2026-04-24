@@ -121,6 +121,66 @@ public class NullableInitOptCommand
     }
 }
 
+[Command("cascade-init-props")]
+public class CascadeInitPropsCommand
+{
+    // Mirrors the real-world trigger for the fix: a write-only `init` property
+    // that cascades into several auto-implemented init-only options.
+    [Option("--apply")] public bool Apply { get; init; } = false;
+    [Option("--db-drop")] public bool DropDb { get; init; } = false;
+    [Option("--db-skip-backup")] public bool SkipDbBackup { get; init; } = false;
+    [Option("--delete-data")] public bool DeleteData { get; init; } = false;
+
+    // No getter, no backing field — previously broke the generator because it
+    // tried to emit `ref bool __access_Purge(...)` against a non-existent
+    // <Purge>k__BackingField.
+    [Option("--dev-purge")]
+    public bool Purge { init => DropDb = SkipDbBackup = DeleteData = value; }
+
+    [Inject]
+    public EchoState State { get; set; } = null!;
+
+    public Task ExecuteAsync()
+    {
+        State.WasRun = true;
+        State.Name = $"{Apply}:{DropDb}:{SkipDbBackup}:{DeleteData}";
+        return Task.CompletedTask;
+    }
+}
+
+[Command("custom-init-props")]
+public class CustomInitPropsCommand
+{
+    // A property with a custom getter/init (no compiler-synthesized backing field)
+    // would normally break the source generator's backing-field accessor path.
+    private string _path = "default-custom";
+    private bool? _flag;
+
+    [Argument("path", Required = false)]
+    public string Path
+    {
+        get => _path;
+        init => _path = value ?? "default-custom";
+    }
+
+    [Option("--flag", Required = false)]
+    public bool? Flag
+    {
+        get => _flag;
+        init => _flag = value;
+    }
+
+    [Inject]
+    public EchoState State { get; set; } = null!;
+
+    public Task ExecuteAsync()
+    {
+        State.WasRun = true;
+        State.Name = $"{Path}:{Flag?.ToString() ?? "(null)"}";
+        return Task.CompletedTask;
+    }
+}
+
 [Command(Description = "Root-level command with no path")]
 public class RootLevelCommand
 {
@@ -415,6 +475,75 @@ public class CommandExecutionTests
         Assert.That(exitCode, Is.EqualTo(0));
         Assert.That(state.WasRun, Is.True);
         Assert.That(state.Name, Is.EqualTo("42:hi"));
+    }
+
+    [Test]
+    public async Task Run_CustomInitOnlyProperties_BoundWhenSpecified()
+    {
+        var state = new EchoState();
+        var builder = CreateBuilder(["custom-init-props", "/custom", "--flag"], state);
+
+        var exitCode = await builder.RunAsync();
+
+        Assert.That(exitCode, Is.EqualTo(0));
+        Assert.That(state.WasRun, Is.True);
+        Assert.That(state.Name, Is.EqualTo("/custom:True"));
+    }
+
+    [Test]
+    public async Task Run_CustomInitOnlyProperties_UseDefaultsWhenNotSpecified()
+    {
+        var state = new EchoState();
+        var builder = CreateBuilder(["custom-init-props"], state);
+
+        var exitCode = await builder.RunAsync();
+
+        Assert.That(exitCode, Is.EqualTo(0));
+        Assert.That(state.WasRun, Is.True);
+        // Nullable bool flag must stay null — proves the setter isn't being
+        // called with `default(bool?)` when the user didn't pass --flag.
+        Assert.That(state.Name, Is.EqualTo("default-custom:(null)"));
+    }
+
+    [Test]
+    public async Task Run_CascadeInitOnlyProperty_DefaultsAllFalse()
+    {
+        var state = new EchoState();
+        var builder = CreateBuilder(["cascade-init-props"], state);
+
+        var exitCode = await builder.RunAsync();
+
+        Assert.That(exitCode, Is.EqualTo(0));
+        Assert.That(state.Name, Is.EqualTo("False:False:False:False"));
+    }
+
+    [Test]
+    public async Task Run_CascadeInitOnlyProperty_CascadesThroughWriteOnlyInit()
+    {
+        var state = new EchoState();
+        var builder = CreateBuilder(["cascade-init-props", "--dev-purge"], state);
+
+        var exitCode = await builder.RunAsync();
+
+        Assert.That(exitCode, Is.EqualTo(0));
+        // --dev-purge sets DropDb=SkipDbBackup=DeleteData=true via a write-only
+        // init accessor (no getter, no backing field). Apply stays false.
+        Assert.That(state.Name, Is.EqualTo("False:True:True:True"));
+    }
+
+    [Test]
+    public async Task Run_CustomInitOnlyNullableBool_OverridesNullDefault()
+    {
+        var state = new EchoState();
+        var builder = CreateBuilder(["custom-init-props", "--flag", "false"], state);
+
+        var exitCode = await builder.RunAsync();
+
+        Assert.That(exitCode, Is.EqualTo(0));
+        Assert.That(state.WasRun, Is.True);
+        // Explicit --flag false must overwrite the null default, proving the
+        // init setter is actually invoked on the custom-impl property.
+        Assert.That(state.Name, Is.EqualTo("default-custom:False"));
     }
 
     [Test]
