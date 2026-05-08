@@ -38,9 +38,12 @@ jobs:
           fi
           mono --version
       - run: dotnet test -c Release
-      - if: failure()
-        run: find . -name "*.log" -path "*/TestResults/*" -exec echo "=== {} ===" \; -exec cat {} \;
-        working-directory: .
+      - if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: test-results-${{ matrix.os }}
+          path: src/**/TestResults/*.log
+          if-no-files-found: ignore
       - run: dotnet build -c Release ../examples/Examples.sln
 
   publish:
