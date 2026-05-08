@@ -107,6 +107,18 @@ for logging — the level is baked into the logger at creation time.
 - **Always keep docs and tests up to date** when making changes. Every behavioral
   change, new feature, or refactoring must be reflected in the relevant docs under
   `docs/` and covered by tests before committing. Do not defer this to a separate step.
+- **Fold review changes into the commit they belong to** instead of piling
+  follow-up commits on top. The branch under review may already contain several
+  logical commits, and a fix often belongs to a deeper one — pick whatever git
+  workflow gets the change into the right commit, then force-push with
+  `--force-with-lease`. For tip-of-branch fixes, `git commit --amend` is
+  enough. For deeper commits, stage the change and run
+  `git commit --fixup=<sha>` followed by
+  `GIT_SEQUENCE_EDITOR=true git rebase --autosquash <upstream>` — the env var
+  short-circuits the editor so the rebase runs non-interactively (this is the
+  Claude-friendly substitute for `git rebase -i --autosquash`, which is
+  blocked because `-i` requires a TTY). The goal is that each commit on the
+  branch stays self-contained; how you get there is up to you.
 - Build and test: `dotnet test src/triaxis.CommandLine.sln` and
   `dotnet build examples/Examples.sln`.
 
