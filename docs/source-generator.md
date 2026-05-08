@@ -131,7 +131,7 @@ The generator picks the command's entry point by walking the type hierarchy
 from the command class up through its base classes. Any supported method on a
 more derived class always wins over anything declared on a base — a derived
 `Execute()` beats a base `ExecuteAsync()`, for example. Within a single type,
-the preference order is `MainAsync` (see below) → `ExecuteAsync(CancellationToken)`
+the preference order is `MainAsync` → `Main` (both standalone, see below) → `ExecuteAsync(CancellationToken)`
 → `ExecuteAsync()` → `Execute()`. `private` base-class members are skipped
 because the generated sibling action class can't call them. This is what lets
 a shared abstract base class provide the entry point — including a `MainAsync`
@@ -148,9 +148,10 @@ public abstract class MyCommandBase
 public class DoThingCommand : MyCommandBase { }
 ```
 
-## Standalone commands (`MainAsync`)
+## Standalone commands (`Main` / `MainAsync`)
 
-When a `[Command]` class declares `MainAsync` instead of `ExecuteAsync`/`Execute`, the
+When a `[Command]` class declares `Main` or `MainAsync` instead of
+`ExecuteAsync`/`Execute`, the
 generator emits a different action shape that implements `IStandaloneAction`. The
 resulting action has no `getServiceProvider` constructor parameter and skips the
 middleware/executor path entirely:
@@ -180,18 +181,19 @@ internal sealed class serve_Action : AsynchronousCommandLineAction, IStandaloneA
 
 ### Discovery and validation
 
-The generator recognises any `MainAsync` overload that:
+The generator recognises any `Main` / `MainAsync` overload that:
 
 - has zero to two parameters in the order `(IToolBuilder?, CancellationToken?)`, and
-- returns `Task` or `Task<int>`.
+- returns `void` / `int` (for `Main`) or `Task` / `Task<int>` (for `MainAsync`).
 
-and reports these errors when the shape is otherwise invalid:
+`MainAsync` wins over `Main` if both are declared on the same type. The generator
+reports these errors when the shape is otherwise invalid:
 
 | ID | Condition |
 |---|---|
-| `TXCL001` | Class has `[Inject]` members on a `MainAsync` command. |
-| `TXCL002` | Class has a constructor with parameters on a `MainAsync` command. |
-| `TXCL003` | Class declares both `MainAsync` and `ExecuteAsync`/`Execute`. |
+| `TXCL001` | Class has `[Inject]` members on a `Main` / `MainAsync` command. |
+| `TXCL002` | Class has a constructor with parameters on a `Main` / `MainAsync` command. |
+| `TXCL003` | Class declares both `Main` / `MainAsync` and `ExecuteAsync`/`Execute`. |
 
 Standalone commands still use the same `[Argument]`/`[Option]`/`[Options]` binding
 machinery — only the DI- and middleware-related pieces are dropped.

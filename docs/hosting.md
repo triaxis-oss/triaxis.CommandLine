@@ -57,12 +57,13 @@ Both are composable — call them as many times as you want. The deferred overlo
 fully assembled `HostBuilderContext`, including the build-time `InvocationContext` (see
 below).
 
-### Standalone commands (`MainAsync`)
+### Standalone commands (`Main` / `MainAsync`)
 
-A command can opt out of the CLI-side service provider entirely by declaring `MainAsync`
-instead of `ExecuteAsync`/`Execute`. When the matched command is standalone, `Build()`
-short-circuits before constructing a service provider — the CLI host is never built,
-no middleware runs, and the command takes full responsibility for its own lifecycle.
+A command can opt out of the CLI-side service provider entirely by declaring `Main`
+(sync) or `MainAsync` (async) instead of `ExecuteAsync`/`Execute`. When the matched
+command is standalone, `Build()` short-circuits before constructing a service provider —
+the CLI host is never built, no middleware runs, and the command takes full
+responsibility for its own lifecycle.
 
 ```csharp
 [Command("serve")]
@@ -86,8 +87,9 @@ public class ServeCommand
 
 #### Recognised signatures
 
-`MainAsync` may take any combination of `IToolBuilder` and `CancellationToken`
-(in that order), and may return `Task` or `Task<int>`:
+`Main` / `MainAsync` may take any combination of `IToolBuilder` and `CancellationToken`
+(in that order). `MainAsync` returns `Task` or `Task<int>`; `Main` returns `void` or
+`int` (an `Async` suffix on a void-returning method would be a contradiction):
 
 ```csharp
 public Task MainAsync();
@@ -95,9 +97,16 @@ public Task MainAsync(CancellationToken ct);
 public Task MainAsync(IToolBuilder builder);
 public Task MainAsync(IToolBuilder builder, CancellationToken ct);
 public Task<int> MainAsync( …same four shapes… );
+
+public void Main();
+public void Main(CancellationToken ct);
+public void Main(IToolBuilder builder);
+public void Main(IToolBuilder builder, CancellationToken ct);
+public int  Main( …same four shapes… );
 ```
 
-A `Task` return yields exit code `0`; `Task<int>` returns the value.
+`void` / `Task` returns yield exit code `0`; `int` / `Task<int>` returns the value.
+`MainAsync` wins over `Main` when both are declared on the same type.
 
 #### `IToolBuilder.ApplyTo(IHostBuilder)`
 
@@ -149,14 +158,14 @@ The source generator validates standalone commands and emits errors for:
 |---|---|
 | `TXCL001` | Class has `[Inject]` members — DI is unavailable on standalone commands. |
 | `TXCL002` | Class has a constructor with parameters — standalone commands require a parameterless constructor. |
-| `TXCL003` | Class declares both `MainAsync` and `ExecuteAsync`/`Execute`. |
+| `TXCL003` | Class declares both `Main` / `MainAsync` and `ExecuteAsync`/`Execute`. |
 
 `[Argument]`, `[Option]`, and `[Options]` still bind as usual from `ParseResult` — the
 only capability removed is constructor/member DI.
 
 #### Cancellation
 
-For now, `StandaloneHost` passes `CancellationToken.None` to `MainAsync`. Standalone
+For now, `StandaloneHost` passes `CancellationToken.None` to `Main`/`MainAsync`. Standalone
 commands are expected to wire their own process-termination handling if needed (e.g.
 via `Console.CancelKeyPress` or `PosixSignalRegistration`). Full cancellation flow
 on par with `ToolHost` (which benefits from System.CommandLine's `ProcessTerminationTimeout`)

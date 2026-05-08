@@ -10,7 +10,7 @@ for quickly bootstrapping modern .NET command line tools. It adds:
 - Object output formatting (`Table` / `Wide` / `Json` / `Yaml` / `Raw`) via a single `--output` flag
 - A middleware pipeline around command execution
 - Cooperative cancellation on Ctrl+C / SIGTERM
-- Standalone `MainAsync` commands that own their own host (e.g. ASP.NET Core inside
+- Standalone `Main` / `MainAsync` commands that own their own host (e.g. ASP.NET Core inside
   a subcommand)
 
 ## Packages
@@ -160,9 +160,10 @@ source-generated — the `triaxis.CommandLine` package ships a Roslyn source gen
 generated registration is present, which in practice only happens if the assembly was
 compiled without a reference to the package.
 
-#### Standalone commands (`MainAsync`)
+#### Standalone commands (`Main` / `MainAsync`)
 
-A `[Command]` class can declare a `MainAsync` method instead of `Execute`/`ExecuteAsync`.
+A `[Command]` class can declare a `Main` (sync) or `MainAsync` (async) method instead
+of `Execute`/`ExecuteAsync`.
 The generator emits an action that skips the DI container and middleware pipeline
 entirely and passes the `IToolBuilder` straight through, letting the command stand up
 its own host. `IToolBuilder.ApplyTo(IHostBuilder)` replays the tool's configuration
@@ -196,8 +197,9 @@ public class ServeCommand
 }
 ```
 
-Recognized signatures are `MainAsync([IToolBuilder,] [CancellationToken])` returning
-`Task` or `Task<int>`. Standalone commands can still use `[Argument]`/`[Option]`/`[Options]`
+Recognized signatures are `Main([IToolBuilder,] [CancellationToken])` returning
+`void` or `int`, and `MainAsync([IToolBuilder,] [CancellationToken])` returning `Task`
+or `Task<int>`. Standalone commands can still use `[Argument]`/`[Option]`/`[Options]`
 binding, but cannot mix with `[Inject]` members or constructor DI — their whole point is
 that no service provider is constructed on the CLI side. See
 [`examples/WebHost`](./examples/WebHost) for a full walkthrough.

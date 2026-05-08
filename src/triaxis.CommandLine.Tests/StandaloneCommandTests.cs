@@ -22,6 +22,43 @@ public class StandaloneCommandTests
         DestructiveMain.TargetKey = null;
         DestructiveMain.ToolKey = null;
         BaseMainAsync.Ran = false;
+        SyncMainCommand.Ran = false;
+        SyncMainCommand.ReturnedExit = null;
+        SyncMainBuilderCommand.Ran = false;
+        SyncMainBuilderCommand.ReceivedBuilder = null;
+    }
+
+    [Test]
+    public async Task Main_SyncEntryPoint_RunsStandalone()
+    {
+        var builder = Tool.CreateBuilder(["sync-main"]);
+        builder.AddCommandsFromAssembly(typeof(StandaloneCommandTests).Assembly);
+
+        // `Main` (sync) is the standalone marker just like `MainAsync`, so Build
+        // should still short-circuit to StandaloneHost.
+        using (var host = ((IHostBuilder)builder).Build())
+        {
+            Assert.That(host, Is.InstanceOf<StandaloneHost>());
+        }
+
+        SyncMainCommand.ReturnedExit = 9;
+        var exit = await builder.RunAsync();
+
+        Assert.That(exit, Is.EqualTo(9));
+        Assert.That(SyncMainCommand.Ran, Is.True);
+    }
+
+    [Test]
+    public async Task Main_SyncWithToolBuilder_ReceivesIt()
+    {
+        var builder = Tool.CreateBuilder(["sync-main-builder"]);
+        builder.AddCommandsFromAssembly(typeof(StandaloneCommandTests).Assembly);
+
+        var exit = await builder.RunAsync();
+
+        Assert.That(exit, Is.EqualTo(0));
+        Assert.That(SyncMainBuilderCommand.Ran, Is.True);
+        Assert.That(SyncMainBuilderCommand.ReceivedBuilder, Is.SameAs(builder));
     }
 
     [Test]
@@ -341,4 +378,30 @@ public abstract class BaseMainAsync
 [Command("inherit-main")]
 public class InheritMainCommand : BaseMainAsync
 {
+}
+
+[Command("sync-main")]
+public class SyncMainCommand
+{
+    public static bool Ran { get; set; }
+    public static int? ReturnedExit { get; set; }
+
+    public int Main()
+    {
+        Ran = true;
+        return ReturnedExit ?? 0;
+    }
+}
+
+[Command("sync-main-builder")]
+public class SyncMainBuilderCommand
+{
+    public static IToolBuilder? ReceivedBuilder { get; set; }
+    public static bool Ran { get; set; }
+
+    public void Main(IToolBuilder builder)
+    {
+        ReceivedBuilder = builder;
+        Ran = true;
+    }
 }
