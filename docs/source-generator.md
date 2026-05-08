@@ -211,25 +211,42 @@ The shape of the emitted code, given a regular command with one DI-routed action
 and one builder-taking action option:
 
 ```csharp
-// Shared per-command binder — accessors + a single Build method whose
-// IServiceProvider parameter is null on the standalone path.
+// Shared per-command binder — accessors + a three-step lifecycle (CreateInstance /
+// BindOptions / InjectServices) so the action class can stage the steps as needed.
 internal static class BackupCommand_Binder
 {
     [UnsafeAccessor(...)] private static extern ref string __access_Target(BackupCommand instance);
     // ...
 
-    internal static BackupCommand Build(ParseResult parseResult, IServiceProvider? provider = null)
+    // Pure construction. Required [Inject] members are written as default!
+    // placeholders to satisfy the C# `required` modifier — InjectServices
+    // overwrites them. The provider parameter is only emitted when ctor DI needs
+    // one; mixed-kind commands take the nullable form so the standalone path can
+    // pass null.
+    internal static BackupCommand CreateInstance(ParseResult parseResult, IServiceProvider? provider = null)
     {
-        // Construction is branch-free: provider?.GetRequiredService<…>()! short-circuits
-        // to null on the standalone path, and the null-forgiving `!` keeps the compiler
-        // happy assigning to non-nullable destinations. The action-option method that
-        // runs in the standalone path is responsible for not dereferencing
-        // constructor- or [Inject]-supplied services.
-        var instance = new BackupCommand(provider?.GetRequiredService<MyService>()!);
-        instance.Logger = provider?.GetRequiredService<ILogger<BackupCommand>>()!;
-
-        // [Options] resolution + foreach over parseResult.Children
+        // provider?.GetRequiredService<…>()! short-circuits to null on the standalone
+        // path; the null-forgiving `!` keeps the compiler happy on non-nullable
+        // destinations. The standalone-path entry point is responsible for not
+        // dereferencing those members.
+        var instance = new BackupCommand(provider?.GetRequiredService<MyService>()!)
+        {
+            // required [Inject] placeholder — replaced by InjectServices.
+            RequiredLogger = default!,
+        };
         return instance;
+    }
+
+    // [Options] resolution + foreach over parseResult.Children for non-required
+    // [Argument]/[Option] members.
+    internal static void BindOptions(BackupCommand instance, ParseResult parseResult) { /* ... */ }
+
+    // Every [Inject] member (required and non-required). Emitted whenever DI is in
+    // scope and the command has any [Inject] members.
+    internal static void InjectServices(BackupCommand instance, IServiceProvider? provider)
+    {
+        instance.RequiredLogger = provider?.GetRequiredService<ILogger<BackupCommand>>()!;
+        instance.Cache = provider?.GetRequiredService<IMemoryCache>()!;
     }
 }
 
@@ -238,7 +255,9 @@ internal sealed class BackupCommand_Action(Func<IServiceProvider> getServiceProv
 {
     public override async Task<int> InvokeAsync(...)
     {
-        var instance = BackupCommand_Binder.Build(parseResult, provider);
+        var instance = BackupCommand_Binder.CreateInstance(parseResult, provider);
+        BackupCommand_Binder.BindOptions(instance, parseResult);
+        BackupCommand_Binder.InjectServices(instance, provider);
         await instance.ExecuteAsync(...);
         // ...
     }
@@ -252,7 +271,9 @@ internal sealed class BackupCommand_Action_MigrateAsync : AsynchronousCommandLin
 {
     public Task<int> InvokeAsync(IToolBuilder builder, ParseResult parseResult, CancellationToken ct)
     {
-        var instance = BackupCommand_Binder.Build(parseResult);  // no provider — standalone
+        var instance = BackupCommand_Binder.CreateInstance(parseResult);  // no provider — standalone
+        BackupCommand_Binder.BindOptions(instance, parseResult);
+        BackupCommand_Binder.InjectServices(instance, null);  // [Inject] members short-circuit to null
         return instance.MigrateAsync(builder, ct);
     }
     // fallback throws when invoked without a builder
@@ -276,12 +297,14 @@ regular `ExecuteAsync` command implements `IStandaloneAction` and triggers the
 `StandaloneHost` short-circuit in `ToolBuilder.Build()` independently of the primary's
 kind.
 
-The `IServiceProvider?` parameter is only emitted when the command actually needs both
-modes: a DI-only command (no standalone-style action options) takes a non-nullable
-`IServiceProvider provider`, and a standalone-only command (no DI-routed entry points)
-drops the parameter entirely. Mixed-kind commands take the nullable form and route every
-DI-touching expression through `provider?.…!` so a standalone-path call short-circuits
-to null without any `if (provider is null)` branching in the generated body.
+The `IServiceProvider?` parameter on `CreateInstance` (and the matching parameter on
+`InjectServices`) is only emitted when the command actually needs both modes: a
+DI-only command (no standalone-style action options) takes a non-nullable
+`IServiceProvider provider`, and a standalone-only command — or any command whose
+`Configure` is an instance method — drops the parameter from `CreateInstance`
+entirely. Mixed-kind commands take the nullable form and route every DI-touching
+expression through `provider?.…!` so a standalone-path call short-circuits to null
+without any `if (provider is null)` branching in the generated body.
 
 ## Key points
 
@@ -532,35 +555,64 @@ calls `AddCommandsFromAssembly(typeof(GeneratedProgram).Assembly).Run()`.
 
 ### Per-command `Configure`
 
-A `[Command]`-attributed type can declare an optional static `Configure` method that
-the generator wires onto the command's action. The hook fires only when *that*
-command is invoked — siblings stay dormant — and runs after the command line has
-been parsed but before the service provider is built, so it can register services or
-middleware the command depends on:
+A `[Command]`-attributed type can declare an optional `Configure` method that the
+generator wires onto the command's action. The hook fires only when *that* command
+is invoked — siblings stay dormant — and runs after the command line has been
+parsed but before the service provider is built, so it can register services or
+middleware the command depends on. Two shapes are supported:
 
 ```csharp
+// Static — no instance, no bound values, but ctor DI is allowed on the command.
 [Command("greet")]
 public class GreetCommand
 {
     [Inject] private IGreeter _greeter = null!;
-
     public void Execute() => _greeter.Greet();
 
     public static void Configure(IToolBuilder builder, IServiceCollection services)
         => services.AddSingleton<IGreeter, ConsoleGreeter>();
 }
+
+// Instance — the command is constructed and its [Argument]/[Option] values are
+// bound before Configure runs. The same instance flows through to Execute.
+[Command("fetch")]
+public class FetchCommand
+{
+    [Argument("url")] public string Url { get; set; } = "";
+
+    public void Configure(IServiceCollection services)
+        => services.AddHttpClient(new Uri(Url).Host);
+
+    public Task ExecuteAsync() { /* ... */ }
+}
 ```
 
-The method must be `static` and return `void`. Its parameter list may be empty (the
-hook just runs before the host is built) or contain any combination (1–3) of
-`IToolBuilder`, `IHostBuilder`, and `IServiceCollection`, in any order, with no
-duplicates. Methods with other shapes are silently ignored.
+The method returns `void`. Its parameter list may be empty (the hook just runs
+before the host is built) or contain any combination (1–3) of `IToolBuilder`,
+`IHostBuilder`, and `IServiceCollection`, in any order, with no duplicates. Any
+method literally named `Configure` on a `[Command]` type whose signature doesn't
+match — wrong return type, foreign parameter type, duplicates — is reported as
+`TXCL006` so a typo or misremembered signature can't quietly produce a hook that
+never fires. When both static and instance shapes are declared on the same
+command, the instance form wins.
+
+Instance `Configure` is constructed via `new T()` *before* the service provider
+exists, so it cannot coexist with constructor parameters (`TXCL004`) or required
+`[Inject]` members (`TXCL005`). Either combination is reported as a compile-time
+error so the user picks one shape: switch `Configure` to static, or move the
+dependencies to non-required `[Inject]` members (which are populated after
+`Configure` runs).
 
 Detection materializes as an `ICommandConfigurator` implementation on the generated
-`*_Action` class. `ToolBuilder.Build()` checks `ParseResult.Action` for that interface
-and calls `Configure(this)` once before continuing. Built-in actions (`--help`,
-`--version`, suggest directives) don't implement the interface, so the hook stays
-silent for those paths even when their target command declares one.
+`*_Action` class. `ToolBuilder.Build()` checks `ParseResult.Action` for that
+interface and calls `Configure(this, parseResult)` once before continuing. For the
+static form the action delegates to a `Type.Configure(...)` static call; for the
+instance form the action calls `_Binder.CreateInstance(parseResult)` +
+`_Binder.BindOptions(instance, parseResult)`, invokes the user's instance method,
+and stashes the resulting object so `InvokeAsync` reuses it (only `InjectServices`
+runs in the second phase). Built-in actions (`--help`, `--version`, suggest
+directives) don't implement the interface, so the hook stays silent for those
+paths even when their target command declares one.
 
 ### MSBuild properties
 

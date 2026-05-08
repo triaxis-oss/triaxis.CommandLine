@@ -125,4 +125,121 @@ public class ConfigureSiblingCommand
     }
 }
 
+/// <summary>
+/// Integration coverage for the instance form of <c>Configure</c>: the source generator
+/// constructs the command and binds <c>[Argument]</c>/<c>[Option]</c> values before
+/// invoking the user's instance method, so it can register services keyed off the
+/// parsed values. The configure-phase instance is reused by <c>Execute</c> so any
+/// state set in <c>Configure</c> carries through.
+/// </summary>
+[TestFixture]
+public class InstanceConfigureIntegrationTests
+{
+    [SetUp]
+    public void Reset()
+    {
+        InstanceConfigureCommand.LastObservedTarget = null;
+        InstanceConfigureCommand.LastObservedFlag = null;
+        InstanceConfigureCommand.LastConfigureMarker = null;
+        InstanceConfigureCommand.LastExecuteMarker = null;
+        InstanceConfigureCommand.SameInstance = null;
+    }
+
+    [Test]
+    public async Task InstanceConfigure_SeesBoundOptions()
+    {
+        var builder = Tool.CreateBuilder(["instance-configure", "alpha", "--flag"]);
+        builder.AddCommandsFromAssembly(typeof(InstanceConfigureIntegrationTests).Assembly);
+
+        var exit = await builder.RunAsync();
+
+        Assert.That(exit, Is.EqualTo(0));
+        Assert.That(InstanceConfigureCommand.LastObservedTarget, Is.EqualTo("alpha"),
+            "instance Configure must observe the bound [Argument] value");
+        Assert.That(InstanceConfigureCommand.LastObservedFlag, Is.True,
+            "instance Configure must observe the bound [Option] value");
+    }
+
+    [Test]
+    public async Task InstanceConfigure_StateFlowsToExecute_OnSameInstance()
+    {
+        var builder = Tool.CreateBuilder(["instance-configure", "beta"]);
+        builder.AddCommandsFromAssembly(typeof(InstanceConfigureIntegrationTests).Assembly);
+
+        var exit = await builder.RunAsync();
+
+        Assert.That(exit, Is.EqualTo(0));
+        Assert.That(InstanceConfigureCommand.LastConfigureMarker, Is.EqualTo("configure-saw-beta"));
+        Assert.That(InstanceConfigureCommand.LastExecuteMarker, Is.EqualTo("configure-saw-beta"),
+            "Execute must run on the same instance that Configure mutated");
+        Assert.That(InstanceConfigureCommand.SameInstance, Is.True);
+    }
+
+    [Test]
+    public async Task InstanceConfigure_InjectsAreAvailableAtExecute_NotAtConfigure()
+    {
+        var builder = Tool.CreateBuilder(["instance-configure", "gamma"]);
+        builder.AddCommandsFromAssembly(typeof(InstanceConfigureIntegrationTests).Assembly);
+
+        var exit = await builder.RunAsync();
+
+        Assert.That(exit, Is.EqualTo(0));
+        Assert.That(InstanceConfigureCommand.ProviderObservedAtConfigure, Is.False,
+            "Configure runs before the service provider exists, so [Inject] members are still null");
+        Assert.That(InstanceConfigureCommand.ProviderObservedAtExecute, Is.True,
+            "by Execute time, InjectServices has populated the [Inject] members");
+    }
+}
+
+[Command("instance-configure")]
+public class InstanceConfigureCommand
+{
+    public static string? LastObservedTarget;
+    public static bool? LastObservedFlag;
+    public static string? LastConfigureMarker;
+    public static string? LastExecuteMarker;
+    public static bool? SameInstance;
+    public static bool ProviderObservedAtConfigure;
+    public static bool ProviderObservedAtExecute;
+
+    [Argument("target")]
+    public string Target { get; set; } = "";
+
+    [Option("--flag")]
+    public bool Flag { get; set; }
+
+    // Non-required [Inject] — populated by InjectServices after Configure runs.
+    [Inject]
+    public InstanceConfigureProbe Probe { get; set; } = null!;
+
+    private string? _marker;
+    private InstanceConfigureCommand? _selfAtConfigure;
+
+    public void Configure(IServiceCollection services)
+    {
+        LastObservedTarget = Target;
+        LastObservedFlag = Flag;
+        _marker = $"configure-saw-{Target}";
+        LastConfigureMarker = _marker;
+        // Probe is null at Configure time — InjectServices runs later, after the
+        // host is built. Use ReferenceEquals against null to dodge any null-warning
+        // from the [Inject]'s null-forgiven default.
+        ProviderObservedAtConfigure = !ReferenceEquals(Probe, null);
+        _selfAtConfigure = this;
+        services.AddSingleton<InstanceConfigureProbe>();
+        services.AddSingleton(new InstanceConfigureMarker(Target));
+    }
+
+    public void Execute()
+    {
+        LastExecuteMarker = _marker;
+        SameInstance = ReferenceEquals(_selfAtConfigure, this);
+        ProviderObservedAtExecute = !ReferenceEquals(Probe, null);
+    }
+}
+
+public sealed record InstanceConfigureMarker(string Value);
+
+public sealed class InstanceConfigureProbe { }
+
 public sealed record ConfigureMarker(string Value);

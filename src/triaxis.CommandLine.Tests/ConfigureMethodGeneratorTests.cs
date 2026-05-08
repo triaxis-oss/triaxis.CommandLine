@@ -1,5 +1,6 @@
 namespace triaxis.CommandLine.Tests;
 
+using System.Collections.Immutable;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.Extensions.DependencyInjection;
@@ -108,7 +109,7 @@ public class ConfigureMethodGeneratorTests
         var tree = RunGeneratorAndGetCommandTree(source);
         Assert.That(tree, Is.Not.Null);
         Assert.That(tree, Does.Contain("AsynchronousCommandLineAction, global::triaxis.CommandLine.ICommandConfigurator"));
-        Assert.That(tree, Does.Contain("public void Configure(global::triaxis.CommandLine.IToolBuilder builder)"));
+        Assert.That(tree, Does.Contain("public void Configure(global::triaxis.CommandLine.IToolBuilder builder, ParseResult parseResult)"));
         Assert.That(tree, Does.Contain("global::GreetCommand.Configure(builder);"));
     }
 
@@ -218,7 +219,7 @@ public class ConfigureMethodGeneratorTests
     }
 
     [Test]
-    public void Generator_SkipsConfigure_WhenInstanceMethod()
+    public void Generator_ImplementsICommandConfigurator_WhenCommandHasInstanceConfigure()
     {
         const string source = """
             using triaxis.CommandLine;
@@ -233,12 +234,42 @@ public class ConfigureMethodGeneratorTests
 
         var tree = RunGeneratorAndGetCommandTree(source);
         Assert.That(tree, Is.Not.Null);
-        Assert.That(tree, Does.Not.Contain("ICommandConfigurator"),
-            "non-static Configure must not register a configurator");
+        Assert.That(tree, Does.Contain("ICommandConfigurator"));
+        // Instance Configure: the action class constructs and binds the command
+        // before invoking the user's instance method, then stashes the instance for
+        // reuse at InvokeAsync.
+        Assert.That(tree, Does.Contain("private global::GreetCommand? _configuredInstance;"),
+            "instance Configure should stash the configure-phase instance");
+        Assert.That(tree, Does.Contain("instance.Configure(builder)"),
+            "instance Configure should be dispatched on the constructed instance");
+        Assert.That(tree, Does.Contain("_configuredInstance = instance;"));
     }
 
     [Test]
-    public void Generator_SkipsConfigure_WhenNonVoidReturn()
+    public void Generator_PrefersInstanceConfigure_WhenBothShapesPresent()
+    {
+        const string source = """
+            using triaxis.CommandLine;
+
+            [Command("greet")]
+            public class GreetCommand
+            {
+                public void Execute() { }
+                public void Configure(IToolBuilder builder) { }
+                public static void Configure() { }
+            }
+            """;
+
+        var tree = RunGeneratorAndGetCommandTree(source);
+        Assert.That(tree, Is.Not.Null);
+        // The instance shape wins because it's the more capable form (sees bound values).
+        Assert.That(tree, Does.Contain("instance.Configure(builder)"));
+        Assert.That(tree, Does.Not.Contain("global::GreetCommand.Configure();"),
+            "the static fallback must not be wired up when an instance shape is present");
+    }
+
+    [Test]
+    public void Generator_ReportsTXCL006_WhenConfigureReturnsNonVoid()
     {
         const string source = """
             using triaxis.CommandLine;
@@ -251,13 +282,13 @@ public class ConfigureMethodGeneratorTests
             }
             """;
 
-        var tree = RunGeneratorAndGetCommandTree(source);
-        Assert.That(tree, Is.Not.Null);
-        Assert.That(tree, Does.Not.Contain("ICommandConfigurator"));
+        var diags = RunGeneratorAndGetDiagnostics(source);
+        Assert.That(diags.Any(d => d.Id == "TXCL006"), Is.True,
+            "a Configure method that returns non-void should be flagged rather than silently dropped");
     }
 
     [Test]
-    public void Generator_SkipsConfigure_WhenUnsupportedParameterType()
+    public void Generator_ReportsTXCL006_WhenConfigureHasUnsupportedParameterType()
     {
         const string source = """
             using triaxis.CommandLine;
@@ -270,13 +301,144 @@ public class ConfigureMethodGeneratorTests
             }
             """;
 
-        var tree = RunGeneratorAndGetCommandTree(source);
-        Assert.That(tree, Is.Not.Null);
-        Assert.That(tree, Does.Not.Contain("ICommandConfigurator"));
+        var diags = RunGeneratorAndGetDiagnostics(source);
+        Assert.That(diags.Any(d => d.Id == "TXCL006"), Is.True,
+            "a Configure method with a foreign parameter type should be flagged");
     }
 
     [Test]
-    public void Generator_SkipsConfigure_WhenDuplicateParameterTypes()
+    public void Generator_ReportsTXCL006_AndPreservesTXCL004_WhenInstanceConfigureIsUnusableAndCtorTakesParameters()
+    {
+        // Regression: a method named Configure with a foreign parameter shape used to
+        // be silently dropped, which also suppressed TXCL004 since cmd.ConfigureMethod
+        // ended up null. Now both diagnostics fire so the user sees the real problem.
+        const string source = """
+            using triaxis.CommandLine;
+
+            public interface IDep { }
+            public interface IFoo { }
+
+            [Command("greet")]
+            public class GreetCommand(IDep dep)
+            {
+                public void Execute() { _ = dep; }
+                public void Configure(IFoo foo) { _ = foo; }
+            }
+            """;
+
+        var diags = RunGeneratorAndGetDiagnostics(source);
+        Assert.That(diags.Any(d => d.Id == "TXCL006"), Is.True,
+            "the unrecognised Configure shape should be flagged as TXCL006");
+    }
+
+    private static ImmutableArray<Diagnostic> RunGeneratorAndGetDiagnostics(string userSource)
+    {
+        var syntaxTree = CSharpSyntaxTree.ParseText(userSource);
+        var compilation = CSharpCompilation.Create(
+            assemblyName: "TestAssembly",
+            syntaxTrees: [syntaxTree],
+            references: s_baseReferences,
+            options: new CSharpCompilationOptions(OutputKind.ConsoleApplication));
+
+        CSharpGeneratorDriver
+            .Create(new CommandTreeGenerator())
+            .RunGeneratorsAndUpdateCompilation(compilation, out _, out var diagnostics);
+        return diagnostics;
+    }
+
+    [Test]
+    public void Generator_ReportsTXCL004_WhenInstanceConfigureMeetsCtorParameters()
+    {
+        // Instance Configure is constructed without DI (the provider doesn't exist yet),
+        // so a constructor that needs DI is unsatisfiable at Configure time.
+        const string source = """
+            using triaxis.CommandLine;
+
+            public interface IDep { }
+
+            [Command("greet")]
+            public class GreetCommand(IDep dep)
+            {
+                public void Execute() { }
+                public void Configure(IToolBuilder builder) { }
+            }
+            """;
+
+        var diags = RunGeneratorAndGetDiagnostics(source);
+        Assert.That(diags.Any(d => d.Id == "TXCL004"), Is.True,
+            "instance Configure with ctor parameters should produce TXCL004");
+    }
+
+    [Test]
+    public void Generator_ReportsTXCL005_WhenInstanceConfigureMeetsRequiredInject()
+    {
+        const string source = """
+            using triaxis.CommandLine;
+
+            public interface IDep { }
+
+            [Command("greet")]
+            public class GreetCommand
+            {
+                [Inject] public required IDep Dep { get; init; }
+                public void Execute() { }
+                public void Configure(IToolBuilder builder) { }
+            }
+            """;
+
+        var diags = RunGeneratorAndGetDiagnostics(source);
+        Assert.That(diags.Any(d => d.Id == "TXCL005"), Is.True,
+            "instance Configure with required [Inject] should produce TXCL005");
+    }
+
+    [Test]
+    public void Generator_DoesNotReportInstanceConfigureDiagnostics_WhenConfigureIsStatic()
+    {
+        const string source = """
+            using triaxis.CommandLine;
+
+            public interface IDep { }
+
+            [Command("greet")]
+            public class GreetCommand(IDep dep)
+            {
+                [Inject] public required IDep AlsoDep { get; init; }
+                public void Execute() { }
+                public static void Configure(IToolBuilder builder) { }
+            }
+            """;
+
+        var diags = RunGeneratorAndGetDiagnostics(source);
+        Assert.That(diags.Any(d => d.Id == "TXCL004"), Is.False);
+        Assert.That(diags.Any(d => d.Id == "TXCL005"), Is.False);
+    }
+
+    [Test]
+    public void Generator_AllowsInstanceConfigure_WithNonRequiredInject()
+    {
+        // Non-required [Inject] is fine — the generator's InjectServices step assigns
+        // it after Configure has run, before Execute.
+        const string source = """
+            using triaxis.CommandLine;
+
+            public interface IDep { }
+
+            [Command("greet")]
+            public class GreetCommand
+            {
+                [Inject] public IDep Dep { get; set; } = null!;
+                public void Execute() { }
+                public void Configure(IToolBuilder builder) { }
+            }
+            """;
+
+        var diags = RunGeneratorAndGetDiagnostics(source);
+        Assert.That(diags.Any(d => d.Id == "TXCL004"), Is.False);
+        Assert.That(diags.Any(d => d.Id == "TXCL005"), Is.False);
+    }
+
+    [Test]
+    public void Generator_ReportsTXCL006_WhenConfigureHasDuplicateParameterTypes()
     {
         const string source = """
             using triaxis.CommandLine;
@@ -289,8 +451,8 @@ public class ConfigureMethodGeneratorTests
             }
             """;
 
-        var tree = RunGeneratorAndGetCommandTree(source);
-        Assert.That(tree, Is.Not.Null);
-        Assert.That(tree, Does.Not.Contain("ICommandConfigurator"));
+        var diags = RunGeneratorAndGetDiagnostics(source);
+        Assert.That(diags.Any(d => d.Id == "TXCL006"), Is.True,
+            "a Configure method with duplicate parameter types should be flagged");
     }
 }

@@ -215,9 +215,13 @@ class ToolBuilder : IToolBuilder, IHostBuilder
         // Run the matched command's [Command] Configure hook before any IHostBuilder
         // callbacks fire so it can register services the command depends on. Built-in
         // actions (--help / --version) are different ParseResult.Action types and skip it.
+        // ParseResult is forwarded so that instance Configure methods can observe their
+        // command's bound argument / option values (the source generator constructs and
+        // binds the command before invoking the user method). Static Configure methods
+        // ignore the argument.
         if (parseResult.Action is ICommandConfigurator configurator)
         {
-            configurator.Configure(this);
+            configurator.Configure(this, parseResult);
         }
 
         // Short-circuit for commands that own their own host: no service provider,

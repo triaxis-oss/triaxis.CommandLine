@@ -47,11 +47,25 @@ handles dispatch, Ctrl+C, and default exception handling.
 
 ### Source-generated `*_Action` classes
 
-One `AsynchronousCommandLineAction` per `[Command]` class. On invocation, constructs
-the command type (with constructor DI), injects `[Inject]` members, binds
-`[Argument]`/`[Option]` members via a `foreach`/`switch` over
-`parseResult.CommandResult.Children`, invokes `Execute`/`ExecuteAsync`, and delegates
-to `ICommandExecutor` for middleware and result finalization.
+One `AsynchronousCommandLineAction` per `[Command]` class. The per-command lifecycle
+is split across three methods on a `*_Binder` static helper so the action can stage
+them as needed:
+
+- `CreateInstance(ParseResult [, IServiceProvider])` — `new T(ctor-DI?)` with an
+  object initializer that writes the parsed values for required `[Argument]` /
+  `[Option]` members and required `[Options]` segments, plus `default!` placeholders
+  for required `[Inject]` members (`InjectServices` overwrites them). The provider
+  parameter is only present when ctor DI is in play.
+- `BindOptions(T, ParseResult)` — resolves nested `[Options]` containers and binds
+  the non-required `[Argument]`/`[Option]` members from `parseResult`.
+- `InjectServices(T, IServiceProvider)` — assigns every `[Inject]` member (required
+  and non-required), so all DI wiring lives in one place.
+
+For `Execute`/`ExecuteAsync` the action runs the three in order, then delegates to
+`ICommandExecutor`. For an instance `Configure` method, the action constructs and
+binds the command at `ICommandConfigurator.Configure` time so the user's hook can
+observe parsed values, stashes the instance, and reuses it at `InvokeAsync` (only
+`InjectServices` runs in the second phase).
 
 ### CommandTreeNode
 

@@ -90,9 +90,12 @@ declaring type's fully-qualified name, then by method name).
 
 ### Per-command `Configure`
 
-A static `Configure` method on a `[Command]` type fires only when that command is
-actually invoked, after parsing and before the service provider is built — so
-registrations land in the host that runs the command:
+A `Configure` method on a `[Command]` type fires only when that command is actually
+invoked, after parsing and before the service provider is built — so registrations
+land in the host that runs the command. Two shapes are supported:
+
+**Static `Configure`** is the simplest form. It runs without a command instance and
+is the only option when the command needs constructor DI:
 
 ```csharp
 [Command("greet")]
@@ -107,10 +110,45 @@ public class GreetCommand
 }
 ```
 
-The method must be `static` and return `void`. It can take any of `IToolBuilder`,
-`IHostBuilder`, or `IServiceCollection` — including no parameters at all. See the
-[source-generator docs](source-generator.md#per-command-configure) for emission
-details.
+**Instance `Configure`** runs on a constructed command with `[Argument]`/`[Option]`
+values already bound, so it can register services keyed off parsed input. The
+configure-phase instance is reused by `Execute`, so any state set in `Configure`
+carries through:
+
+```csharp
+[Command("fetch")]
+public class FetchCommand
+{
+    [Argument("url")] public string Url { get; set; } = "";
+    [Inject] public IHttpClientFactory Http { get; set; } = null!;
+
+    private Uri _parsed = null!;
+
+    public void Configure(IServiceCollection services)
+    {
+        _parsed = new Uri(Url);
+        services.AddHttpClient(_parsed.Host);
+    }
+
+    public Task ExecuteAsync() => Http.CreateClient(_parsed.Host).GetAsync(_parsed);
+}
+```
+
+Either form returns `void` and may take any combination of `IToolBuilder`,
+`IHostBuilder`, and `IServiceCollection` (or no parameters at all). A method named
+`Configure` on a `[Command]` type whose signature doesn't match these rules is
+reported as `TXCL006` rather than silently dropped — name collisions get a clear
+"rename or fix the signature" error instead of a hook that quietly never fires.
+
+The instance form is the more capable shape and wins when both are declared.
+Because the command is constructed before the service provider exists, instance
+`Configure` cannot coexist with **constructor parameters** (`TXCL004`) or with
+**required `[Inject]` members** (`TXCL005`) — those are reported as compile-time
+errors. Non-required `[Inject]` members are fine; they're populated after
+`Configure` runs and are visible by the time `Execute` is called.
+
+See the [source-generator docs](source-generator.md#per-command-configure) for
+emission details.
 
 `TryAddTransient` / `TryAddSingleton` in the library means you can replace any of the
 defaults from `ConfigureServices`:
