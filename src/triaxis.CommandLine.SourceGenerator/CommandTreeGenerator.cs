@@ -431,21 +431,23 @@ public class CommandTreeGenerator : IIncrementalGenerator
         var diagBuilder = ImmutableArray.CreateBuilder<string>();
         if (isStandalone)
         {
+            var entryPointName = executeMethod.MethodName; // "Main" or "MainAsync"
             if (members.Any(m => m.Kind == MemberKind.Inject))
             {
-                diagBuilder.Add($"TXCL001:Command '{typeSymbol.Name}' declares MainAsync so it runs without a service provider; [Inject] members are not supported on standalone commands.");
+                diagBuilder.Add($"TXCL001:Command '{typeSymbol.Name}' declares {entryPointName} so it runs without a service provider; [Inject] members are not supported on standalone commands.");
             }
             if (!ctorParams.IsEmpty)
             {
-                diagBuilder.Add($"TXCL002:Command '{typeSymbol.Name}' declares MainAsync but has a constructor with parameters; standalone commands require a parameterless constructor.");
+                diagBuilder.Add($"TXCL002:Command '{typeSymbol.Name}' declares {entryPointName} but has a constructor with parameters; standalone commands require a parameterless constructor.");
             }
-            // Reject if the class also defines ExecuteAsync / Execute — the two are mutually
-            // exclusive, and silently preferring MainAsync would be surprising.
+            // Reject if the class also defines ExecuteAsync / Execute — the standalone
+            // marker and the DI/middleware-routed marker are mutually exclusive, and
+            // silently preferring the standalone one would be surprising.
             var hasExecute = typeSymbol.GetMembers("ExecuteAsync").OfType<IMethodSymbol>().Any(m => m.Parameters.Length <= 1)
                 || typeSymbol.GetMembers("Execute").OfType<IMethodSymbol>().Any(m => m.Parameters.Length == 0);
             if (hasExecute)
             {
-                diagBuilder.Add($"TXCL003:Command '{typeSymbol.Name}' declares both MainAsync and ExecuteAsync/Execute; pick one entry point.");
+                diagBuilder.Add($"TXCL003:Command '{typeSymbol.Name}' declares both {entryPointName} and ExecuteAsync/Execute; pick one entry point.");
             }
         }
         // [ActionOption] methods are independent of the command's primary kind: a
@@ -634,20 +636,28 @@ public class CommandTreeGenerator : IIncrementalGenerator
         // Walk the type hierarchy from the command type up through its base classes
         // and pick the first supported entry point encountered — any supported method
         // on a more derived class wins over anything on a base class, regardless of
-        // shape. Within a single type the preference order is MainAsync (marks the
-        // command as "standalone" — no service provider, no middleware) over
-        // ExecuteAsync(CancellationToken) over ExecuteAsync() over Execute().
-        // Recognised MainAsync shapes are:
-        //   MainAsync()
-        //   MainAsync(CancellationToken)
-        //   MainAsync(IToolBuilder)
-        //   MainAsync(IToolBuilder, CancellationToken)
-        // All variants may return Task or Task<int>. Private members on base types
-        // aren't callable from the generated sibling action class, so we skip them.
+        // shape. Within a single type the preference order is MainAsync (async standalone)
+        // → Main (sync standalone, both mark the command as standalone — no service
+        // provider, no middleware) → ExecuteAsync(CancellationToken) → ExecuteAsync()
+        // → Execute(). Recognised standalone shapes are:
+        //   MainAsync()                                 — Task / Task<int>
+        //   MainAsync(CancellationToken)                — Task / Task<int>
+        //   MainAsync(IToolBuilder)                     — Task / Task<int>
+        //   MainAsync(IToolBuilder, CancellationToken)  — Task / Task<int>
+        //   Main()                                      — void / int
+        //   Main(CancellationToken)                     — void / int
+        //   Main(IToolBuilder)                          — void / int
+        //   Main(IToolBuilder, CancellationToken)       — void / int
+        // Private members on base types aren't callable from the generated sibling
+        // action class, so we skip them.
         for (var current = typeSymbol; current is not null && current.SpecialType != SpecialType.System_Object; current = current.BaseType)
         {
             var isBase = !SymbolEqualityComparer.Default.Equals(current, typeSymbol);
             var mainAsyncCandidates = current.GetMembers("MainAsync")
+                .OfType<IMethodSymbol>()
+                .Where(m => !isBase || m.DeclaredAccessibility != Accessibility.Private)
+                .ToArray();
+            var mainCandidates = current.GetMembers("Main")
                 .OfType<IMethodSymbol>()
                 .Where(m => !isBase || m.DeclaredAccessibility != Accessibility.Private)
                 .ToArray();
@@ -678,13 +688,43 @@ public class CommandTreeGenerator : IIncrementalGenerator
 
                 var (kind, innerType) = AnalyzeReturnType(m.ReturnType);
                 // MainAsync must return Task or Task<int>; other return shapes fall through
-                // to the default path below (which will produce a diagnostic in the caller).
+                // (a sync `Main` should be used for void/int returns instead — `void
+                // MainAsync()` would be a contradiction in terms).
                 if (kind is not (ReturnKind.Task or ReturnKind.TaskOfInt))
                 {
                     continue;
                 }
 
                 return (new ExecuteMethodModel("MainAsync", true, acceptsCt,
+                    m.ReturnType.ToDisplayString(FqnFormat), kind, innerType,
+                    AcceptsToolBuilder: acceptsBuilder), IsStandalone: true);
+            }
+
+            foreach (var m in mainCandidates)
+            {
+                var acceptsBuilder = false;
+                var acceptsCt = false;
+                var shapeOk = m.Parameters.Length switch
+                {
+                    0 => true,
+                    1 => IsCtParam(m.Parameters[0], ref acceptsCt) || IsBuilderParam(m.Parameters[0], ref acceptsBuilder),
+                    2 => IsBuilderParam(m.Parameters[0], ref acceptsBuilder) && IsCtParam(m.Parameters[1], ref acceptsCt),
+                    _ => false,
+                };
+                if (!shapeOk)
+                {
+                    continue;
+                }
+
+                var (kind, innerType) = AnalyzeReturnType(m.ReturnType);
+                // Sync Main: void / int only. Task-returning entry points should be
+                // named MainAsync.
+                if (kind is not (ReturnKind.Void or ReturnKind.Int))
+                {
+                    continue;
+                }
+
+                return (new ExecuteMethodModel("Main", IsAsync: false, acceptsCt,
                     m.ReturnType.ToDisplayString(FqnFormat), kind, innerType,
                     AcceptsToolBuilder: acceptsBuilder), IsStandalone: true);
             }
@@ -1869,10 +1909,13 @@ public class CommandTreeGenerator : IIncrementalGenerator
     }
 
     /// <summary>
-    /// Emits a single MainAsync-style invocation in the standalone path. Standalone
-    /// commands return either <see cref="System.Threading.Tasks.Task"/> or
-    /// <see cref="System.Threading.Tasks.Task{Int32}"/>; the former needs an explicit
-    /// <c>return 0</c> because the surrounding method must return <see cref="int"/>.
+    /// Emits a single MainAsync-style invocation in the standalone path. The surrounding
+    /// method must return <see cref="int"/>, so each return-shape is mapped to the
+    /// appropriate combination of <c>await</c> / <c>return 0</c>. Standalone-routed
+    /// <c>[ActionOption]</c> methods may use any of the void/int/Task/Task&lt;int&gt;
+    /// shapes; richer return types (collections, <c>ICommandInvocationResult</c>, …)
+    /// require the DI path because the standalone host has no <c>InvocationContext</c>
+    /// to receive them.
     /// </summary>
     private static void EmitStandaloneInvocation(IndentedTextWriter w, string methodName,
         bool acceptsToolBuilder, bool acceptsCancellationToken, ReturnKind returnKind)
@@ -1884,15 +1927,36 @@ public class CommandTreeGenerator : IIncrementalGenerator
             (false, true) => "cancellationToken",
             (false, false) => "",
         };
+        var call = $"instance.{methodName}({callArgs})";
 
-        if (returnKind == ReturnKind.TaskOfInt)
+        switch (returnKind)
         {
-            w.WriteLine($"return await instance.{methodName}({callArgs});");
-        }
-        else
-        {
-            w.WriteLine($"await instance.{methodName}({callArgs});");
-            w.WriteLine("return 0;");
+            case ReturnKind.Void:
+                w.WriteLine($"{call};");
+                w.WriteLine("return 0;");
+                break;
+
+            case ReturnKind.Int:
+                w.WriteLine($"return {call};");
+                break;
+
+            case ReturnKind.Task:
+                w.WriteLine($"await {call};");
+                w.WriteLine("return 0;");
+                break;
+
+            case ReturnKind.TaskOfInt:
+                w.WriteLine($"return await {call};");
+                break;
+
+            default:
+                // Rich return shapes can't be threaded through the standalone host's
+                // bare `Task<int>` contract — surface a helpful error rather than emit
+                // code that won't compile. The validation in DetectActionOptions could
+                // be extended to flag this at gen time, but the rare case is caught
+                // here as a safety net.
+                throw new InvalidOperationException(
+                    $"Standalone-routed entry point '{methodName}' returns {returnKind}, which is unsupported on the standalone path. Use Task, Task<int>, void, or int.");
         }
     }
 

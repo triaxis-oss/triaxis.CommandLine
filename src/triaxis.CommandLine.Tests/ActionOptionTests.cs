@@ -43,6 +43,21 @@ public class ActionOptionRegularCommand
         Trace.LastToken = ct;
         return Task.FromResult(7);
     }
+
+    [ActionOption("--sync-void")]
+    public void SyncVoid()
+    {
+        Trace.Method = "sync-void";
+        Trace.Suffix = Suffix;
+    }
+
+    [ActionOption("--sync-int")]
+    public int SyncInt()
+    {
+        Trace.Method = "sync-int";
+        Trace.Suffix = Suffix;
+        return 5;
+    }
 }
 
 [Command("ao-standalone")]
@@ -76,6 +91,13 @@ public class ActionOptionStandaloneCommand
         Trace.Method = "ping";
         Trace.Suffix = Suffix;
         return Task.CompletedTask;
+    }
+
+    [ActionOption("--sync-tag")]
+    public void SyncTag()
+    {
+        Trace.Method = "sync-tag";
+        Trace.Suffix = Suffix;
     }
 }
 
@@ -180,6 +202,48 @@ public class ActionOptionTests
 
         Assert.That(exit, Is.EqualTo(0));
         Assert.That(ActionOptionStandaloneCommand.Trace.Method, Is.EqualTo("ping"));
+    }
+
+    [Test]
+    public async Task Regular_ActionOption_SyncVoid_IsDispatched()
+    {
+        var trace = new ActionOptionTrace();
+        var builder = Tool.CreateBuilder(["ao-regular", "--sync-void", "--suffix", "v"]);
+        builder.ConfigureServices(s => s.AddSingleton(trace));
+        builder.AddCommandsFromAssembly(typeof(ActionOptionTests).Assembly);
+
+        var exit = await builder.RunAsync();
+
+        Assert.That(exit, Is.EqualTo(0));
+        Assert.That(trace.Method, Is.EqualTo("sync-void"));
+        Assert.That(trace.Suffix, Is.EqualTo("v"));
+    }
+
+    [Test]
+    public async Task Regular_ActionOption_SyncInt_ReturnsExitCode()
+    {
+        var trace = new ActionOptionTrace();
+        var builder = Tool.CreateBuilder(["ao-regular", "--sync-int"]);
+        builder.ConfigureServices(s => s.AddSingleton(trace));
+        builder.AddCommandsFromAssembly(typeof(ActionOptionTests).Assembly);
+
+        var exit = await builder.RunAsync();
+
+        Assert.That(trace.Method, Is.EqualTo("sync-int"));
+        Assert.That(exit, Is.EqualTo(5));
+    }
+
+    [Test]
+    public async Task Standalone_ActionOption_SyncVoid_IsDispatched()
+    {
+        var builder = Tool.CreateBuilder(["ao-standalone", "--sync-tag", "--suffix", "s"]);
+        builder.AddCommandsFromAssembly(typeof(ActionOptionTests).Assembly);
+
+        var exit = await builder.RunAsync();
+
+        Assert.That(exit, Is.EqualTo(0));
+        Assert.That(ActionOptionStandaloneCommand.Trace.Method, Is.EqualTo("sync-tag"));
+        Assert.That(ActionOptionStandaloneCommand.Trace.Suffix, Is.EqualTo("s"));
     }
 
     [Test]
