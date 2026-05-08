@@ -226,6 +226,28 @@ public class CommandTreeGenerator : IIncrementalGenerator
         return sw.ToString();
     }
 
+    private static void EmitConfigureInvocation(IndentedTextWriter w, ConfigureMethodModel method)
+    {
+        var args = method.Parameters.Select(static p => p switch
+        {
+            ConfigureParamKind.ToolBuilder => "builder",
+            ConfigureParamKind.HostBuilder => "builder",
+            ConfigureParamKind.ServiceCollection => "services",
+            _ => throw new InvalidOperationException("unreachable"),
+        }).ToArray();
+
+        var call = $"{method.DeclaringTypeFqn}.Configure({string.Join(", ", args)})";
+
+        if (method.Parameters.Contains(ConfigureParamKind.ServiceCollection))
+        {
+            w.WriteLine($"builder.ConfigureServices(services => {call});");
+        }
+        else
+        {
+            w.WriteLine($"{call};");
+        }
+    }
+
     private static void EmitConfigureServicesHooks(IndentedTextWriter w, ImmutableArray<ConfigureServicesHookModel> hooks)
     {
         if (hooks.IsDefaultOrEmpty)
@@ -400,6 +422,7 @@ public class CommandTreeGenerator : IIncrementalGenerator
 
         var (executeMethod, isStandalone) = DetectEntryPoint(typeSymbol);
         var ctorParams = ExtractConstructorParameters(typeSymbol);
+        var configureMethod = DetectConfigureMethod(typeSymbol);
 
         // Validate standalone commands: no [Inject], parameterless ctor, no co-existing
         // ExecuteAsync/Execute. Collect diagnostic messages here and surface them in the
@@ -437,7 +460,55 @@ public class CommandTreeGenerator : IIncrementalGenerator
             executeMethod,
             ctorParams,
             IsStandalone: isStandalone,
+            ConfigureMethod: configureMethod,
             Diagnostics: diagnostics);
+    }
+
+    private static ConfigureMethodModel? DetectConfigureMethod(INamedTypeSymbol typeSymbol)
+    {
+        foreach (var m in typeSymbol.GetMembers("Configure").OfType<IMethodSymbol>())
+        {
+            if (!m.IsStatic || m.ReturnType.SpecialType != SpecialType.System_Void)
+            {
+                continue;
+            }
+
+            var seen = ConfigureParamKind.None;
+            var paramKinds = new ConfigureParamKind[m.Parameters.Length];
+            var ok = true;
+            for (var i = 0; i < m.Parameters.Length; i++)
+            {
+                var kind = ClassifyConfigureParam(m.Parameters[i].Type);
+                if (kind == ConfigureParamKind.None || (seen & kind) != 0)
+                {
+                    ok = false;
+                    break;
+                }
+                paramKinds[i] = kind;
+                seen |= kind;
+            }
+
+            if (!ok)
+            {
+                continue;
+            }
+
+            return new ConfigureMethodModel(
+                typeSymbol.ToDisplayString(FqnFormat),
+                paramKinds.ToImmutableArray());
+        }
+        return null;
+    }
+
+    private static ConfigureParamKind ClassifyConfigureParam(ITypeSymbol type)
+    {
+        return type.ToDisplayString() switch
+        {
+            "triaxis.CommandLine.IToolBuilder" => ConfigureParamKind.ToolBuilder,
+            "Microsoft.Extensions.Hosting.IHostBuilder" => ConfigureParamKind.HostBuilder,
+            "Microsoft.Extensions.DependencyInjection.IServiceCollection" => ConfigureParamKind.ServiceCollection,
+            _ => ConfigureParamKind.None,
+        };
     }
 
     private static ImmutableArray<ConstructorParameterModel> ExtractConstructorParameters(INamedTypeSymbol typeSymbol)
@@ -1319,8 +1390,20 @@ public class CommandTreeGenerator : IIncrementalGenerator
         var nonPublicDirect = args.Concat(opts).Concat(injects).Where(m => !m.IsPublic && m.AccessPath.Length == 0).ToArray();
         var exec = cmd.ExecuteMethod;
 
-        w.Block($"internal sealed class {safeName}_Action(Func<IServiceProvider> getServiceProvider) : AsynchronousCommandLineAction", () =>
+        var classHeader = cmd.ConfigureMethod is not null
+            ? $"internal sealed class {safeName}_Action(Func<IServiceProvider> getServiceProvider) : AsynchronousCommandLineAction, global::triaxis.CommandLine.ICommandConfigurator"
+            : $"internal sealed class {safeName}_Action(Func<IServiceProvider> getServiceProvider) : AsynchronousCommandLineAction";
+        w.Block(classHeader, () =>
         {
+            if (cmd.ConfigureMethod is not null)
+            {
+                w.Block("public void Configure(global::triaxis.CommandLine.IToolBuilder builder)", () =>
+                {
+                    EmitConfigureInvocation(w, cmd.ConfigureMethod);
+                });
+                w.WriteLine();
+            }
+
 
         // Accessors for direct members that need backing field access
         // (non-public members, or public read-only properties)
@@ -1511,8 +1594,20 @@ public class CommandTreeGenerator : IIncrementalGenerator
         var opts = GetOptions(cmd);
         var exec = cmd.ExecuteMethod;
 
-        w.Block($"internal sealed class {safeName}_Action : AsynchronousCommandLineAction, IStandaloneAction", () =>
+        var standaloneClassHeader = cmd.ConfigureMethod is not null
+            ? $"internal sealed class {safeName}_Action : AsynchronousCommandLineAction, IStandaloneAction, global::triaxis.CommandLine.ICommandConfigurator"
+            : $"internal sealed class {safeName}_Action : AsynchronousCommandLineAction, IStandaloneAction";
+        w.Block(standaloneClassHeader, () =>
         {
+            if (cmd.ConfigureMethod is not null)
+            {
+                w.Block("public void Configure(global::triaxis.CommandLine.IToolBuilder builder)", () =>
+                {
+                    EmitConfigureInvocation(w, cmd.ConfigureMethod);
+                });
+                w.WriteLine();
+            }
+
             // Accessors — same as regular commands, just no [Inject] members to worry about.
             var memberAccessors = new Dictionary<string, Accessor>();
             foreach (var member in args.Concat(opts).Where(m => m.AccessPath.Length == 0 && !m.NeedsInitializer))
@@ -2160,7 +2255,21 @@ record CommandModel(
     ExecuteMethodModel ExecuteMethod,
     ImmutableArray<ConstructorParameterModel> ConstructorParameters,
     bool IsStandalone = false,
+    ConfigureMethodModel? ConfigureMethod = null,
     ImmutableArray<string> Diagnostics = default);
+
+[Flags]
+enum ConfigureParamKind
+{
+    None = 0,
+    ToolBuilder = 1,
+    HostBuilder = 2,
+    ServiceCollection = 4,
+}
+
+record ConfigureMethodModel(
+    string DeclaringTypeFqn,
+    ImmutableArray<ConfigureParamKind> Parameters);
 
 record AssemblyCommandModel(
     string[] Path,

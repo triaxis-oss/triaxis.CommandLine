@@ -443,6 +443,38 @@ command discovery never relies on `Assembly.GetCallingAssembly()`. When only the
 for `triaxis.CommandLine.LoggingCommand`), the generator emits a simpler fallback that
 calls `AddCommandsFromAssembly(typeof(GeneratedProgram).Assembly).Run()`.
 
+### Per-command `Configure`
+
+A `[Command]`-attributed type can declare an optional static `Configure` method that
+the generator wires onto the command's action. The hook fires only when *that*
+command is invoked — siblings stay dormant — and runs after the command line has
+been parsed but before the service provider is built, so it can register services or
+middleware the command depends on:
+
+```csharp
+[Command("greet")]
+public class GreetCommand
+{
+    [Inject] private IGreeter _greeter = null!;
+
+    public void Execute() => _greeter.Greet();
+
+    public static void Configure(IToolBuilder builder, IServiceCollection services)
+        => services.AddSingleton<IGreeter, ConsoleGreeter>();
+}
+```
+
+The method must be `static` and return `void`. Its parameter list may be empty (the
+hook just runs before the host is built) or contain any combination (1–3) of
+`IToolBuilder`, `IHostBuilder`, and `IServiceCollection`, in any order, with no
+duplicates. Methods with other shapes are silently ignored.
+
+Detection materializes as an `ICommandConfigurator` implementation on the generated
+`*_Action` class. `ToolBuilder.Build()` checks `ParseResult.Action` for that interface
+and calls `Configure(this)` once before continuing. Built-in actions (`--help`,
+`--version`, suggest directives) don't implement the interface, so the hook stays
+silent for those paths even when their target command declares one.
+
 ### MSBuild properties
 
 The `UseDefaultConfiguration` parameters (`configOverridePath`, `environmentVariablePrefix`)

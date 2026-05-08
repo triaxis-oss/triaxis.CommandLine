@@ -296,6 +296,27 @@ parameter. Multiple hooks across the assembly are supported; the generator emits
 them in a stable ordinal order (by declaring type's fully-qualified name, then by
 method name).
 
+For any pre-container setup specific to a command — registering services, adding
+middleware, tweaking the host — declare a static `Configure` method on the command
+type. The generator wires it onto the command's action so it fires only when that
+command is actually invoked:
+
+```csharp
+[Command("greet")]
+public class GreetCommand
+{
+    [Inject] private IGreeter _greeter = null!;
+
+    public void Execute() => _greeter.Greet();
+
+    public static void Configure(IServiceCollection services)
+        => services.AddSingleton<IGreeter, ConsoleGreeter>();
+}
+```
+
+The method must be `static` and return `void`. It can take any of `IToolBuilder`,
+`IHostBuilder`, or `IServiceCollection` — including no parameters at all.
+
 Inside a command, take services through the constructor as usual, or use the `[Inject]`
 attribute on any field or property. `[Inject]` is particularly handy on reusable base
 classes (see `LoggingCommand`) so derived commands don't have to forward dependencies
