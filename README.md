@@ -262,6 +262,34 @@ public class PingCommand
 }
 ```
 
+#### Alternate entry points (`[ActionOption]`)
+
+A command can have additional entry points triggered by their own flag. Mark a method
+with `[ActionOption]` and the generator exposes a boolean option that — when set —
+runs that method instead of the command's primary `ExecuteAsync`/`MainAsync`. The same
+arguments and options are still bound onto the command instance, so the alternate
+method observes the same state the primary would have:
+
+```csharp
+[Command("backup")]
+public class BackupCommand
+{
+    [Option("--target")] public string Target { get; set; } = "/var/backup";
+
+    public Task ExecuteAsync(CancellationToken ct) { /* default: take a backup */ }
+
+    [ActionOption("--list", "-l", Description = "List existing backups")]
+    public Task ListAsync(CancellationToken ct) { /* ... */ }
+
+    [ActionOption("--restore")]
+    public Task<int> RestoreAsync(CancellationToken ct) { /* ... */ }
+}
+```
+
+`backup` runs the primary; `backup --list` runs `ListAsync`; `backup --restore`
+runs `RestoreAsync`. On standalone commands the alternate method may also take an
+`IToolBuilder`, just like `MainAsync`.
+
 ### Dependency injection
 
 Register services with `ConfigureServices`:

@@ -423,14 +423,14 @@ public class CommandTreeGenerator : IIncrementalGenerator
         var (executeMethod, isStandalone) = DetectEntryPoint(typeSymbol);
         var ctorParams = ExtractConstructorParameters(typeSymbol);
         var configureMethod = DetectConfigureMethod(typeSymbol);
+        var actionOptions = DetectActionOptions(typeSymbol);
 
         // Validate standalone commands: no [Inject], parameterless ctor, no co-existing
         // ExecuteAsync/Execute. Collect diagnostic messages here and surface them in the
         // RegisterSourceOutput callback (which has access to ReportDiagnostic).
-        var diagnostics = ImmutableArray<string>.Empty;
+        var diagBuilder = ImmutableArray.CreateBuilder<string>();
         if (isStandalone)
         {
-            var diagBuilder = ImmutableArray.CreateBuilder<string>();
             if (members.Any(m => m.Kind == MemberKind.Inject))
             {
                 diagBuilder.Add($"TXCL001:Command '{typeSymbol.Name}' declares MainAsync so it runs without a service provider; [Inject] members are not supported on standalone commands.");
@@ -447,8 +447,12 @@ public class CommandTreeGenerator : IIncrementalGenerator
             {
                 diagBuilder.Add($"TXCL003:Command '{typeSymbol.Name}' declares both MainAsync and ExecuteAsync/Execute; pick one entry point.");
             }
-            diagnostics = diagBuilder.ToImmutable();
         }
+        // [ActionOption] methods are independent of the command's primary kind: a
+        // builder-taking action option emits its own IStandaloneAction class even on
+        // an otherwise DI-routed command (and vice versa), so no kind-match check is
+        // needed here.
+        var diagnostics = diagBuilder.ToImmutable();
 
         return new CommandModel(
             typeSymbol.ToDisplayString(FqnFormat),
@@ -461,7 +465,95 @@ public class CommandTreeGenerator : IIncrementalGenerator
             ctorParams,
             IsStandalone: isStandalone,
             ConfigureMethod: configureMethod,
+            ActionOptions: actionOptions,
             Diagnostics: diagnostics);
+    }
+
+    private static ImmutableArray<ActionOptionModel> DetectActionOptions(INamedTypeSymbol typeSymbol)
+    {
+        var builder = ImmutableArray.CreateBuilder<ActionOptionModel>();
+        // Walk the type and its base classes for [ActionOption] methods. Private members on
+        // base types aren't callable from the generated sibling action class, so skip them.
+        for (var current = typeSymbol; current is not null && current.SpecialType != SpecialType.System_Object; current = current.BaseType)
+        {
+            var isBase = !SymbolEqualityComparer.Default.Equals(current, typeSymbol);
+            foreach (var method in current.GetMembers().OfType<IMethodSymbol>())
+            {
+                if (method.IsStatic || method.MethodKind != MethodKind.Ordinary)
+                {
+                    continue;
+                }
+                if (isBase && method.DeclaredAccessibility == Accessibility.Private)
+                {
+                    continue;
+                }
+                var attr = method.GetAttributes().FirstOrDefault(a =>
+                    a.AttributeClass?.ToDisplayString() == "triaxis.CommandLine.ActionOptionAttribute");
+                if (attr is null)
+                {
+                    continue;
+                }
+
+                // Recognised parameter shapes mirror MainAsync:
+                //   ()
+                //   (CancellationToken)
+                //   (IToolBuilder)
+                //   (IToolBuilder, CancellationToken)
+                var acceptsToolBuilder = false;
+                var acceptsCt = false;
+                var shapeOk = method.Parameters.Length switch
+                {
+                    0 => true,
+                    1 => IsCtParameter(method.Parameters[0], ref acceptsCt) || IsBuilderParameter(method.Parameters[0], ref acceptsToolBuilder),
+                    2 => IsBuilderParameter(method.Parameters[0], ref acceptsToolBuilder) && IsCtParameter(method.Parameters[1], ref acceptsCt),
+                    _ => false,
+                };
+                if (!shapeOk)
+                {
+                    continue;
+                }
+
+                var (kind, innerType) = AnalyzeReturnType(method.ReturnType);
+
+                var name = GetNamedArgString(attr, "Name") ?? GetConstructorArgString(attr, 0);
+                var description = GetNamedArgString(attr, "Description");
+                var aliases = GetConstructorArgStringArray(attr, 1) ?? GetNamedArgStringArray(attr, "Aliases");
+                var order = GetNamedArgDouble(attr, "Order");
+
+                builder.Add(new ActionOptionModel(
+                    method.Name,
+                    name,
+                    description,
+                    aliases,
+                    order,
+                    acceptsToolBuilder,
+                    acceptsCt,
+                    method.ReturnType.ToDisplayString(FqnFormat),
+                    kind,
+                    innerType));
+            }
+        }
+        return builder.ToImmutable();
+
+        static bool IsCtParameter(IParameterSymbol p, ref bool accepts)
+        {
+            if (p.Type.ToDisplayString() == "System.Threading.CancellationToken")
+            {
+                accepts = true;
+                return true;
+            }
+            return false;
+        }
+
+        static bool IsBuilderParameter(IParameterSymbol p, ref bool accepts)
+        {
+            if (p.Type.ToDisplayString() == "triaxis.CommandLine.IToolBuilder")
+            {
+                accepts = true;
+                return true;
+            }
+            return false;
+        }
     }
 
     private static ConfigureMethodModel? DetectConfigureMethod(INamedTypeSymbol typeSymbol)
@@ -1174,6 +1266,9 @@ public class CommandTreeGenerator : IIncrementalGenerator
                 var safeName = GetSafeName(cmd);
                 var args = GetArguments(cmd);
                 var opts = GetOptions(cmd);
+                var actionOptions = cmd.ActionOptions.IsDefault
+                    ? ImmutableArray<ActionOptionModel>.Empty
+                    : cmd.ActionOptions;
 
                 w.WriteLine(cmd.IsStandalone
                     ? $"Action = new {safeName}_Action(),"
@@ -1190,7 +1285,7 @@ public class CommandTreeGenerator : IIncrementalGenerator
                         }
                     });
                 }
-                if (opts.Length > 0)
+                if (opts.Length > 0 || actionOptions.Length > 0)
                 {
                     w.Block("Options =", suffix: ",", body: () =>
                     {
@@ -1207,6 +1302,35 @@ public class CommandTreeGenerator : IIncrementalGenerator
                                 : FormatString(nameAndAliases[0]);
                             w.Write($"new OptionDefinition<{opt.MemberTypeFqn}>({nameArg})");
                             EmitArgOptInitializer(w, opt);
+                            w.WriteLine(",");
+                        }
+                        foreach (var ao in actionOptions)
+                        {
+                            var nameAndAliases = new List<string> { GetActionOptionCliName(ao) };
+                            if (ao.Aliases is not null)
+                            {
+                                nameAndAliases.AddRange(ao.Aliases);
+                            }
+                            var aliasesArr = nameAndAliases.Skip(1).ToArray();
+                            var nameArg = aliasesArr.Length > 0
+                                ? $"{FormatString(nameAndAliases[0])}, {FormatStringArrayInline(aliasesArr)}"
+                                : FormatString(nameAndAliases[0]);
+                            // Each action option has its own *_Action_<MethodName> class.
+                            // Standalone-style classes (those whose method takes IToolBuilder
+                            // — or that sit on a standalone primary) take no ctor args; DI
+                            // classes take the service provider accessor.
+                            var actionClassName = $"{safeName}_Action_{ao.MethodName}";
+                            var actionIsStandalone = ao.AcceptsToolBuilder || cmd.IsStandalone;
+                            var actionCtorArgs = actionIsStandalone ? "" : "getServiceProvider";
+                            w.Write($"new OptionDefinition<bool>({nameArg})");
+                            var initParts = new List<string>();
+                            if (ao.Description is not null)
+                            {
+                                initParts.Add($"Description = {FormatString(ao.Description)}");
+                            }
+                            initParts.Add("Arity = ArgumentArity.ZeroOrOne");
+                            initParts.Add($"Action = new {actionClassName}({actionCtorArgs})");
+                            w.Write(" { " + string.Join(", ", initParts) + " }");
                             w.WriteLine(",");
                         }
                     });
@@ -1377,240 +1501,79 @@ public class CommandTreeGenerator : IIncrementalGenerator
 
     private static void GenerateCommandAction(IndentedTextWriter w, CommandModel cmd, bool hasUnsafeAccessor)
     {
+        var actionOptions = cmd.ActionOptions.IsDefault
+            ? ImmutableArray<ActionOptionModel>.Empty
+            : cmd.ActionOptions;
+
+        // Each entry point (the primary plus every [ActionOption]) lives in its own
+        // `*_Action` class so its kind (DI vs standalone) can be chosen independently
+        // from the command's primary kind. Accessors and the build/bind code are
+        // emitted once into a shared static helper so the per-entry-point classes
+        // stay thin.
+        var anyDi = !cmd.IsStandalone || actionOptions.Any(a => !a.AcceptsToolBuilder);
+        var anyStandalone = cmd.IsStandalone || actionOptions.Any(a => a.AcceptsToolBuilder);
+
+        EmitBindHelper(w, cmd, hasUnsafeAccessor, emitDi: anyDi, emitStandalone: anyStandalone);
+
+        // Primary entry point class — name stays `<safeName>_Action` for tree wiring.
+        var safeName = GetSafeName(cmd);
         if (cmd.IsStandalone)
         {
-            GenerateStandaloneCommandAction(w, cmd, hasUnsafeAccessor);
-            return;
+            EmitStandaloneActionClass(w, cmd, $"{safeName}_Action",
+                cmd.ExecuteMethod.MethodName, cmd.ExecuteMethod.AcceptsToolBuilder,
+                cmd.ExecuteMethod.AcceptsCancellationToken, cmd.ExecuteMethod.ReturnKind);
+        }
+        else
+        {
+            EmitDiActionClass(w, cmd, $"{safeName}_Action",
+                cmd.ExecuteMethod.MethodName, cmd.ExecuteMethod.AcceptsCancellationToken,
+                cmd.ExecuteMethod.ReturnKind, cmd.ExecuteMethod.InnerTypeFqn);
         }
 
-        var safeName = GetSafeName(cmd);
-        var args = GetArguments(cmd);
-        var opts = GetOptions(cmd);
-        var injects = cmd.Members.Where(m => m.Kind == MemberKind.Inject).ToArray();
-        var nonPublicDirect = args.Concat(opts).Concat(injects).Where(m => !m.IsPublic && m.AccessPath.Length == 0).ToArray();
-        var exec = cmd.ExecuteMethod;
-
-        var classHeader = cmd.ConfigureMethod is not null
-            ? $"internal sealed class {safeName}_Action(Func<IServiceProvider> getServiceProvider) : AsynchronousCommandLineAction, global::triaxis.CommandLine.ICommandConfigurator"
-            : $"internal sealed class {safeName}_Action(Func<IServiceProvider> getServiceProvider) : AsynchronousCommandLineAction";
-        w.Block(classHeader, () =>
+        foreach (var ao in actionOptions)
         {
-            if (cmd.ConfigureMethod is not null)
+            var className = $"{safeName}_Action_{ao.MethodName}";
+            if (ao.AcceptsToolBuilder)
             {
-                w.Block("public void Configure(global::triaxis.CommandLine.IToolBuilder builder)", () =>
-                {
-                    EmitConfigureInvocation(w, cmd.ConfigureMethod);
-                });
-                w.WriteLine();
+                EmitStandaloneActionClass(w, cmd, className, ao.MethodName,
+                    acceptsToolBuilder: true, ao.AcceptsCancellationToken, ao.ReturnKind);
             }
-
-
-        // Accessors for direct members that need backing field access
-        // (non-public members, or public read-only properties)
-        // Skip required members — they are set in the object initializer.
-        var memberAccessors = new Dictionary<string, Accessor>();
-        foreach (var member in args.Concat(opts).Concat(injects).Where(m => m.AccessPath.Length == 0 && !m.NeedsInitializer))
-        {
-            var owner = member.DeclaringTypeFqn;
-            memberAccessors[MemberKey(member)] = EmitAccessor(
-                w, owner, member.MemberName, member.DeclaredTypeFqn,
-                member.IsField, member.IsPublic, member.HasSetter, member.HasBackingField,
-                $"__access_{GetMemberFieldName(member)}", hasUnsafeAccessor);
-        }
-
-        // Accessors for [Options] path segments
-        var pathAccessors = new Dictionary<string, Accessor>();
-        foreach (var member in args.Concat(opts).Concat(injects))
-        {
-            foreach (var seg in member.AccessPath)
+            else if (cmd.IsStandalone)
             {
-                var key = seg.OwnerTypeFqn + "." + seg.MemberName;
-                if (pathAccessors.ContainsKey(key))
-                {
-                    continue;
-                }
-                pathAccessors[key] = EmitAccessor(
-                    w, seg.OwnerTypeFqn, seg.MemberName, seg.DeclaredTypeFqn,
-                    seg.IsField, seg.IsPublic, seg.HasSetter, seg.HasBackingField,
-                    $"__access_path_{seg.MemberName}", hasUnsafeAccessor);
+                // Action option without IToolBuilder on a standalone primary still runs
+                // through the standalone path (no DI), since the command's own state is
+                // standalone-only (no [Inject]/ctor-DI usable from this action).
+                EmitStandaloneActionClass(w, cmd, className, ao.MethodName,
+                    acceptsToolBuilder: false, ao.AcceptsCancellationToken, ao.ReturnKind);
+            }
+            else
+            {
+                EmitDiActionClass(w, cmd, className, ao.MethodName,
+                    ao.AcceptsCancellationToken, ao.ReturnKind, ao.InnerTypeFqn);
             }
         }
-
-        // Accessors for members on nested [Options] types that need backing field access
-        foreach (var member in args.Concat(opts).Where(m => m.AccessPath.Length > 0))
-        {
-            var lastSeg = member.AccessPath[member.AccessPath.Length - 1];
-            memberAccessors[MemberKey(member)] = EmitAccessor(
-                w, lastSeg.MemberTypeFqn, member.MemberName, member.DeclaredTypeFqn,
-                member.IsField, member.IsPublic, member.HasSetter, member.HasBackingField,
-                $"__access_{GetMemberFieldName(member)}", hasUnsafeAccessor);
-        }
-
-        // InvokeAsync
-        w.Block("public override async Task<int> InvokeAsync(ParseResult parseResult, CancellationToken cancellationToken)", () =>
-        {
-            w.WriteLine("var provider = getServiceProvider();");
-            w.WriteLine($"var context = new InvocationContext(provider, parseResult, cancellationToken, typeof({cmd.TypeName}));");
-            w.WriteLine();
-            w.WriteLine("await provider.GetRequiredService<ICommandExecutor>().ExecuteAsync(context, async () =>");
-            w.Block(() =>
-            {
-                // Identify required direct members that must go in the object initializer
-                var requiredDirectArgs = args.Where(m => m.NeedsInitializer && m.AccessPath.Length == 0).ToArray();
-                var requiredDirectOpts = opts.Where(m => m.NeedsInitializer && m.AccessPath.Length == 0).ToArray();
-                var requiredDirectInjects = injects.Where(m => m.NeedsInitializer).ToArray();
-                // Required [Options] properties on the command itself
-                var requiredOptionsProps = args.Concat(opts)
-                    .Where(m => m.AccessPath.Length > 0 && m.AccessPath[0].IsMemberRequired)
-                    .Select(m => m.AccessPath[0])
-                    .Distinct()
-                    .ToArray();
-
-                // Create instance — required/init members go in the object initializer
-                var hasInitializer = requiredDirectArgs.Length > 0 || requiredDirectOpts.Length > 0
-                    || requiredDirectInjects.Length > 0 || requiredOptionsProps.Length > 0;
-
-                var ctorExpr = cmd.ConstructorParameters.IsEmpty
-                    ? $"new {cmd.TypeName}()"
-                    : $"new {cmd.TypeName}({string.Join(", ", cmd.ConstructorParameters.Select(p => $"provider.GetRequiredService<{p.TypeFqn}>()"))})";
-
-                if (hasInitializer)
-                {
-                    var initExpr = cmd.ConstructorParameters.IsEmpty
-                        ? $"new {cmd.TypeName}"
-                        : ctorExpr;
-                    w.Block($"var instance = {initExpr}", () =>
-                    {
-                        foreach (var member in requiredDirectArgs.Cast<MemberModel>().Concat(requiredDirectOpts))
-                        {
-                            w.WriteLine($"{member.MemberName} = parseResult.GetValue<{member.MemberTypeFqn}>({FormatString(GetCliName(member))}),");
-                        }
-                        foreach (var inject in requiredDirectInjects)
-                        {
-                            var serviceType = inject.InjectTypeFqn ?? inject.MemberTypeFqn;
-                            w.WriteLine($"{inject.MemberName} = provider.GetRequiredService<{serviceType}>(),");
-                        }
-                        foreach (var seg in requiredOptionsProps)
-                        {
-                            var prefix = new[] { seg };
-                            var allMembers = args.Concat(opts).ToArray();
-                            w.WriteLine($"{seg.MemberName} = {FormatOptionsCreateExpr(seg, prefix, 1, allMembers)},");
-                        }
-                    }, suffix: ";");
-                }
-                else
-                {
-                    w.WriteLine($"var instance = {ctorExpr};");
-                }
-                w.WriteLine();
-
-                // Direct [Inject] assignments (skip required members already set in initializer)
-                foreach (var inject in injects.Where(i => !i.NeedsInitializer))
-                {
-                    var serviceType = inject.InjectTypeFqn ?? inject.MemberTypeFqn;
-                    w.WriteLine(FormatWrite(memberAccessors[MemberKey(inject)], "instance", $"provider.GetRequiredService<{serviceType}>()") + ";");
-                }
-
-                // Eagerly resolve [Options] nested objects. This also primes required
-                // members inside each container from `parseResult.GetValue<T>(name)` —
-                // that value is either the user-supplied one or the option's declared
-                // default, and it's written through the backing-field accessor so
-                // init-only members work even after the container was pre-initialized.
-                GenerateOptionsPathResolution(w, args, opts, pathAccessors, memberAccessors);
-
-                // Bind explicit argument/option values from parse results. Required
-                // members (direct or nested) were already set in the object initializer
-                // (direct) or primed by `GenerateOptionsPathResolution` (nested).
-                var bindableArgs = args.Where(a => !a.NeedsInitializer).ToArray();
-                var bindableOpts = opts.Where(o => !o.NeedsInitializer).ToArray();
-
-                if (bindableArgs.Length > 0 || bindableOpts.Length > 0)
-                {
-                    w.Block("foreach (var __result in parseResult.CommandResult.Children)", () =>
-                    {
-                        if (bindableArgs.Length > 0)
-                        {
-                            w.Block("if (__result is ArgumentResult { Tokens.Count: > 0 } __ar) switch (__ar.Argument.Name)", () =>
-                            {
-                                foreach (var arg in bindableArgs)
-                                {
-                                    var assign = FormatMemberAssignment(arg, $"__ar.GetValueOrDefault<{arg.MemberTypeFqn}>()", memberAccessors[MemberKey(arg)]);
-                                    w.WriteLine($"case {FormatString(GetCliName(arg))}: {assign} break;");
-                                }
-                            });
-                        }
-                        if (bindableOpts.Length > 0)
-                        {
-                            w.Block("if (__result is OptionResult { Implicit: false } __or) switch (__or.Option.Name)", () =>
-                            {
-                                foreach (var opt in bindableOpts)
-                                {
-                                    var assign = FormatMemberAssignment(opt, $"__or.GetValueOrDefault<{opt.MemberTypeFqn}>()", memberAccessors[MemberKey(opt)]);
-                                    w.WriteLine($"case {FormatString(GetCliName(opt))}: {assign} break;");
-                                }
-                            });
-                        }
-                    });
-                    w.WriteLine();
-                }
-
-                // Execute
-                if (exec.AcceptsCancellationToken)
-                {
-                    GenerateExecuteCall(w, cmd, "context.GetCancellationToken()");
-                }
-                else
-                {
-                    w.WriteLine("var failFastRegistration = context.GetCancellationToken().Register(static () => Environment.FailFast(null));");
-                    w.Block("try", () =>
-                    {
-                        GenerateExecuteCall(w, cmd, null);
-                    });
-                    w.Block("finally", () =>
-                    {
-                        w.WriteLine("failFastRegistration.Dispose();");
-                    });
-                }
-            });
-            w.WriteLine(");");
-            w.WriteLine();
-            w.WriteLine("return context.ExitCode;");
-        });
-
-        }); // end class block
-        w.WriteLine();
     }
 
     /// <summary>
-    /// Emits the action class for a standalone command (one that declares <c>MainAsync</c>
-    /// instead of <c>ExecuteAsync</c>/<c>Execute</c>). The generated class implements
-    /// <see cref="IStandaloneAction"/>; <c>ToolBuilder.Build()</c> uses that marker to
-    /// short-circuit and skip building the CLI-side service provider.
+    /// Emits the per-command static helper class containing all member accessors and
+    /// the unified <c>Build</c> method that each entry-point action class calls into.
+    /// Sharing the binder avoids duplicating accessor declarations and bind logic across
+    /// the primary class and one class per <c>[ActionOption]</c> method.
     /// </summary>
-    private static void GenerateStandaloneCommandAction(IndentedTextWriter w, CommandModel cmd, bool hasUnsafeAccessor)
+    private static void EmitBindHelper(IndentedTextWriter w, CommandModel cmd,
+        bool hasUnsafeAccessor, bool emitDi, bool emitStandalone)
     {
         var safeName = GetSafeName(cmd);
         var args = GetArguments(cmd);
         var opts = GetOptions(cmd);
-        var exec = cmd.ExecuteMethod;
+        var injects = cmd.Members.Where(m => m.Kind == MemberKind.Inject).ToArray();
 
-        var standaloneClassHeader = cmd.ConfigureMethod is not null
-            ? $"internal sealed class {safeName}_Action : AsynchronousCommandLineAction, IStandaloneAction, global::triaxis.CommandLine.ICommandConfigurator"
-            : $"internal sealed class {safeName}_Action : AsynchronousCommandLineAction, IStandaloneAction";
-        w.Block(standaloneClassHeader, () =>
+        w.Block($"internal static class {safeName}_Binder", () =>
         {
-            if (cmd.ConfigureMethod is not null)
-            {
-                w.Block("public void Configure(global::triaxis.CommandLine.IToolBuilder builder)", () =>
-                {
-                    EmitConfigureInvocation(w, cmd.ConfigureMethod);
-                });
-                w.WriteLine();
-            }
-
-            // Accessors — same as regular commands, just no [Inject] members to worry about.
+            // Accessors for direct members that need backing field access.
+            // Skip required members — they're set in the object initializer.
             var memberAccessors = new Dictionary<string, Accessor>();
-            foreach (var member in args.Concat(opts).Where(m => m.AccessPath.Length == 0 && !m.NeedsInitializer))
+            foreach (var member in args.Concat(opts).Concat(injects).Where(m => m.AccessPath.Length == 0 && !m.NeedsInitializer))
             {
                 memberAccessors[MemberKey(member)] = EmitAccessor(
                     w, member.DeclaringTypeFqn, member.MemberName, member.DeclaredTypeFqn,
@@ -1618,8 +1581,9 @@ public class CommandTreeGenerator : IIncrementalGenerator
                     $"__access_{GetMemberFieldName(member)}", hasUnsafeAccessor);
             }
 
+            // Accessors for [Options] path segments
             var pathAccessors = new Dictionary<string, Accessor>();
-            foreach (var member in args.Concat(opts))
+            foreach (var member in args.Concat(opts).Concat(injects))
             {
                 foreach (var seg in member.AccessPath)
                 {
@@ -1635,6 +1599,7 @@ public class CommandTreeGenerator : IIncrementalGenerator
                 }
             }
 
+            // Accessors for members on nested [Options] types that need backing field access
             foreach (var member in args.Concat(opts).Where(m => m.AccessPath.Length > 0))
             {
                 var lastSeg = member.AccessPath[member.AccessPath.Length - 1];
@@ -1644,17 +1609,241 @@ public class CommandTreeGenerator : IIncrementalGenerator
                     $"__access_{GetMemberFieldName(member)}", hasUnsafeAccessor);
             }
 
-            // IStandaloneAction entry point — called by StandaloneHost with the owning builder.
+            // Configure delegation — emitted once and re-used by every entry-point class
+            // that implements ICommandConfigurator.
+            if (cmd.ConfigureMethod is not null)
+            {
+                w.Block("internal static void Configure(global::triaxis.CommandLine.IToolBuilder builder)", () =>
+                {
+                    EmitConfigureInvocation(w, cmd.ConfigureMethod);
+                });
+                w.WriteLine();
+            }
+
+            // The DI/standalone modes only differ in construction (ctor parameters,
+            // [Inject] assignments). Argument/option binding and [Options] resolution
+            // are identical, so a single Build method covers both — pass a non-null
+            // provider for DI, omit it for standalone.
+            EmitBuildMethod(w, cmd, args, opts, injects, memberAccessors, pathAccessors,
+                emitDi: emitDi, emitStandalone: emitStandalone);
+        });
+        w.WriteLine();
+    }
+
+    private static void EmitBuildMethod(IndentedTextWriter w, CommandModel cmd,
+        MemberModel[] args, MemberModel[] opts, MemberModel[] injects,
+        Dictionary<string, Accessor> memberAccessors, Dictionary<string, Accessor> pathAccessors,
+        bool emitDi, bool emitStandalone)
+    {
+        var requiredDirectArgs = args.Where(m => m.NeedsInitializer && m.AccessPath.Length == 0).ToArray();
+        var requiredDirectOpts = opts.Where(m => m.NeedsInitializer && m.AccessPath.Length == 0).ToArray();
+        var requiredInjects = injects.Where(m => m.NeedsInitializer).ToArray();
+        var nonRequiredInjects = injects.Where(m => !m.NeedsInitializer).ToArray();
+        var requiredOptionsProps = args.Concat(opts)
+            .Where(m => m.AccessPath.Length > 0 && m.AccessPath[0].IsMemberRequired)
+            .Select(m => m.AccessPath[0])
+            .Distinct()
+            .ToArray();
+        var allMembers = args.Concat(opts).ToArray();
+        var hasCtorParams = !cmd.ConstructorParameters.IsEmpty;
+        var hasInitializer = requiredDirectArgs.Length > 0 || requiredDirectOpts.Length > 0
+            || requiredInjects.Length > 0 || requiredOptionsProps.Length > 0;
+
+        // Single-mode commands (DI-only or standalone-only — i.e. no action options that
+        // straddle the other kind) take a non-nullable parameter signature. Mixed-kind
+        // commands take an optional provider, and DI-touching expressions go through
+        // `provider?.` so the standalone-path call short-circuits to null. The
+        // null-forgiving `!` after the call keeps the compiler happy assigning to
+        // non-nullable destinations; on the standalone path the runtime value is null
+        // and the action-option method is responsible for not dereferencing it.
+        var standaloneOnly = emitStandalone && !emitDi;
+        var hasOptionalProvider = emitDi && emitStandalone;
+        var providerAccess = standaloneOnly
+            ? null
+            : hasOptionalProvider ? "provider?" : "provider";
+
+        var sig = standaloneOnly
+            ? $"internal static {cmd.TypeName} Build(ParseResult parseResult)"
+            : hasOptionalProvider
+                ? $"internal static {cmd.TypeName} Build(ParseResult parseResult, IServiceProvider? provider = null)"
+                : $"internal static {cmd.TypeName} Build(ParseResult parseResult, IServiceProvider provider)";
+
+        w.Block(sig, () =>
+        {
+            // --- Construction (single, branch-free) ---
+            var ctorExpr = (standaloneOnly || !hasCtorParams)
+                ? $"new {cmd.TypeName}()"
+                : $"new {cmd.TypeName}({string.Join(", ", cmd.ConstructorParameters.Select(p => $"{providerAccess}.GetRequiredService<{p.TypeFqn}>()!"))})";
+
+            if (hasInitializer)
+            {
+                var initExpr = (hasCtorParams && !standaloneOnly) ? ctorExpr : $"new {cmd.TypeName}";
+                w.Block($"var instance = {initExpr}", () =>
+                {
+                    foreach (var member in requiredDirectArgs.Cast<MemberModel>().Concat(requiredDirectOpts))
+                    {
+                        w.WriteLine($"{member.MemberName} = parseResult.GetValue<{member.MemberTypeFqn}>({FormatString(GetCliName(member))}),");
+                    }
+                    foreach (var inject in requiredInjects)
+                    {
+                        // Required injects need a value to satisfy the C# `required`
+                        // modifier. Standalone-only commands have no provider at all so
+                        // we fall back to `default!`; otherwise we go through the
+                        // (possibly null-conditional) provider expression.
+                        var rhs = standaloneOnly
+                            ? "default!"
+                            : $"{providerAccess}.GetRequiredService<{inject.InjectTypeFqn ?? inject.MemberTypeFqn}>()!";
+                        w.WriteLine($"{inject.MemberName} = {rhs},");
+                    }
+                    foreach (var seg in requiredOptionsProps)
+                    {
+                        var prefix = new[] { seg };
+                        w.WriteLine($"{seg.MemberName} = {FormatOptionsCreateExpr(seg, prefix, 1, allMembers)},");
+                    }
+                }, suffix: ";");
+            }
+            else
+            {
+                w.WriteLine($"var instance = {ctorExpr};");
+            }
+            w.WriteLine();
+
+            // --- Non-required [Inject] ---
+            // Same `provider?.` strategy: on standalone-path calls the call short-circuits
+            // to null, the assignment writes null through the accessor, and the action-
+            // option method that ran us in this path is responsible for not reading it.
+            if (nonRequiredInjects.Length > 0 && !standaloneOnly)
+            {
+                foreach (var inject in nonRequiredInjects)
+                {
+                    var serviceType = inject.InjectTypeFqn ?? inject.MemberTypeFqn;
+                    w.WriteLine(FormatWrite(memberAccessors[MemberKey(inject)], "instance",
+                        $"{providerAccess}.GetRequiredService<{serviceType}>()!") + ";");
+                }
+            }
+
+            // [Options] resolution — same on both paths.
+            GenerateOptionsPathResolution(w, args, opts, pathAccessors, memberAccessors);
+
+            // Bind args/options from parseResult.Children
+            var bindableArgs = args.Where(a => !a.NeedsInitializer).ToArray();
+            var bindableOpts = opts.Where(o => !o.NeedsInitializer).ToArray();
+
+            if (bindableArgs.Length > 0 || bindableOpts.Length > 0)
+            {
+                w.Block("foreach (var __result in parseResult.CommandResult.Children)", () =>
+                {
+                    if (bindableArgs.Length > 0)
+                    {
+                        w.Block("if (__result is ArgumentResult { Tokens.Count: > 0 } __ar) switch (__ar.Argument.Name)", () =>
+                        {
+                            foreach (var arg in bindableArgs)
+                            {
+                                var assign = FormatMemberAssignment(arg, $"__ar.GetValueOrDefault<{arg.MemberTypeFqn}>()", memberAccessors[MemberKey(arg)]);
+                                w.WriteLine($"case {FormatString(GetCliName(arg))}: {assign} break;");
+                            }
+                        });
+                    }
+                    if (bindableOpts.Length > 0)
+                    {
+                        w.Block("if (__result is OptionResult { Implicit: false } __or) switch (__or.Option.Name)", () =>
+                        {
+                            foreach (var opt in bindableOpts)
+                            {
+                                var assign = FormatMemberAssignment(opt, $"__or.GetValueOrDefault<{opt.MemberTypeFqn}>()", memberAccessors[MemberKey(opt)]);
+                                w.WriteLine($"case {FormatString(GetCliName(opt))}: {assign} break;");
+                            }
+                        });
+                    }
+                });
+                w.WriteLine();
+            }
+
+            w.WriteLine("return instance;");
+        });
+        w.WriteLine();
+    }
+
+    /// <summary>
+    /// Emits a thin DI-routed action class. The instance, all bound members, and any
+    /// <c>[Inject]</c> values are produced by <c>{safeName}_Binder.Build</c>.
+    /// </summary>
+    private static void EmitDiActionClass(IndentedTextWriter w, CommandModel cmd,
+        string className, string methodName, bool acceptsCt,
+        ReturnKind returnKind, string? innerTypeFqn)
+    {
+        var safeName = GetSafeName(cmd);
+        var hasConfigure = cmd.ConfigureMethod is not null;
+        var header = hasConfigure
+            ? $"internal sealed class {className}(Func<IServiceProvider> getServiceProvider) : AsynchronousCommandLineAction, global::triaxis.CommandLine.ICommandConfigurator"
+            : $"internal sealed class {className}(Func<IServiceProvider> getServiceProvider) : AsynchronousCommandLineAction";
+
+        w.Block(header, () =>
+        {
+            if (hasConfigure)
+            {
+                w.Block("public void Configure(global::triaxis.CommandLine.IToolBuilder builder)", () =>
+                {
+                    w.WriteLine($"{safeName}_Binder.Configure(builder);");
+                });
+                w.WriteLine();
+            }
+
+            w.Block("public override async Task<int> InvokeAsync(ParseResult parseResult, CancellationToken cancellationToken)", () =>
+            {
+                w.WriteLine("var provider = getServiceProvider();");
+                w.WriteLine($"var context = new InvocationContext(provider, parseResult, cancellationToken, typeof({cmd.TypeName}));");
+                w.WriteLine();
+                w.WriteLine("await provider.GetRequiredService<ICommandExecutor>().ExecuteAsync(context, async () =>");
+                w.Block(() =>
+                {
+                    w.WriteLine($"var instance = {safeName}_Binder.Build(parseResult, provider);");
+                    w.WriteLine();
+                    EmitDiPathInvocation(w, methodName, acceptsCt, returnKind, innerTypeFqn);
+                });
+                w.WriteLine(");");
+                w.WriteLine();
+                w.WriteLine("return context.ExitCode;");
+            });
+        });
+        w.WriteLine();
+    }
+
+    /// <summary>
+    /// Emits a thin standalone action class. <see cref="IStandaloneAction"/> is the marker
+    /// that <see cref="ToolBuilder"/>'s <c>Build()</c> uses to short-circuit to
+    /// <see cref="StandaloneHost"/>.
+    /// </summary>
+    private static void EmitStandaloneActionClass(IndentedTextWriter w, CommandModel cmd,
+        string className, string methodName,
+        bool acceptsToolBuilder, bool acceptsCancellationToken, ReturnKind returnKind)
+    {
+        var safeName = GetSafeName(cmd);
+        var hasConfigure = cmd.ConfigureMethod is not null;
+        var ifaces = hasConfigure
+            ? "AsynchronousCommandLineAction, IStandaloneAction, global::triaxis.CommandLine.ICommandConfigurator"
+            : "AsynchronousCommandLineAction, IStandaloneAction";
+        var header = $"internal sealed class {className} : {ifaces}";
+
+        w.Block(header, () =>
+        {
+            if (hasConfigure)
+            {
+                w.Block("public void Configure(global::triaxis.CommandLine.IToolBuilder builder)", () =>
+                {
+                    w.WriteLine($"{safeName}_Binder.Configure(builder);");
+                });
+                w.WriteLine();
+            }
+
             w.Block("public Task<int> InvokeAsync(IToolBuilder builder, ParseResult parseResult, CancellationToken cancellationToken)", () =>
             {
                 w.WriteLine("return InvokeInternalAsync(builder, parseResult, cancellationToken);");
             });
             w.WriteLine();
 
-            // AsynchronousCommandLineAction fallback — used when the action is invoked via
-            // the raw System.CommandLine pipeline (e.g. parseResult.InvokeAsync()) with no
-            // IToolBuilder available. Commands whose MainAsync requires IToolBuilder will
-            // throw through this path; those that don't just run normally.
+            // Fallback: invoked via raw System.CommandLine pipeline when no IToolBuilder
+            // is available. Methods requiring a builder throw; others run normally.
             w.Block("public override Task<int> InvokeAsync(ParseResult parseResult, CancellationToken cancellationToken)", () =>
             {
                 w.WriteLine("return InvokeInternalAsync(null, parseResult, cancellationToken);");
@@ -1663,106 +1852,48 @@ public class CommandTreeGenerator : IIncrementalGenerator
 
             w.Block("private async Task<int> InvokeInternalAsync(IToolBuilder? builder, ParseResult parseResult, CancellationToken cancellationToken)", () =>
             {
-                if (exec.AcceptsToolBuilder)
+                if (acceptsToolBuilder)
                 {
                     w.WriteLine("if (builder is null) throw new global::System.InvalidOperationException(" +
-                        $"\"Standalone command '{cmd.TypeName}' declares MainAsync(IToolBuilder, ...) but was invoked without a builder. Use IToolBuilder.Run/RunAsync.\"" +
+                        $"\"Standalone command '{cmd.TypeName}' was invoked without a builder. Use IToolBuilder.Run/RunAsync.\"" +
                         ");");
                     w.WriteLine();
                 }
-
-                // Required direct args/opts go in the object initializer (same as regular path).
-                var requiredDirectArgs = args.Where(m => m.NeedsInitializer && m.AccessPath.Length == 0).ToArray();
-                var requiredDirectOpts = opts.Where(m => m.NeedsInitializer && m.AccessPath.Length == 0).ToArray();
-                var requiredOptionsProps = args.Concat(opts)
-                    .Where(m => m.AccessPath.Length > 0 && m.AccessPath[0].IsMemberRequired)
-                    .Select(m => m.AccessPath[0])
-                    .Distinct()
-                    .ToArray();
-
-                var hasInitializer = requiredDirectArgs.Length > 0 || requiredDirectOpts.Length > 0
-                    || requiredOptionsProps.Length > 0;
-
-                if (hasInitializer)
-                {
-                    w.Block($"var instance = new {cmd.TypeName}", () =>
-                    {
-                        foreach (var member in requiredDirectArgs.Concat(requiredDirectOpts))
-                        {
-                            w.WriteLine($"{member.MemberName} = parseResult.GetValue<{member.MemberTypeFqn}>({FormatString(GetCliName(member))}),");
-                        }
-                        foreach (var seg in requiredOptionsProps)
-                        {
-                            var prefix = new[] { seg };
-                            var allMembers = args.Concat(opts).ToArray();
-                            w.WriteLine($"{seg.MemberName} = {FormatOptionsCreateExpr(seg, prefix, 1, allMembers)},");
-                        }
-                    }, suffix: ";");
-                }
-                else
-                {
-                    w.WriteLine($"var instance = new {cmd.TypeName}();");
-                }
+                w.WriteLine($"var instance = {safeName}_Binder.Build(parseResult);");
                 w.WriteLine();
-
-                // [Options] resolution (primes required nested members from parseResult).
-                GenerateOptionsPathResolution(w, args, opts, pathAccessors, memberAccessors);
-
-                // Bind non-required args/options from parseResult — same foreach as regular.
-                var bindableArgs = args.Where(a => !a.NeedsInitializer).ToArray();
-                var bindableOpts = opts.Where(o => !o.NeedsInitializer).ToArray();
-
-                if (bindableArgs.Length > 0 || bindableOpts.Length > 0)
-                {
-                    w.Block("foreach (var __result in parseResult.CommandResult.Children)", () =>
-                    {
-                        if (bindableArgs.Length > 0)
-                        {
-                            w.Block("if (__result is ArgumentResult { Tokens.Count: > 0 } __ar) switch (__ar.Argument.Name)", () =>
-                            {
-                                foreach (var arg in bindableArgs)
-                                {
-                                    var assign = FormatMemberAssignment(arg, $"__ar.GetValueOrDefault<{arg.MemberTypeFqn}>()", memberAccessors[MemberKey(arg)]);
-                                    w.WriteLine($"case {FormatString(GetCliName(arg))}: {assign} break;");
-                                }
-                            });
-                        }
-                        if (bindableOpts.Length > 0)
-                        {
-                            w.Block("if (__result is OptionResult { Implicit: false } __or) switch (__or.Option.Name)", () =>
-                            {
-                                foreach (var opt in bindableOpts)
-                                {
-                                    var assign = FormatMemberAssignment(opt, $"__or.GetValueOrDefault<{opt.MemberTypeFqn}>()", memberAccessors[MemberKey(opt)]);
-                                    w.WriteLine($"case {FormatString(GetCliName(opt))}: {assign} break;");
-                                }
-                            });
-                        }
-                    });
-                    w.WriteLine();
-                }
-
-                // Call MainAsync with the right shape.
-                var callArgs = (exec.AcceptsToolBuilder, exec.AcceptsCancellationToken) switch
-                {
-                    (true, true) => "builder!, cancellationToken",
-                    (true, false) => "builder!",
-                    (false, true) => "cancellationToken",
-                    (false, false) => "",
-                };
-
-                if (exec.ReturnKind == ReturnKind.TaskOfInt)
-                {
-                    w.WriteLine($"return await instance.MainAsync({callArgs});");
-                }
-                else
-                {
-                    w.WriteLine($"await instance.MainAsync({callArgs});");
-                    w.WriteLine("return 0;");
-                }
+                EmitStandaloneInvocation(w, methodName, acceptsToolBuilder,
+                    acceptsCancellationToken, returnKind);
             });
         });
         w.WriteLine();
+    }
+
+    /// <summary>
+    /// Emits a single MainAsync-style invocation in the standalone path. Standalone
+    /// commands return either <see cref="System.Threading.Tasks.Task"/> or
+    /// <see cref="System.Threading.Tasks.Task{Int32}"/>; the former needs an explicit
+    /// <c>return 0</c> because the surrounding method must return <see cref="int"/>.
+    /// </summary>
+    private static void EmitStandaloneInvocation(IndentedTextWriter w, string methodName,
+        bool acceptsToolBuilder, bool acceptsCancellationToken, ReturnKind returnKind)
+    {
+        var callArgs = (acceptsToolBuilder, acceptsCancellationToken) switch
+        {
+            (true, true) => "builder!, cancellationToken",
+            (true, false) => "builder!",
+            (false, true) => "cancellationToken",
+            (false, false) => "",
+        };
+
+        if (returnKind == ReturnKind.TaskOfInt)
+        {
+            w.WriteLine($"return await instance.{methodName}({callArgs});");
+        }
+        else
+        {
+            w.WriteLine($"await instance.{methodName}({callArgs});");
+            w.WriteLine("return 0;");
+        }
     }
 
     /// <summary>
@@ -1921,9 +2052,42 @@ public class CommandTreeGenerator : IIncrementalGenerator
     {
         var exec = cmd.ExecuteMethod;
         var callArgs = cancellationTokenArg is not null ? cancellationTokenArg : "";
-        var call = $"instance.{exec.MethodName}({callArgs})";
+        EmitMethodCallExpression(w, exec.MethodName, exec.ReturnKind, exec.InnerTypeFqn, callArgs);
+    }
 
-        switch (exec.ReturnKind)
+    /// <summary>
+    /// Emits the "execute on the DI/middleware path" invocation for a method on the
+    /// command instance — primary entry point or an <c>[ActionOption]</c> method.
+    /// Methods that don't accept a <c>CancellationToken</c> are wrapped in a
+    /// <c>FailFast</c> registration so process termination still tears down the host
+    /// even though the method body itself is uncancellable.
+    /// </summary>
+    private static void EmitDiPathInvocation(IndentedTextWriter w, string methodName,
+        bool acceptsCancellationToken, ReturnKind returnKind, string? innerTypeFqn)
+    {
+        if (acceptsCancellationToken)
+        {
+            EmitMethodCallExpression(w, methodName, returnKind, innerTypeFqn, "context.GetCancellationToken()");
+        }
+        else
+        {
+            w.WriteLine("var failFastRegistration = context.GetCancellationToken().Register(static () => Environment.FailFast(null));");
+            w.Block("try", () =>
+            {
+                EmitMethodCallExpression(w, methodName, returnKind, innerTypeFqn, "");
+            });
+            w.Block("finally", () =>
+            {
+                w.WriteLine("failFastRegistration.Dispose();");
+            });
+        }
+    }
+
+    private static void EmitMethodCallExpression(IndentedTextWriter w, string methodName, ReturnKind returnKind, string? innerTypeFqn, string callArgs)
+    {
+        var call = $"instance.{methodName}({callArgs})";
+
+        switch (returnKind)
         {
             case ReturnKind.Void:
                 w.WriteLine($"{call};");
@@ -1950,23 +2114,23 @@ public class CommandTreeGenerator : IIncrementalGenerator
                 break;
 
             case ReturnKind.TaskOfIEnumerableOfT:
-                w.WriteLine($"context.InvocationResult = new AsyncIEnumerableCommandInvocationResult<{exec.InnerTypeFqn}>({call});");
+                w.WriteLine($"context.InvocationResult = new AsyncIEnumerableCommandInvocationResult<{innerTypeFqn}>({call});");
                 break;
 
             case ReturnKind.TaskOfT:
-                w.WriteLine($"context.InvocationResult = new AsyncValueCommandInvocationResult<{exec.InnerTypeFqn}>({call});");
+                w.WriteLine($"context.InvocationResult = new AsyncValueCommandInvocationResult<{innerTypeFqn}>({call});");
                 break;
 
             case ReturnKind.IAsyncEnumerableOfT:
-                w.WriteLine($"context.InvocationResult = new AsyncEnumerableCommandInvocationResult<{exec.InnerTypeFqn}>({call});");
+                w.WriteLine($"context.InvocationResult = new AsyncEnumerableCommandInvocationResult<{innerTypeFqn}>({call});");
                 break;
 
             case ReturnKind.IEnumerableOfT:
-                w.WriteLine($"context.InvocationResult = new EnumerableCommandInvocationResult<{exec.InnerTypeFqn}>({call});");
+                w.WriteLine($"context.InvocationResult = new EnumerableCommandInvocationResult<{innerTypeFqn}>({call});");
                 break;
 
             case ReturnKind.Value:
-                w.WriteLine($"context.InvocationResult = new ValueCommandInvocationResult<{exec.InnerTypeFqn}>({call});");
+                w.WriteLine($"context.InvocationResult = new ValueCommandInvocationResult<{innerTypeFqn}>({call});");
                 break;
         }
     }
@@ -2196,6 +2360,20 @@ public class CommandTreeGenerator : IIncrementalGenerator
         return sb.ToString();
     }
 
+    private static string GetActionOptionCliName(ActionOptionModel ao)
+    {
+        if (ao.Name is not null)
+        {
+            return ao.Name;
+        }
+        var name = ao.MethodName.TrimStart('_');
+        if (name.EndsWith("Async", StringComparison.Ordinal) && name.Length > 5)
+        {
+            name = name.Substring(0, name.Length - 5);
+        }
+        return (name.Length == 1 ? "-" : "--") + ToKebabCase(name, upper: false);
+    }
+
     private static string GetMemberFieldName(MemberModel member)
     {
         if (member.AccessPath.Length > 0)
@@ -2291,7 +2469,20 @@ record CommandModel(
     ImmutableArray<ConstructorParameterModel> ConstructorParameters,
     bool IsStandalone = false,
     ConfigureMethodModel? ConfigureMethod = null,
+    ImmutableArray<ActionOptionModel> ActionOptions = default,
     ImmutableArray<string> Diagnostics = default);
+
+record ActionOptionModel(
+    string MethodName,
+    string? Name,
+    string? Description,
+    string[]? Aliases,
+    double Order,
+    bool AcceptsToolBuilder,
+    bool AcceptsCancellationToken,
+    string ReturnTypeFqn,
+    ReturnKind ReturnKind,
+    string? InnerTypeFqn);
 
 [Flags]
 enum ConfigureParamKind

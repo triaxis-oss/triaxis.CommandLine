@@ -127,6 +127,14 @@ public abstract class OptionDefinition(string name, string[]? aliases = null)
     public bool Required { get; set; }
     public ArgumentArity Arity { get; set; }
 
+    /// <summary>
+    /// Optional <see cref="CommandLineAction"/> attached to the produced option. When the
+    /// option is matched at parse time, System.CommandLine resolves <c>ParseResult.Action</c>
+    /// to this action — replacing the surrounding command's primary action for the
+    /// invocation. The source generator uses this to wire <c>[ActionOption]</c> methods.
+    /// </summary>
+    public CommandLineAction? Action { get; set; }
+
     public abstract Option Create();
 }
 
@@ -140,6 +148,10 @@ public class OptionDefinition<T>(string name, string[]? aliases = null) : Option
         opt.Description = Description;
         opt.Required = Required;
         opt.Arity = Arity;
+        if (Action is not null)
+        {
+            opt.Action = Action;
+        }
         return opt;
     }
 }

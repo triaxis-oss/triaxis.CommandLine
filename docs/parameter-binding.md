@@ -26,6 +26,7 @@ public class CommandlineAttribute : Attribute
 | `ArgumentAttribute` | `Required` | Positional argument. |
 | `OptionAttribute` | `Aliases`, `Required` | Named option (`--name`, `-n`). |
 | `OptionsAttribute` | — | Marker on a property whose nested type carries further `[Argument]`/`[Option]` members. |
+| `ActionOptionAttribute` | `Aliases` | Applied to a method on the command. Exposes a boolean flag option that, when set, runs the annotated method instead of the command's primary `ExecuteAsync`/`MainAsync`. See [Alternate entry points](#alternate-entry-points). |
 
 `Required` is tri-state: unset, explicitly `true`, explicitly `false`. When unset, the C#
 `required` modifier on the member is used as a fallback (detected via
@@ -212,3 +213,54 @@ produces options in the order: `--alpha`, `--host`, `--port`, `--beta`.
 An explicit `Order` on a member inside `DbConfig` reorders it relative to other `DbConfig`
 members, but it stays between `--alpha` and `--beta`. For inherited members, the derived
 class's members come before base class members.
+
+## Alternate entry points
+
+A `[Command]` class can declare additional entry points alongside its primary
+`ExecuteAsync`/`MainAsync`. Mark a method with `[ActionOption]` and the generator exposes
+it as a boolean flag option on the command:
+
+```csharp
+[Command("backup")]
+public class BackupCommand
+{
+    [Option("--target")] public string Target { get; set; } = "/var/backup";
+
+    public Task ExecuteAsync(CancellationToken ct) { /* normal backup */ }
+
+    [ActionOption("--list", "-l", Description = "List existing backups")]
+    public Task ListAsync(CancellationToken ct) { /* ... */ }
+
+    [ActionOption("--restore")]
+    public Task<int> RestoreAsync(CancellationToken ct) { /* return exit code */ }
+}
+```
+
+When the flag is supplied (`backup --list`), System.CommandLine resolves
+`ParseResult.Action` to the option's action — replacing the command's primary action for
+that invocation, exactly the same mechanism `--help` uses. Anything bound onto the
+command instance (regular `[Argument]`, `[Option]`, `[Inject]` members) is still
+populated, so the action option method sees the same `Target` the primary would have.
+
+Each `[ActionOption]` is independent of the command's primary kind: its dispatch path is
+chosen per-method by whether the method takes `IToolBuilder`.
+
+| Method takes `IToolBuilder` | Dispatch path | Allowed parameters | Return types |
+| --- | --- | --- | --- |
+| no | DI/middleware (same as `ExecuteAsync`) | `()`, `(CancellationToken)` | `void`, `int`, `Task`, `Task<int>`, `T`, `Task<T>`, `IEnumerable<T>`, … |
+| yes | standalone (same as `MainAsync`) | `(IToolBuilder)`, `(IToolBuilder, CancellationToken)` | `Task`, `Task<int>` |
+
+So a regular `ExecuteAsync` command can still expose a builder-taking action option (for
+e.g. a `--migrate` flag that wants to spin up its own host) — its option's action
+implements `IStandaloneAction`, so when the flag matches, `ToolBuilder.Build()`
+short-circuits to `StandaloneHost` for that invocation. The command's own primary keeps
+running through DI/middleware on every other invocation.
+
+Note that any `[Inject]` members or constructor DI on the command are only honored on
+the DI path. A standalone action option (the builder-taking one) constructs the command
+parameterlessly — that method should rely on `IToolBuilder` to compose what it needs,
+not on `[Inject]`'d fields.
+
+When `Name` is not set explicitly, the method name is kebab-cased and prefixed with
+`--` (or `-` for a single character), with a trailing `Async` stripped. So
+`RestoreAsync` becomes `--restore`. Aliases work just like on `[Option]`.
