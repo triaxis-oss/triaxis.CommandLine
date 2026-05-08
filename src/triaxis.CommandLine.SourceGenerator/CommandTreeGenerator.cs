@@ -226,6 +226,14 @@ public class CommandTreeGenerator : IIncrementalGenerator
         return sw.ToString();
     }
 
+    /// <summary>
+    /// Emits the call site that invokes the user's <c>Configure</c> method. Static methods
+    /// are dispatched as <c>Type.Configure(...)</c>; instance methods as
+    /// <c>instance.Configure(...)</c> against an in-scope local named <c>instance</c>.
+    /// When <see cref="ConfigureParamKind.ServiceCollection"/> is among the parameters,
+    /// the call is wrapped in <c>builder.ConfigureServices(services =&gt; …)</c> so the
+    /// user receives the live service collection.
+    /// </summary>
     private static void EmitConfigureInvocation(IndentedTextWriter w, ConfigureMethodModel method)
     {
         var args = method.Parameters.Select(static p => p switch
@@ -236,7 +244,8 @@ public class CommandTreeGenerator : IIncrementalGenerator
             _ => throw new InvalidOperationException("unreachable"),
         }).ToArray();
 
-        var call = $"{method.DeclaringTypeFqn}.Configure({string.Join(", ", args)})";
+        var receiver = method.IsStatic ? method.DeclaringTypeFqn : "instance";
+        var call = $"{receiver}.Configure({string.Join(", ", args)})";
 
         if (method.Parameters.Contains(ConfigureParamKind.ServiceCollection))
         {
@@ -422,13 +431,16 @@ public class CommandTreeGenerator : IIncrementalGenerator
 
         var (executeMethod, isStandalone) = DetectEntryPoint(typeSymbol);
         var ctorParams = ExtractConstructorParameters(typeSymbol);
-        var configureMethod = DetectConfigureMethod(typeSymbol);
-        var actionOptions = DetectActionOptions(typeSymbol);
 
         // Validate standalone commands: no [Inject], parameterless ctor, no co-existing
         // ExecuteAsync/Execute. Collect diagnostic messages here and surface them in the
         // RegisterSourceOutput callback (which has access to ReportDiagnostic).
         var diagBuilder = ImmutableArray.CreateBuilder<string>();
+        // DetectConfigureMethod also pushes diagnostics for any method named Configure
+        // whose signature isn't recognized — silently dropping such a method would mask
+        // real mistakes (see TXCL006).
+        var configureMethod = DetectConfigureMethod(typeSymbol, diagBuilder);
+        var actionOptions = DetectActionOptions(typeSymbol);
         if (isStandalone)
         {
             var entryPointName = executeMethod.MethodName; // "Main" or "MainAsync"
@@ -454,6 +466,23 @@ public class CommandTreeGenerator : IIncrementalGenerator
         // builder-taking action option emits its own IStandaloneAction class even on
         // an otherwise DI-routed command (and vice versa), so no kind-match check is
         // needed here.
+
+        // Instance Configure is constructed *before* the service provider exists, via a
+        // parameterless ctor, so neither constructor parameters nor required [Inject]
+        // members can be satisfied. Either of these combinations is rejected here so the
+        // user picks one shape: switch Configure to static, or remove the ctor params /
+        // required modifier.
+        if (configureMethod is { IsStatic: false })
+        {
+            if (!ctorParams.IsEmpty)
+            {
+                diagBuilder.Add($"TXCL004:Command '{typeSymbol.Name}' declares an instance Configure method but its constructor takes parameters. Instance Configure runs before the service provider exists, so constructor injection is not available — make Configure static, or move the dependencies to [Inject] members.");
+            }
+            if (members.Any(m => m.Kind == MemberKind.Inject && m.NeedsInitializer))
+            {
+                diagBuilder.Add($"TXCL005:Command '{typeSymbol.Name}' declares an instance Configure method and a required [Inject] member. Instance Configure runs before the service provider exists, so 'required' [Inject] members cannot be satisfied — make Configure static, or drop the 'required' modifier so the inject happens after Configure.");
+            }
+        }
         var diagnostics = diagBuilder.ToImmutable();
 
         return new CommandModel(
@@ -558,40 +587,97 @@ public class CommandTreeGenerator : IIncrementalGenerator
         }
     }
 
-    private static ConfigureMethodModel? DetectConfigureMethod(INamedTypeSymbol typeSymbol)
+    private static ConfigureMethodModel? DetectConfigureMethod(INamedTypeSymbol typeSymbol,
+        ImmutableArray<string>.Builder diagnostics)
     {
+        // Prefer instance Configure when both shapes are present — instance gives access
+        // to bound [Argument]/[Option] values, which is the more capable form. The static
+        // form remains supported for commands that need constructor DI (which can't coexist
+        // with instance Configure; the validator below rejects that combination).
+        IMethodSymbol? candidate = null;
+        var staticFallback = (IMethodSymbol?)null;
+        var rejected = new List<(IMethodSymbol Method, string Reason)>();
         foreach (var m in typeSymbol.GetMembers("Configure").OfType<IMethodSymbol>())
         {
-            if (!m.IsStatic || m.ReturnType.SpecialType != SpecialType.System_Void)
+            if (m.MethodKind != MethodKind.Ordinary)
             {
                 continue;
             }
 
-            var seen = ConfigureParamKind.None;
-            var paramKinds = new ConfigureParamKind[m.Parameters.Length];
+            if (m.ReturnType.SpecialType != SpecialType.System_Void)
+            {
+                rejected.Add((m, $"return type is '{m.ReturnType.ToDisplayString()}'; Configure must return 'void'"));
+                continue;
+            }
+
             var ok = true;
+            string? reason = null;
+            var seen = ConfigureParamKind.None;
             for (var i = 0; i < m.Parameters.Length; i++)
             {
-                var kind = ClassifyConfigureParam(m.Parameters[i].Type);
-                if (kind == ConfigureParamKind.None || (seen & kind) != 0)
+                var p = m.Parameters[i];
+                var kind = ClassifyConfigureParam(p.Type);
+                if (kind == ConfigureParamKind.None)
                 {
+                    reason = $"parameter '{p.Name}' has type '{p.Type.ToDisplayString()}', which is not one of the supported parameter types (IToolBuilder, IHostBuilder, IServiceCollection)";
                     ok = false;
                     break;
                 }
-                paramKinds[i] = kind;
+                if ((seen & kind) != 0)
+                {
+                    reason = $"parameter '{p.Name}' duplicates the '{p.Type.ToDisplayString()}' parameter; each supported type may appear at most once";
+                    ok = false;
+                    break;
+                }
                 seen |= kind;
             }
-
             if (!ok)
             {
+                rejected.Add((m, reason!));
                 continue;
             }
-
-            return new ConfigureMethodModel(
-                typeSymbol.ToDisplayString(FqnFormat),
-                paramKinds.ToImmutableArray());
+            if (m.IsStatic)
+            {
+                staticFallback ??= m;
+            }
+            else
+            {
+                candidate ??= m;
+            }
         }
-        return null;
+
+        var chosen = candidate ?? staticFallback;
+        if (chosen is null)
+        {
+            // No usable shape was found. If the user wrote a method literally named
+            // Configure on a [Command] type, they almost certainly intended it as the
+            // hook — surface why we couldn't wire it up so they can fix the signature
+            // or rename the method instead of silently dropping it.
+            foreach (var (method, reason) in rejected)
+            {
+                diagnostics.Add($"TXCL006:Method '{typeSymbol.Name}.{FormatConfigureSignature(method)}' is named 'Configure' on a [Command] type but cannot be used as a per-command Configure hook: {reason}. Rename the method or fix the signature (return void, and take any combination of IToolBuilder / IHostBuilder / IServiceCollection — no duplicates).");
+            }
+            return null;
+        }
+
+        var kinds = new ConfigureParamKind[chosen.Parameters.Length];
+        for (var i = 0; i < chosen.Parameters.Length; i++)
+        {
+            kinds[i] = ClassifyConfigureParam(chosen.Parameters[i].Type);
+        }
+        return new ConfigureMethodModel(
+            typeSymbol.ToDisplayString(FqnFormat),
+            kinds.ToImmutableArray(),
+            chosen.IsStatic);
+    }
+
+    private static string FormatConfigureSignature(IMethodSymbol method)
+    {
+        if (method.Parameters.Length == 0)
+        {
+            return "Configure()";
+        }
+        return "Configure(" + string.Join(", ", method.Parameters.Select(p => p.Type.ToDisplayString())) + ")";
     }
 
     private static ConfigureParamKind ClassifyConfigureParam(ITypeSymbol type)
@@ -1561,13 +1647,15 @@ public class CommandTreeGenerator : IIncrementalGenerator
         {
             EmitStandaloneActionClass(w, cmd, $"{safeName}_Action",
                 cmd.ExecuteMethod.MethodName, cmd.ExecuteMethod.AcceptsToolBuilder,
-                cmd.ExecuteMethod.AcceptsCancellationToken, cmd.ExecuteMethod.ReturnKind);
+                cmd.ExecuteMethod.AcceptsCancellationToken, cmd.ExecuteMethod.ReturnKind,
+                emitDi: anyDi, emitStandalone: anyStandalone);
         }
         else
         {
             EmitDiActionClass(w, cmd, $"{safeName}_Action",
                 cmd.ExecuteMethod.MethodName, cmd.ExecuteMethod.AcceptsCancellationToken,
-                cmd.ExecuteMethod.ReturnKind, cmd.ExecuteMethod.InnerTypeFqn);
+                cmd.ExecuteMethod.ReturnKind, cmd.ExecuteMethod.InnerTypeFqn,
+                emitDi: anyDi, emitStandalone: anyStandalone);
         }
 
         foreach (var ao in actionOptions)
@@ -1576,7 +1664,8 @@ public class CommandTreeGenerator : IIncrementalGenerator
             if (ao.AcceptsToolBuilder)
             {
                 EmitStandaloneActionClass(w, cmd, className, ao.MethodName,
-                    acceptsToolBuilder: true, ao.AcceptsCancellationToken, ao.ReturnKind);
+                    acceptsToolBuilder: true, ao.AcceptsCancellationToken, ao.ReturnKind,
+                    emitDi: anyDi, emitStandalone: anyStandalone);
             }
             else if (cmd.IsStandalone)
             {
@@ -1584,12 +1673,14 @@ public class CommandTreeGenerator : IIncrementalGenerator
                 // through the standalone path (no DI), since the command's own state is
                 // standalone-only (no [Inject]/ctor-DI usable from this action).
                 EmitStandaloneActionClass(w, cmd, className, ao.MethodName,
-                    acceptsToolBuilder: false, ao.AcceptsCancellationToken, ao.ReturnKind);
+                    acceptsToolBuilder: false, ao.AcceptsCancellationToken, ao.ReturnKind,
+                    emitDi: anyDi, emitStandalone: anyStandalone);
             }
             else
             {
                 EmitDiActionClass(w, cmd, className, ao.MethodName,
-                    ao.AcceptsCancellationToken, ao.ReturnKind, ao.InnerTypeFqn);
+                    ao.AcceptsCancellationToken, ao.ReturnKind, ao.InnerTypeFqn,
+                    emitDi: anyDi, emitStandalone: anyStandalone);
             }
         }
     }
@@ -1611,9 +1702,21 @@ public class CommandTreeGenerator : IIncrementalGenerator
         w.Block($"internal static class {safeName}_Binder", () =>
         {
             // Accessors for direct members that need backing field access.
-            // Skip required members — they're set in the object initializer.
+            //   - Required [Argument]/[Option] members are set in the object initializer
+            //     and don't need accessors.
+            //   - All [Inject] members (required or not) need accessors so InjectServices
+            //     can write them; for required injects the initializer assigns default!
+            //     to satisfy the C# `required` modifier and InjectServices later replaces
+            //     it with the resolved service.
             var memberAccessors = new Dictionary<string, Accessor>();
-            foreach (var member in args.Concat(opts).Concat(injects).Where(m => m.AccessPath.Length == 0 && !m.NeedsInitializer))
+            foreach (var member in args.Concat(opts).Where(m => m.AccessPath.Length == 0 && !m.NeedsInitializer))
+            {
+                memberAccessors[MemberKey(member)] = EmitAccessor(
+                    w, member.DeclaringTypeFqn, member.MemberName, member.DeclaredTypeFqn,
+                    member.IsField, member.IsPublic, member.HasSetter, member.HasBackingField,
+                    $"__access_{GetMemberFieldName(member)}", hasUnsafeAccessor);
+            }
+            foreach (var member in injects.Where(m => m.AccessPath.Length == 0))
             {
                 memberAccessors[MemberKey(member)] = EmitAccessor(
                     w, member.DeclaringTypeFqn, member.MemberName, member.DeclaredTypeFqn,
@@ -1649,9 +1752,11 @@ public class CommandTreeGenerator : IIncrementalGenerator
                     $"__access_{GetMemberFieldName(member)}", hasUnsafeAccessor);
             }
 
-            // Configure delegation — emitted once and re-used by every entry-point class
-            // that implements ICommandConfigurator.
-            if (cmd.ConfigureMethod is not null)
+            // Configure delegation for the static form — emitted once and re-used by
+            // every entry-point class that implements ICommandConfigurator. Instance
+            // Configure has no static delegation (it's invoked on a constructed instance
+            // by the action class) so this block is skipped for that shape.
+            if (cmd.ConfigureMethod is { IsStatic: true })
             {
                 w.Block("internal static void Configure(global::triaxis.CommandLine.IToolBuilder builder)", () =>
                 {
@@ -1660,25 +1765,43 @@ public class CommandTreeGenerator : IIncrementalGenerator
                 w.WriteLine();
             }
 
-            // The DI/standalone modes only differ in construction (ctor parameters,
-            // [Inject] assignments). Argument/option binding and [Options] resolution
-            // are identical, so a single Build method covers both — pass a non-null
-            // provider for DI, omit it for standalone.
-            EmitBuildMethod(w, cmd, args, opts, injects, memberAccessors, pathAccessors,
+            // The lifecycle is split across three methods so the action class can stage
+            // them as needed:
+            //   CreateInstance  — constructs the command and writes any object-initializer
+            //                     members (required [Argument]/[Option], required [Inject],
+            //                     required [Options] segments).
+            //   BindOptions     — resolves nested [Options] containers and binds the
+            //                     non-required [Argument]/[Option] members from ParseResult.
+            //   InjectServices  — assigns non-required [Inject] members from the provider.
+            // For instance-Configure commands, the action class calls CreateInstance +
+            // BindOptions before invoking the user's Configure (so it can observe bound
+            // values), then calls InjectServices later when the host is up.
+            EmitCreateInstanceMethod(w, cmd, args, opts, injects,
+                emitDi: emitDi, emitStandalone: emitStandalone);
+            EmitBindOptionsMethod(w, cmd, args, opts, memberAccessors, pathAccessors);
+            EmitInjectServicesMethod(w, cmd, injects, memberAccessors,
                 emitDi: emitDi, emitStandalone: emitStandalone);
         });
         w.WriteLine();
     }
 
-    private static void EmitBuildMethod(IndentedTextWriter w, CommandModel cmd,
+    /// <summary>
+    /// Emits the construction phase of the binder: <c>new T(ctor-DI)</c> with an object
+    /// initializer that satisfies <c>required</c> members from <see cref="ParseResult"/>
+    /// (args/opts) and required <c>[Options]</c> segments. Required <c>[Inject]</c>
+    /// members are written with <c>default!</c> here purely to satisfy the C#
+    /// <c>required</c> modifier; <see cref="EmitInjectServicesMethod"/> overwrites them
+    /// with the resolved service. The provider parameter is only included when ctor DI
+    /// is in play; standalone commands and instance-Configure commands (which forbid
+    /// ctor DI) omit it entirely.
+    /// </summary>
+    private static void EmitCreateInstanceMethod(IndentedTextWriter w, CommandModel cmd,
         MemberModel[] args, MemberModel[] opts, MemberModel[] injects,
-        Dictionary<string, Accessor> memberAccessors, Dictionary<string, Accessor> pathAccessors,
         bool emitDi, bool emitStandalone)
     {
         var requiredDirectArgs = args.Where(m => m.NeedsInitializer && m.AccessPath.Length == 0).ToArray();
         var requiredDirectOpts = opts.Where(m => m.NeedsInitializer && m.AccessPath.Length == 0).ToArray();
         var requiredInjects = injects.Where(m => m.NeedsInitializer).ToArray();
-        var nonRequiredInjects = injects.Where(m => !m.NeedsInitializer).ToArray();
         var requiredOptionsProps = args.Concat(opts)
             .Where(m => m.AccessPath.Length > 0 && m.AccessPath[0].IsMemberRequired)
             .Select(m => m.AccessPath[0])
@@ -1689,35 +1812,30 @@ public class CommandTreeGenerator : IIncrementalGenerator
         var hasInitializer = requiredDirectArgs.Length > 0 || requiredDirectOpts.Length > 0
             || requiredInjects.Length > 0 || requiredOptionsProps.Length > 0;
 
-        // Single-mode commands (DI-only or standalone-only — i.e. no action options that
-        // straddle the other kind) take a non-nullable parameter signature. Mixed-kind
-        // commands take an optional provider, and DI-touching expressions go through
-        // `provider?.` so the standalone-path call short-circuits to null. The
-        // null-forgiving `!` after the call keeps the compiler happy assigning to
-        // non-nullable destinations; on the standalone path the runtime value is null
-        // and the action-option method is responsible for not dereferencing it.
         var standaloneOnly = emitStandalone && !emitDi;
         var hasOptionalProvider = emitDi && emitStandalone;
-        var providerAccess = standaloneOnly
+        // Provider is only referenced for ctor DI now — required [Inject] members are
+        // written as `default!` placeholders here and resolved later in InjectServices.
+        var needsProviderForConstruction = hasCtorParams && !standaloneOnly;
+        var providerAccess = !needsProviderForConstruction
             ? null
             : hasOptionalProvider ? "provider?" : "provider";
 
-        var sig = standaloneOnly
-            ? $"internal static {cmd.TypeName} Build(ParseResult parseResult)"
+        var sig = !needsProviderForConstruction
+            ? $"internal static {cmd.TypeName} CreateInstance(ParseResult parseResult)"
             : hasOptionalProvider
-                ? $"internal static {cmd.TypeName} Build(ParseResult parseResult, IServiceProvider? provider = null)"
-                : $"internal static {cmd.TypeName} Build(ParseResult parseResult, IServiceProvider provider)";
+                ? $"internal static {cmd.TypeName} CreateInstance(ParseResult parseResult, IServiceProvider? provider = null)"
+                : $"internal static {cmd.TypeName} CreateInstance(ParseResult parseResult, IServiceProvider provider)";
 
         w.Block(sig, () =>
         {
-            // --- Construction (single, branch-free) ---
-            var ctorExpr = (standaloneOnly || !hasCtorParams)
+            var ctorExpr = !needsProviderForConstruction
                 ? $"new {cmd.TypeName}()"
                 : $"new {cmd.TypeName}({string.Join(", ", cmd.ConstructorParameters.Select(p => $"{providerAccess}.GetRequiredService<{p.TypeFqn}>()!"))})";
 
             if (hasInitializer)
             {
-                var initExpr = (hasCtorParams && !standaloneOnly) ? ctorExpr : $"new {cmd.TypeName}";
+                var initExpr = needsProviderForConstruction ? ctorExpr : $"new {cmd.TypeName}";
                 w.Block($"var instance = {initExpr}", () =>
                 {
                     foreach (var member in requiredDirectArgs.Cast<MemberModel>().Concat(requiredDirectOpts))
@@ -1726,14 +1844,10 @@ public class CommandTreeGenerator : IIncrementalGenerator
                     }
                     foreach (var inject in requiredInjects)
                     {
-                        // Required injects need a value to satisfy the C# `required`
-                        // modifier. Standalone-only commands have no provider at all so
-                        // we fall back to `default!`; otherwise we go through the
-                        // (possibly null-conditional) provider expression.
-                        var rhs = standaloneOnly
-                            ? "default!"
-                            : $"{providerAccess}.GetRequiredService<{inject.InjectTypeFqn ?? inject.MemberTypeFqn}>()!";
-                        w.WriteLine($"{inject.MemberName} = {rhs},");
+                        // Placeholder only — InjectServices replaces this with the resolved
+                        // service. Without this line the C# `required` modifier rejects the
+                        // initializer at compile time.
+                        w.WriteLine($"{inject.MemberName} = default!,");
                     }
                     foreach (var seg in requiredOptionsProps)
                     {
@@ -1746,26 +1860,27 @@ public class CommandTreeGenerator : IIncrementalGenerator
             {
                 w.WriteLine($"var instance = {ctorExpr};");
             }
-            w.WriteLine();
+            w.WriteLine("return instance;");
+        });
+        w.WriteLine();
+    }
 
-            // --- Non-required [Inject] ---
-            // Same `provider?.` strategy: on standalone-path calls the call short-circuits
-            // to null, the assignment writes null through the accessor, and the action-
-            // option method that ran us in this path is responsible for not reading it.
-            if (nonRequiredInjects.Length > 0 && !standaloneOnly)
-            {
-                foreach (var inject in nonRequiredInjects)
-                {
-                    var serviceType = inject.InjectTypeFqn ?? inject.MemberTypeFqn;
-                    w.WriteLine(FormatWrite(memberAccessors[MemberKey(inject)], "instance",
-                        $"{providerAccess}.GetRequiredService<{serviceType}>()!") + ";");
-                }
-            }
-
-            // [Options] resolution — same on both paths.
+    /// <summary>
+    /// Emits the binding phase: resolves any nested <c>[Options]</c> containers
+    /// (creating intermediate instances when the user hasn't pre-populated them) and
+    /// then walks <c>parseResult.CommandResult.Children</c> assigning bound values to
+    /// the matching non-required <c>[Argument]</c> / <c>[Option]</c> members. Always
+    /// emitted, even when the body is empty, so the action-class call sites can stay
+    /// uniform.
+    /// </summary>
+    private static void EmitBindOptionsMethod(IndentedTextWriter w, CommandModel cmd,
+        MemberModel[] args, MemberModel[] opts,
+        Dictionary<string, Accessor> memberAccessors, Dictionary<string, Accessor> pathAccessors)
+    {
+        w.Block($"internal static void BindOptions({cmd.TypeName} instance, ParseResult parseResult)", () =>
+        {
             GenerateOptionsPathResolution(w, args, opts, pathAccessors, memberAccessors);
 
-            // Bind args/options from parseResult.Children
             var bindableArgs = args.Where(a => !a.NeedsInitializer).ToArray();
             var bindableOpts = opts.Where(o => !o.NeedsInitializer).ToArray();
 
@@ -1796,35 +1911,128 @@ public class CommandTreeGenerator : IIncrementalGenerator
                         });
                     }
                 });
-                w.WriteLine();
             }
-
-            w.WriteLine("return instance;");
         });
         w.WriteLine();
     }
 
     /// <summary>
+    /// Emits the post-construction inject phase: assigns every <c>[Inject]</c> member
+    /// (required and non-required alike) from the service provider, overwriting the
+    /// <c>default!</c> placeholders that <see cref="EmitCreateInstanceMethod"/> wrote
+    /// for the required ones. Only emitted on the DI / mixed paths — the
+    /// standalone-only path has no provider and validation forbids <c>[Inject]</c> on
+    /// standalone commands. Returns true when the method was emitted, so callers can
+    /// decide whether to call it.
+    /// </summary>
+    private static bool EmitInjectServicesMethod(IndentedTextWriter w, CommandModel cmd,
+        MemberModel[] injects, Dictionary<string, Accessor> memberAccessors,
+        bool emitDi, bool emitStandalone)
+    {
+        var standaloneOnly = emitStandalone && !emitDi;
+        if (standaloneOnly || injects.Length == 0)
+        {
+            return false;
+        }
+        var hasOptionalProvider = emitDi && emitStandalone;
+        var providerAccess = hasOptionalProvider ? "provider?" : "provider";
+        var sig = hasOptionalProvider
+            ? $"internal static void InjectServices({cmd.TypeName} instance, IServiceProvider? provider)"
+            : $"internal static void InjectServices({cmd.TypeName} instance, IServiceProvider provider)";
+        w.Block(sig, () =>
+        {
+            // Mixed mode: standalone callers pass null and the assignments short-circuit
+            // to null on the corresponding members. Such commands' standalone entry
+            // points are responsible for not dereferencing those fields.
+            foreach (var inject in injects)
+            {
+                var serviceType = inject.InjectTypeFqn ?? inject.MemberTypeFqn;
+                w.WriteLine(FormatWrite(memberAccessors[MemberKey(inject)], "instance",
+                    $"{providerAccess}.GetRequiredService<{serviceType}>()!") + ";");
+            }
+        });
+        w.WriteLine();
+        return true;
+    }
+
+    /// <summary>
+    /// Mirrors the emission predicate of <see cref="EmitInjectServicesMethod"/> so action
+    /// classes can decide whether to call <c>InjectServices</c> without re-running the
+    /// emission logic. Keep these two in sync.
+    /// </summary>
+    private static bool BinderEmitsInjectServices(CommandModel cmd, bool emitDi, bool emitStandalone)
+    {
+        if (emitStandalone && !emitDi)
+        {
+            return false;
+        }
+        return cmd.Members.Any(m => m.Kind == MemberKind.Inject);
+    }
+
+    /// <summary>
+    /// Mirrors the signature decision in <see cref="EmitCreateInstanceMethod"/>: the
+    /// binder's <c>CreateInstance</c> only takes a provider when ctor DI is in play
+    /// (and never on the standalone-only path). <c>[Inject]</c> members — including
+    /// required ones — are populated by <c>InjectServices</c> in a separate step.
+    /// </summary>
+    private static bool BinderCreateInstanceTakesProvider(CommandModel cmd, bool emitDi, bool emitStandalone)
+    {
+        if (emitStandalone && !emitDi)
+        {
+            return false;
+        }
+        return !cmd.ConstructorParameters.IsEmpty;
+    }
+
+    /// <summary>
     /// Emits a thin DI-routed action class. The instance, all bound members, and any
-    /// <c>[Inject]</c> values are produced by <c>{safeName}_Binder.Build</c>.
+    /// <c>[Inject]</c> values are produced via the binder's three-method lifecycle:
+    /// <c>CreateInstance</c> → <c>BindOptions</c> → <c>InjectServices</c>. When the
+    /// command declares an instance <c>Configure</c> method, the first two steps run at
+    /// <c>ICommandConfigurator.Configure</c> time so the user's hook can observe bound
+    /// values; the resulting instance is stashed and reused at <c>InvokeAsync</c>.
     /// </summary>
     private static void EmitDiActionClass(IndentedTextWriter w, CommandModel cmd,
         string className, string methodName, bool acceptsCt,
-        ReturnKind returnKind, string? innerTypeFqn)
+        ReturnKind returnKind, string? innerTypeFqn,
+        bool emitDi, bool emitStandalone)
     {
         var safeName = GetSafeName(cmd);
         var hasConfigure = cmd.ConfigureMethod is not null;
+        var instanceConfigure = cmd.ConfigureMethod is { IsStatic: false };
+        var callsInjectServices = BinderEmitsInjectServices(cmd, emitDi, emitStandalone);
+        var createTakesProvider = BinderCreateInstanceTakesProvider(cmd, emitDi, emitStandalone);
         var header = hasConfigure
             ? $"internal sealed class {className}(Func<IServiceProvider> getServiceProvider) : AsynchronousCommandLineAction, global::triaxis.CommandLine.ICommandConfigurator"
             : $"internal sealed class {className}(Func<IServiceProvider> getServiceProvider) : AsynchronousCommandLineAction";
 
         w.Block(header, () =>
         {
+            if (instanceConfigure)
+            {
+                // Instance Configure stashes the constructed-and-bound command so
+                // InvokeAsync can reuse it (preserving any state the user mutated in
+                // Configure). The reset after read keeps the action reusable across
+                // separate Run() cycles.
+                w.WriteLine($"private {cmd.TypeName}? _configuredInstance;");
+                w.WriteLine();
+            }
+
             if (hasConfigure)
             {
-                w.Block("public void Configure(global::triaxis.CommandLine.IToolBuilder builder)", () =>
+                w.Block("public void Configure(global::triaxis.CommandLine.IToolBuilder builder, ParseResult parseResult)", () =>
                 {
-                    w.WriteLine($"{safeName}_Binder.Configure(builder);");
+                    if (instanceConfigure)
+                    {
+                        w.WriteLine($"var instance = {safeName}_Binder.CreateInstance(parseResult);");
+                        w.WriteLine($"{safeName}_Binder.BindOptions(instance, parseResult);");
+                        EmitConfigureInvocation(w, cmd.ConfigureMethod!);
+                        w.WriteLine("_configuredInstance = instance;");
+                    }
+                    else
+                    {
+                        w.WriteLine($"{safeName}_Binder.Configure(builder);");
+                    }
                 });
                 w.WriteLine();
             }
@@ -1837,7 +2045,33 @@ public class CommandTreeGenerator : IIncrementalGenerator
                 w.WriteLine("await provider.GetRequiredService<ICommandExecutor>().ExecuteAsync(context, async () =>");
                 w.Block(() =>
                 {
-                    w.WriteLine($"var instance = {safeName}_Binder.Build(parseResult, provider);");
+                    if (instanceConfigure)
+                    {
+                        // Reuse the configure-phase instance so any user state set in
+                        // Configure carries through to Execute. If Configure never ran
+                        // (e.g. invocation bypassing ToolBuilder), rebuild here.
+                        // Instance Configure forbids ctor DI / required injects, so
+                        // CreateInstance never takes a provider in this branch.
+                        w.WriteLine($"var instance = _configuredInstance;");
+                        w.WriteLine("_configuredInstance = null;");
+                        w.Block("if (instance is null)", () =>
+                        {
+                            w.WriteLine($"instance = {safeName}_Binder.CreateInstance(parseResult);");
+                            w.WriteLine($"{safeName}_Binder.BindOptions(instance, parseResult);");
+                        });
+                    }
+                    else
+                    {
+                        var createCall = createTakesProvider
+                            ? $"{safeName}_Binder.CreateInstance(parseResult, provider)"
+                            : $"{safeName}_Binder.CreateInstance(parseResult)";
+                        w.WriteLine($"var instance = {createCall};");
+                        w.WriteLine($"{safeName}_Binder.BindOptions(instance, parseResult);");
+                    }
+                    if (callsInjectServices)
+                    {
+                        w.WriteLine($"{safeName}_Binder.InjectServices(instance, provider);");
+                    }
                     w.WriteLine();
                     EmitDiPathInvocation(w, methodName, acceptsCt, returnKind, innerTypeFqn);
                 });
@@ -1852,14 +2086,19 @@ public class CommandTreeGenerator : IIncrementalGenerator
     /// <summary>
     /// Emits a thin standalone action class. <see cref="IStandaloneAction"/> is the marker
     /// that <see cref="ToolBuilder"/>'s <c>Build()</c> uses to short-circuit to
-    /// <see cref="StandaloneHost"/>.
+    /// <see cref="StandaloneHost"/>. Construction goes through <c>CreateInstance</c> +
+    /// <c>BindOptions</c>; instance <c>Configure</c> stashes the bound instance for
+    /// reuse at invocation time.
     /// </summary>
     private static void EmitStandaloneActionClass(IndentedTextWriter w, CommandModel cmd,
         string className, string methodName,
-        bool acceptsToolBuilder, bool acceptsCancellationToken, ReturnKind returnKind)
+        bool acceptsToolBuilder, bool acceptsCancellationToken, ReturnKind returnKind,
+        bool emitDi, bool emitStandalone)
     {
         var safeName = GetSafeName(cmd);
         var hasConfigure = cmd.ConfigureMethod is not null;
+        var instanceConfigure = cmd.ConfigureMethod is { IsStatic: false };
+        var callsInjectServices = BinderEmitsInjectServices(cmd, emitDi, emitStandalone);
         var ifaces = hasConfigure
             ? "AsynchronousCommandLineAction, IStandaloneAction, global::triaxis.CommandLine.ICommandConfigurator"
             : "AsynchronousCommandLineAction, IStandaloneAction";
@@ -1867,11 +2106,27 @@ public class CommandTreeGenerator : IIncrementalGenerator
 
         w.Block(header, () =>
         {
+            if (instanceConfigure)
+            {
+                w.WriteLine($"private {cmd.TypeName}? _configuredInstance;");
+                w.WriteLine();
+            }
+
             if (hasConfigure)
             {
-                w.Block("public void Configure(global::triaxis.CommandLine.IToolBuilder builder)", () =>
+                w.Block("public void Configure(global::triaxis.CommandLine.IToolBuilder builder, ParseResult parseResult)", () =>
                 {
-                    w.WriteLine($"{safeName}_Binder.Configure(builder);");
+                    if (instanceConfigure)
+                    {
+                        w.WriteLine($"var instance = {safeName}_Binder.CreateInstance(parseResult);");
+                        w.WriteLine($"{safeName}_Binder.BindOptions(instance, parseResult);");
+                        EmitConfigureInvocation(w, cmd.ConfigureMethod!);
+                        w.WriteLine("_configuredInstance = instance;");
+                    }
+                    else
+                    {
+                        w.WriteLine($"{safeName}_Binder.Configure(builder);");
+                    }
                 });
                 w.WriteLine();
             }
@@ -1899,7 +2154,29 @@ public class CommandTreeGenerator : IIncrementalGenerator
                         ");");
                     w.WriteLine();
                 }
-                w.WriteLine($"var instance = {safeName}_Binder.Build(parseResult);");
+                if (instanceConfigure)
+                {
+                    w.WriteLine($"var instance = _configuredInstance;");
+                    w.WriteLine("_configuredInstance = null;");
+                    w.Block("if (instance is null)", () =>
+                    {
+                        w.WriteLine($"instance = {safeName}_Binder.CreateInstance(parseResult);");
+                        w.WriteLine($"{safeName}_Binder.BindOptions(instance, parseResult);");
+                    });
+                }
+                else
+                {
+                    w.WriteLine($"var instance = {safeName}_Binder.CreateInstance(parseResult);");
+                    w.WriteLine($"{safeName}_Binder.BindOptions(instance, parseResult);");
+                }
+                // Mixed-mode commands (DI primary + standalone action option) share the
+                // binder's InjectServices helper. The standalone path passes null since
+                // it has no provider; assignments short-circuit and the user's standalone
+                // entry point is responsible for not reading those members.
+                if (callsInjectServices)
+                {
+                    w.WriteLine($"{safeName}_Binder.InjectServices(instance, null);");
+                }
                 w.WriteLine();
                 EmitStandaloneInvocation(w, methodName, acceptsToolBuilder,
                     acceptsCancellationToken, returnKind);
@@ -2559,7 +2836,8 @@ enum ConfigureParamKind
 
 record ConfigureMethodModel(
     string DeclaringTypeFqn,
-    ImmutableArray<ConfigureParamKind> Parameters);
+    ImmutableArray<ConfigureParamKind> Parameters,
+    bool IsStatic);
 
 record AssemblyCommandModel(
     string[] Path,

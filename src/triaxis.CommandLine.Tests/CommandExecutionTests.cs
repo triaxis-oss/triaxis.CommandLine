@@ -226,6 +226,20 @@ public class CtorInjectedCommand(EchoState state)
     }
 }
 
+[Command("required-inject")]
+public class RequiredInjectCommand
+{
+    [Inject]
+    public required EchoState State { get; init; }
+
+    public Task ExecuteAsync()
+    {
+        State.WasRun = true;
+        State.Name = "required-inject";
+        return Task.CompletedTask;
+    }
+}
+
 public abstract class BaseEchoCommandWithCt
 {
     [Inject]
@@ -386,6 +400,24 @@ public class CommandExecutionTests
         Assert.That(exitCode, Is.EqualTo(0));
         Assert.That(state.WasRun, Is.True);
         Assert.That(state.Name, Is.EqualTo("ctor"));
+    }
+
+    [Test]
+    public async Task Run_RequiredInject_IsResolvedThroughInjectServices()
+    {
+        // The binder writes `default!` for required [Inject] members in the object
+        // initializer just to satisfy the C# `required` modifier; InjectServices is
+        // what actually resolves the value. This test guards that wiring — if the
+        // accessor for an init-only required member regresses, the command would
+        // execute with State == null and NRE before WasRun gets set.
+        var state = new EchoState();
+        var builder = CreateBuilder(["required-inject"], state);
+
+        var exitCode = await builder.RunAsync();
+
+        Assert.That(exitCode, Is.EqualTo(0));
+        Assert.That(state.WasRun, Is.True);
+        Assert.That(state.Name, Is.EqualTo("required-inject"));
     }
 
     [Test]
