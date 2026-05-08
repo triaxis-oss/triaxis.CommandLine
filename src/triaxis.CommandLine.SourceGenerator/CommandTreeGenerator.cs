@@ -366,6 +366,24 @@ public class CommandTreeGenerator : IIncrementalGenerator
             .Where(s => s is not null)
             .ToArray();
 
+        // Fall back to syntax-tree literals when semantic resolution didn't surface
+        // any path arguments. This happens when the consuming compilation can't fully
+        // bind the `params string[]` constructor — typically because a referenced
+        // assembly's TFM-forwarded types aren't reachable. The attribute itself still
+        // matches by name (so we got here), but `ConstructorArguments` comes back
+        // empty. Reading the literals directly off the attribute syntax keeps the
+        // path accurate regardless of binding completeness.
+        if (path.Length == 0
+            && commandAttr.ApplicationSyntaxReference?.GetSyntax(ct) is AttributeSyntax attrSyntax
+            && attrSyntax.ArgumentList is { } argList)
+        {
+            path = argList.Arguments
+                .Where(a => a.NameEquals is null)
+                .Select(a => (a.Expression as LiteralExpressionSyntax)?.Token.ValueText)
+                .Where(s => s is not null)
+                .ToArray()!;
+        }
+
         string? description = null;
         string[]? aliases = null;
 
@@ -1397,8 +1415,8 @@ public class CommandTreeGenerator : IIncrementalGenerator
                     : cmd.ActionOptions;
 
                 w.WriteLine(cmd.IsStandalone
-                    ? $"Action = new {safeName}_Action(),"
-                    : $"Action = new {safeName}_Action(getServiceProvider),");
+                    ? $"Action = new {safeName}.Action(),"
+                    : $"Action = new {safeName}.Action(getServiceProvider),");
                 if (args.Length > 0)
                 {
                     w.Block("Arguments =", suffix: ",", body: () =>
@@ -1441,11 +1459,12 @@ public class CommandTreeGenerator : IIncrementalGenerator
                             var nameArg = aliasesArr.Length > 0
                                 ? $"{FormatString(nameAndAliases[0])}, {FormatStringArrayInline(aliasesArr)}"
                                 : FormatString(nameAndAliases[0]);
-                            // Each action option has its own *_Action_<MethodName> class.
+                            // Each action option has its own nested class named after the
+                            // user's method, so the wiring reads as `{safeName}.{methodName}`.
                             // Standalone-style classes (those whose method takes IToolBuilder
                             // — or that sit on a standalone primary) take no ctor args; DI
                             // classes take the service provider accessor.
-                            var actionClassName = $"{safeName}_Action_{ao.MethodName}";
+                            var actionClassName = $"{safeName}.{ao.MethodName}";
                             var actionIsStandalone = ao.AcceptsToolBuilder || cmd.IsStandalone;
                             var actionCtorArgs = actionIsStandalone ? "" : "getServiceProvider";
                             w.Write($"new OptionDefinition<bool>({nameArg})");
@@ -1632,157 +1651,150 @@ public class CommandTreeGenerator : IIncrementalGenerator
             : cmd.ActionOptions;
 
         // Each entry point (the primary plus every [ActionOption]) lives in its own
-        // `*_Action` class so its kind (DI vs standalone) can be chosen independently
-        // from the command's primary kind. Accessors and the build/bind code are
-        // emitted once into a shared static helper so the per-entry-point classes
-        // stay thin.
+        // class so its kind (DI vs standalone) can be chosen independently from the
+        // command's primary kind. The whole per-command emission — accessors, the
+        // CreateInstance / BindOptions / InjectServices lifecycle, and every entry-
+        // point class — is wrapped in one `internal static class {safeName}` umbrella,
+        // so call sites read as `greet.Action` or `greet.MigrateAsync` and the binder
+        // helpers resolve as siblings without a class-name prefix from inside.
         var anyDi = !cmd.IsStandalone || actionOptions.Any(a => !a.AcceptsToolBuilder);
         var anyStandalone = cmd.IsStandalone || actionOptions.Any(a => a.AcceptsToolBuilder);
-
-        EmitBindHelper(w, cmd, hasUnsafeAccessor, emitDi: anyDi, emitStandalone: anyStandalone);
-
-        // Primary entry point class — name stays `<safeName>_Action` for tree wiring.
         var safeName = GetSafeName(cmd);
-        if (cmd.IsStandalone)
-        {
-            EmitStandaloneActionClass(w, cmd, $"{safeName}_Action",
-                cmd.ExecuteMethod.MethodName, cmd.ExecuteMethod.AcceptsToolBuilder,
-                cmd.ExecuteMethod.AcceptsCancellationToken, cmd.ExecuteMethod.ReturnKind,
-                emitDi: anyDi, emitStandalone: anyStandalone);
-        }
-        else
-        {
-            EmitDiActionClass(w, cmd, $"{safeName}_Action",
-                cmd.ExecuteMethod.MethodName, cmd.ExecuteMethod.AcceptsCancellationToken,
-                cmd.ExecuteMethod.ReturnKind, cmd.ExecuteMethod.InnerTypeFqn,
-                emitDi: anyDi, emitStandalone: anyStandalone);
-        }
 
-        foreach (var ao in actionOptions)
+        w.Block($"internal static class {safeName}", () =>
         {
-            var className = $"{safeName}_Action_{ao.MethodName}";
-            if (ao.AcceptsToolBuilder)
+            EmitBindHelperBody(w, cmd, hasUnsafeAccessor, emitDi: anyDi, emitStandalone: anyStandalone);
+
+            // Primary entry point — always named `Action` so the outer tree wiring
+            // (`new {safeName}.Action(...)`) is uniform across commands.
+            if (cmd.IsStandalone)
             {
-                EmitStandaloneActionClass(w, cmd, className, ao.MethodName,
-                    acceptsToolBuilder: true, ao.AcceptsCancellationToken, ao.ReturnKind,
-                    emitDi: anyDi, emitStandalone: anyStandalone);
-            }
-            else if (cmd.IsStandalone)
-            {
-                // Action option without IToolBuilder on a standalone primary still runs
-                // through the standalone path (no DI), since the command's own state is
-                // standalone-only (no [Inject]/ctor-DI usable from this action).
-                EmitStandaloneActionClass(w, cmd, className, ao.MethodName,
-                    acceptsToolBuilder: false, ao.AcceptsCancellationToken, ao.ReturnKind,
+                EmitStandaloneActionClass(w, cmd, "Action",
+                    cmd.ExecuteMethod.MethodName, cmd.ExecuteMethod.AcceptsToolBuilder,
+                    cmd.ExecuteMethod.AcceptsCancellationToken, cmd.ExecuteMethod.ReturnKind,
                     emitDi: anyDi, emitStandalone: anyStandalone);
             }
             else
             {
-                EmitDiActionClass(w, cmd, className, ao.MethodName,
-                    ao.AcceptsCancellationToken, ao.ReturnKind, ao.InnerTypeFqn,
+                EmitDiActionClass(w, cmd, "Action",
+                    cmd.ExecuteMethod.MethodName, cmd.ExecuteMethod.AcceptsCancellationToken,
+                    cmd.ExecuteMethod.ReturnKind, cmd.ExecuteMethod.InnerTypeFqn,
                     emitDi: anyDi, emitStandalone: anyStandalone);
             }
-        }
+
+            foreach (var ao in actionOptions)
+            {
+                // Action option class — named after the user's method so call sites
+                // read as `{safeName}.{methodName}`.
+                var className = ao.MethodName;
+                if (ao.AcceptsToolBuilder)
+                {
+                    EmitStandaloneActionClass(w, cmd, className, ao.MethodName,
+                        acceptsToolBuilder: true, ao.AcceptsCancellationToken, ao.ReturnKind,
+                        emitDi: anyDi, emitStandalone: anyStandalone);
+                }
+                else if (cmd.IsStandalone)
+                {
+                    // Action option without IToolBuilder on a standalone primary still runs
+                    // through the standalone path (no DI), since the command's own state is
+                    // standalone-only (no [Inject]/ctor-DI usable from this action).
+                    EmitStandaloneActionClass(w, cmd, className, ao.MethodName,
+                        acceptsToolBuilder: false, ao.AcceptsCancellationToken, ao.ReturnKind,
+                        emitDi: anyDi, emitStandalone: anyStandalone);
+                }
+                else
+                {
+                    EmitDiActionClass(w, cmd, className, ao.MethodName,
+                        ao.AcceptsCancellationToken, ao.ReturnKind, ao.InnerTypeFqn,
+                        emitDi: anyDi, emitStandalone: anyStandalone);
+                }
+            }
+        });
+        w.WriteLine();
     }
 
     /// <summary>
-    /// Emits the per-command static helper class containing all member accessors and
-    /// the unified <c>Build</c> method that each entry-point action class calls into.
-    /// Sharing the binder avoids duplicating accessor declarations and bind logic across
-    /// the primary class and one class per <c>[ActionOption]</c> method.
+    /// Emits the per-command binder body — accessors, the <c>CreateInstance</c> /
+    /// <c>BindOptions</c> / <c>InjectServices</c> trio — directly into the surrounding
+    /// umbrella class. The umbrella wrapper is opened by <see cref="GenerateCommandAction"/>
+    /// since it also nests the action classes; sharing the same enclosing scope means
+    /// the action classes can call the binder helpers as siblings (no class-name prefix).
     /// </summary>
-    private static void EmitBindHelper(IndentedTextWriter w, CommandModel cmd,
+    private static void EmitBindHelperBody(IndentedTextWriter w, CommandModel cmd,
         bool hasUnsafeAccessor, bool emitDi, bool emitStandalone)
     {
-        var safeName = GetSafeName(cmd);
         var args = GetArguments(cmd);
         var opts = GetOptions(cmd);
         var injects = cmd.Members.Where(m => m.Kind == MemberKind.Inject).ToArray();
 
-        w.Block($"internal static class {safeName}_Binder", () =>
+        // Accessors for direct members that need backing field access.
+        //   - Required [Argument]/[Option] members are set in the object initializer
+        //     and don't need accessors.
+        //   - All [Inject] members (required or not) need accessors so InjectServices
+        //     can write them; for required injects the initializer assigns default!
+        //     to satisfy the C# `required` modifier and InjectServices later replaces
+        //     it with the resolved service.
+        var memberAccessors = new Dictionary<string, Accessor>();
+        foreach (var member in args.Concat(opts).Where(m => m.AccessPath.Length == 0 && !m.NeedsInitializer))
         {
-            // Accessors for direct members that need backing field access.
-            //   - Required [Argument]/[Option] members are set in the object initializer
-            //     and don't need accessors.
-            //   - All [Inject] members (required or not) need accessors so InjectServices
-            //     can write them; for required injects the initializer assigns default!
-            //     to satisfy the C# `required` modifier and InjectServices later replaces
-            //     it with the resolved service.
-            var memberAccessors = new Dictionary<string, Accessor>();
-            foreach (var member in args.Concat(opts).Where(m => m.AccessPath.Length == 0 && !m.NeedsInitializer))
-            {
-                memberAccessors[MemberKey(member)] = EmitAccessor(
-                    w, member.DeclaringTypeFqn, member.MemberName, member.DeclaredTypeFqn,
-                    member.IsField, member.IsPublic, member.HasSetter, member.HasBackingField,
-                    $"__access_{GetMemberFieldName(member)}", hasUnsafeAccessor);
-            }
-            foreach (var member in injects.Where(m => m.AccessPath.Length == 0))
-            {
-                memberAccessors[MemberKey(member)] = EmitAccessor(
-                    w, member.DeclaringTypeFqn, member.MemberName, member.DeclaredTypeFqn,
-                    member.IsField, member.IsPublic, member.HasSetter, member.HasBackingField,
-                    $"__access_{GetMemberFieldName(member)}", hasUnsafeAccessor);
-            }
+            memberAccessors[MemberKey(member)] = EmitAccessor(
+                w, member.DeclaringTypeFqn, member.MemberName, member.DeclaredTypeFqn,
+                member.IsField, member.IsPublic, member.HasSetter, member.HasBackingField,
+                $"__access_{GetMemberFieldName(member)}", hasUnsafeAccessor);
+        }
+        foreach (var member in injects.Where(m => m.AccessPath.Length == 0))
+        {
+            memberAccessors[MemberKey(member)] = EmitAccessor(
+                w, member.DeclaringTypeFqn, member.MemberName, member.DeclaredTypeFqn,
+                member.IsField, member.IsPublic, member.HasSetter, member.HasBackingField,
+                $"__access_{GetMemberFieldName(member)}", hasUnsafeAccessor);
+        }
 
-            // Accessors for [Options] path segments
-            var pathAccessors = new Dictionary<string, Accessor>();
-            foreach (var member in args.Concat(opts).Concat(injects))
+        // Accessors for [Options] path segments
+        var pathAccessors = new Dictionary<string, Accessor>();
+        foreach (var member in args.Concat(opts).Concat(injects))
+        {
+            foreach (var seg in member.AccessPath)
             {
-                foreach (var seg in member.AccessPath)
+                var key = seg.OwnerTypeFqn + "." + seg.MemberName;
+                if (pathAccessors.ContainsKey(key))
                 {
-                    var key = seg.OwnerTypeFqn + "." + seg.MemberName;
-                    if (pathAccessors.ContainsKey(key))
-                    {
-                        continue;
-                    }
-                    pathAccessors[key] = EmitAccessor(
-                        w, seg.OwnerTypeFqn, seg.MemberName, seg.DeclaredTypeFqn,
-                        seg.IsField, seg.IsPublic, seg.HasSetter, seg.HasBackingField,
-                        $"__access_path_{seg.MemberName}", hasUnsafeAccessor);
+                    continue;
                 }
+                pathAccessors[key] = EmitAccessor(
+                    w, seg.OwnerTypeFqn, seg.MemberName, seg.DeclaredTypeFqn,
+                    seg.IsField, seg.IsPublic, seg.HasSetter, seg.HasBackingField,
+                    $"__access_path_{seg.MemberName}", hasUnsafeAccessor);
             }
+        }
 
-            // Accessors for members on nested [Options] types that need backing field access
-            foreach (var member in args.Concat(opts).Where(m => m.AccessPath.Length > 0))
-            {
-                var lastSeg = member.AccessPath[member.AccessPath.Length - 1];
-                memberAccessors[MemberKey(member)] = EmitAccessor(
-                    w, lastSeg.MemberTypeFqn, member.MemberName, member.DeclaredTypeFqn,
-                    member.IsField, member.IsPublic, member.HasSetter, member.HasBackingField,
-                    $"__access_{GetMemberFieldName(member)}", hasUnsafeAccessor);
-            }
+        // Accessors for members on nested [Options] types that need backing field access
+        foreach (var member in args.Concat(opts).Where(m => m.AccessPath.Length > 0))
+        {
+            var lastSeg = member.AccessPath[member.AccessPath.Length - 1];
+            memberAccessors[MemberKey(member)] = EmitAccessor(
+                w, lastSeg.MemberTypeFqn, member.MemberName, member.DeclaredTypeFqn,
+                member.IsField, member.IsPublic, member.HasSetter, member.HasBackingField,
+                $"__access_{GetMemberFieldName(member)}", hasUnsafeAccessor);
+        }
 
-            // Configure delegation for the static form — emitted once and re-used by
-            // every entry-point class that implements ICommandConfigurator. Instance
-            // Configure has no static delegation (it's invoked on a constructed instance
-            // by the action class) so this block is skipped for that shape.
-            if (cmd.ConfigureMethod is { IsStatic: true })
-            {
-                w.Block("internal static void Configure(global::triaxis.CommandLine.IToolBuilder builder)", () =>
-                {
-                    EmitConfigureInvocation(w, cmd.ConfigureMethod);
-                });
-                w.WriteLine();
-            }
-
-            // The lifecycle is split across three methods so the action class can stage
-            // them as needed:
-            //   CreateInstance  — constructs the command and writes any object-initializer
-            //                     members (required [Argument]/[Option], required [Inject],
-            //                     required [Options] segments).
-            //   BindOptions     — resolves nested [Options] containers and binds the
-            //                     non-required [Argument]/[Option] members from ParseResult.
-            //   InjectServices  — assigns non-required [Inject] members from the provider.
-            // For instance-Configure commands, the action class calls CreateInstance +
-            // BindOptions before invoking the user's Configure (so it can observe bound
-            // values), then calls InjectServices later when the host is up.
-            EmitCreateInstanceMethod(w, cmd, args, opts, injects,
-                emitDi: emitDi, emitStandalone: emitStandalone);
-            EmitBindOptionsMethod(w, cmd, args, opts, memberAccessors, pathAccessors);
-            EmitInjectServicesMethod(w, cmd, injects, memberAccessors,
-                emitDi: emitDi, emitStandalone: emitStandalone);
-        });
-        w.WriteLine();
+        // The lifecycle is split across three methods so the action class can stage
+        // them as needed:
+        //   CreateInstance  — constructs the command and writes any object-initializer
+        //                     members (required [Argument]/[Option], required [Options]
+        //                     segments, and `default!` placeholders for required
+        //                     [Inject] so the C# `required` modifier is satisfied).
+        //   BindOptions     — resolves nested [Options] containers and binds the
+        //                     non-required [Argument]/[Option] members from ParseResult.
+        //   InjectServices  — assigns every [Inject] member (required and non-required).
+        // For instance-Configure commands, the action class calls CreateInstance +
+        // BindOptions before invoking the user's Configure (so it can observe bound
+        // values), then calls InjectServices later when the host is up.
+        EmitCreateInstanceMethod(w, cmd, args, opts, injects,
+            emitDi: emitDi, emitStandalone: emitStandalone);
+        EmitBindOptionsMethod(w, cmd, args, opts, memberAccessors, pathAccessors);
+        EmitInjectServicesMethod(w, cmd, injects, memberAccessors,
+            emitDi: emitDi, emitStandalone: emitStandalone);
     }
 
     /// <summary>
@@ -1986,18 +1998,19 @@ public class CommandTreeGenerator : IIncrementalGenerator
 
     /// <summary>
     /// Emits a thin DI-routed action class. The instance, all bound members, and any
-    /// <c>[Inject]</c> values are produced via the binder's three-method lifecycle:
-    /// <c>CreateInstance</c> → <c>BindOptions</c> → <c>InjectServices</c>. When the
-    /// command declares an instance <c>Configure</c> method, the first two steps run at
-    /// <c>ICommandConfigurator.Configure</c> time so the user's hook can observe bound
-    /// values; the resulting instance is stashed and reused at <c>InvokeAsync</c>.
+    /// <c>[Inject]</c> values are produced via the umbrella class's three-method
+    /// lifecycle: <c>CreateInstance</c> → <c>BindOptions</c> → <c>InjectServices</c>.
+    /// When the command declares an instance <c>Configure</c> method, the first two
+    /// steps run at <c>ICommandConfigurator.Configure</c> time so the user's hook can
+    /// observe bound values; the resulting instance is stashed and reused at
+    /// <c>InvokeAsync</c>. The class is emitted nested inside the per-command umbrella
+    /// so all binder calls resolve as siblings without a class-name prefix.
     /// </summary>
     private static void EmitDiActionClass(IndentedTextWriter w, CommandModel cmd,
         string className, string methodName, bool acceptsCt,
         ReturnKind returnKind, string? innerTypeFqn,
         bool emitDi, bool emitStandalone)
     {
-        var safeName = GetSafeName(cmd);
         var hasConfigure = cmd.ConfigureMethod is not null;
         var instanceConfigure = cmd.ConfigureMethod is { IsStatic: false };
         var callsInjectServices = BinderEmitsInjectServices(cmd, emitDi, emitStandalone);
@@ -2024,14 +2037,14 @@ public class CommandTreeGenerator : IIncrementalGenerator
                 {
                     if (instanceConfigure)
                     {
-                        w.WriteLine($"var instance = {safeName}_Binder.CreateInstance(parseResult);");
-                        w.WriteLine($"{safeName}_Binder.BindOptions(instance, parseResult);");
+                        w.WriteLine("var instance = CreateInstance(parseResult);");
+                        w.WriteLine("BindOptions(instance, parseResult);");
                         EmitConfigureInvocation(w, cmd.ConfigureMethod!);
                         w.WriteLine("_configuredInstance = instance;");
                     }
                     else
                     {
-                        w.WriteLine($"{safeName}_Binder.Configure(builder);");
+                        EmitConfigureInvocation(w, cmd.ConfigureMethod!);
                     }
                 });
                 w.WriteLine();
@@ -2052,25 +2065,25 @@ public class CommandTreeGenerator : IIncrementalGenerator
                         // (e.g. invocation bypassing ToolBuilder), rebuild here.
                         // Instance Configure forbids ctor DI / required injects, so
                         // CreateInstance never takes a provider in this branch.
-                        w.WriteLine($"var instance = _configuredInstance;");
+                        w.WriteLine("var instance = _configuredInstance;");
                         w.WriteLine("_configuredInstance = null;");
                         w.Block("if (instance is null)", () =>
                         {
-                            w.WriteLine($"instance = {safeName}_Binder.CreateInstance(parseResult);");
-                            w.WriteLine($"{safeName}_Binder.BindOptions(instance, parseResult);");
+                            w.WriteLine("instance = CreateInstance(parseResult);");
+                            w.WriteLine("BindOptions(instance, parseResult);");
                         });
                     }
                     else
                     {
                         var createCall = createTakesProvider
-                            ? $"{safeName}_Binder.CreateInstance(parseResult, provider)"
-                            : $"{safeName}_Binder.CreateInstance(parseResult)";
+                            ? "CreateInstance(parseResult, provider)"
+                            : "CreateInstance(parseResult)";
                         w.WriteLine($"var instance = {createCall};");
-                        w.WriteLine($"{safeName}_Binder.BindOptions(instance, parseResult);");
+                        w.WriteLine("BindOptions(instance, parseResult);");
                     }
                     if (callsInjectServices)
                     {
-                        w.WriteLine($"{safeName}_Binder.InjectServices(instance, provider);");
+                        w.WriteLine("InjectServices(instance, provider);");
                     }
                     w.WriteLine();
                     EmitDiPathInvocation(w, methodName, acceptsCt, returnKind, innerTypeFqn);
@@ -2095,7 +2108,6 @@ public class CommandTreeGenerator : IIncrementalGenerator
         bool acceptsToolBuilder, bool acceptsCancellationToken, ReturnKind returnKind,
         bool emitDi, bool emitStandalone)
     {
-        var safeName = GetSafeName(cmd);
         var hasConfigure = cmd.ConfigureMethod is not null;
         var instanceConfigure = cmd.ConfigureMethod is { IsStatic: false };
         var callsInjectServices = BinderEmitsInjectServices(cmd, emitDi, emitStandalone);
@@ -2118,14 +2130,14 @@ public class CommandTreeGenerator : IIncrementalGenerator
                 {
                     if (instanceConfigure)
                     {
-                        w.WriteLine($"var instance = {safeName}_Binder.CreateInstance(parseResult);");
-                        w.WriteLine($"{safeName}_Binder.BindOptions(instance, parseResult);");
+                        w.WriteLine("var instance = CreateInstance(parseResult);");
+                        w.WriteLine("BindOptions(instance, parseResult);");
                         EmitConfigureInvocation(w, cmd.ConfigureMethod!);
                         w.WriteLine("_configuredInstance = instance;");
                     }
                     else
                     {
-                        w.WriteLine($"{safeName}_Binder.Configure(builder);");
+                        EmitConfigureInvocation(w, cmd.ConfigureMethod!);
                     }
                 });
                 w.WriteLine();
@@ -2156,26 +2168,26 @@ public class CommandTreeGenerator : IIncrementalGenerator
                 }
                 if (instanceConfigure)
                 {
-                    w.WriteLine($"var instance = _configuredInstance;");
+                    w.WriteLine("var instance = _configuredInstance;");
                     w.WriteLine("_configuredInstance = null;");
                     w.Block("if (instance is null)", () =>
                     {
-                        w.WriteLine($"instance = {safeName}_Binder.CreateInstance(parseResult);");
-                        w.WriteLine($"{safeName}_Binder.BindOptions(instance, parseResult);");
+                        w.WriteLine("instance = CreateInstance(parseResult);");
+                        w.WriteLine("BindOptions(instance, parseResult);");
                     });
                 }
                 else
                 {
-                    w.WriteLine($"var instance = {safeName}_Binder.CreateInstance(parseResult);");
-                    w.WriteLine($"{safeName}_Binder.BindOptions(instance, parseResult);");
+                    w.WriteLine("var instance = CreateInstance(parseResult);");
+                    w.WriteLine("BindOptions(instance, parseResult);");
                 }
                 // Mixed-mode commands (DI primary + standalone action option) share the
-                // binder's InjectServices helper. The standalone path passes null since
+                // umbrella's InjectServices helper. The standalone path passes null since
                 // it has no provider; assignments short-circuit and the user's standalone
                 // entry point is responsible for not reading those members.
                 if (callsInjectServices)
                 {
-                    w.WriteLine($"{safeName}_Binder.InjectServices(instance, null);");
+                    w.WriteLine("InjectServices(instance, null);");
                 }
                 w.WriteLine();
                 EmitStandaloneInvocation(w, methodName, acceptsToolBuilder,
@@ -2648,7 +2660,20 @@ public class CommandTreeGenerator : IIncrementalGenerator
 
     private static string GetSafeName(CommandModel cmd)
     {
-        return string.Join("_", cmd.Path).Replace("-", "_");
+        // Path is empty for a root-level command (no name on [Command]). The umbrella
+        // class needs a non-empty identifier, so fall back to a stable placeholder.
+        // Path segments are PascalCased so the resulting type name reads well at use
+        // sites (`Greet.Action`, `Foo_Bar.Action`) and dodges CS8981 (all-lowercase
+        // identifiers may become language-reserved).
+        if (cmd.Path.Length == 0)
+        {
+            return "_root";
+        }
+        var segments = cmd.Path.Select(p => Capitalize(p.Replace("-", "_")));
+        return string.Join("_", segments);
+
+        static string Capitalize(string s)
+            => s.Length == 0 || char.IsUpper(s[0]) ? s : char.ToUpperInvariant(s[0]) + s.Substring(1);
     }
 
     private static string GetCliName(MemberModel member)

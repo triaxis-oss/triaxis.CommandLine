@@ -30,7 +30,7 @@ Run() / RunAsync()     ← extension methods on IToolBuilder
       ├─ ToolHost.StartAsync()        → starts IHostedService instances in order
       ├─ ToolHost.Invoke() / InvokeAsync()
       │       └─ ParseResult.Invoke() / InvokeAsync()
-      │               └─ <Command>_Action.InvokeAsync()   (source-generated)
+      │               └─ {Command}.Action.InvokeAsync()   (source-generated)
       │                       ├─ new InvocationContext(services, parseResult, ct, commandType)
       │                       ├─ ICommandExecutor.ExecuteAsync(context, body)
       │                       │       ├─ wraps body in the middleware chain
@@ -57,7 +57,7 @@ Run() / RunAsync()     ← extension methods on IToolBuilder
 | `ToolHost` | `IHost` + `IHostApplicationLifetime` implementation — starts/stops `IHostedService`s, owns the `ServiceProvider`, fires lifetime tokens, exposes `Invoke`/`InvokeAsync`. |
 | `CommandTreeNode` | Lightweight model describing the command tree. Returned by the source-generated factory, merged into `RootCommand` via `ApplyTo()`. |
 | `ArgumentDefinition<T>` / `OptionDefinition<T>` | Type-safe descriptors in the tree model. `Create()` produces fresh System.CommandLine `Argument<T>`/`Option<T>` instances. |
-| Generated `*_Action` classes | One `AsynchronousCommandLineAction` per `[Command]` class. Emitted by `triaxis.CommandLine.SourceGenerator`. Constructs the command, binds parameters, invokes `Execute`/`ExecuteAsync`. |
+| Generated `{Command}.Action` classes | One `AsynchronousCommandLineAction` nested in a per-command `internal static class {Command}` umbrella. Emitted by `triaxis.CommandLine.SourceGenerator`. Constructs the command via the umbrella's `CreateInstance` / `BindOptions` / `InjectServices` lifecycle, then invokes `Execute`/`ExecuteAsync`. |
 | `ICommandExecutor` / `DefaultCommandExecutor` | Runs the middleware chain around command execution and finalizes the result. |
 | `InvocationContext` | Passed through middleware: `Services`, `ParseResult`, `CommandType`, `InvocationResult`, `ExitCode`, `CancellationToken`. |
 | `ICommandInvocationResult[<T>]` | Uniform wrapper around anything a command can return. |

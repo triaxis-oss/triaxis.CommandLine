@@ -236,7 +236,7 @@ process is killed. The token flows through:
 
 ```
 System.CommandLine
-      └── <Command>_Action.InvokeAsync(parseResult, cancellationToken)
+      └── {Command}.Action.InvokeAsync(parseResult, cancellationToken)
               └── new InvocationContext(services, parseResult, cancellationToken, commandType)
                       └── ICommandExecutor.ExecuteAsync(context, ...)
                               └── every middleware via context.GetCancellationToken()
@@ -268,7 +268,7 @@ you're in charge of honouring the token.
 
 ## Execution order recap
 
-1. Generated `*_Action.InvokeAsync` is called by System.CommandLine.
+1. Generated `{Command}.Action.InvokeAsync` is called by System.CommandLine.
 2. `InvocationContext` is created with the live `IServiceProvider`, `ParseResult`,
    `CancellationToken`, and `CommandType`.
 3. `ICommandExecutor.ExecuteAsync` builds the middleware chain.

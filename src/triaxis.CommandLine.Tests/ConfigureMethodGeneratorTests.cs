@@ -1,6 +1,7 @@
 namespace triaxis.CommandLine.Tests;
 
 using System.Collections.Immutable;
+using System.Reflection;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.Extensions.DependencyInjection;
@@ -42,6 +43,20 @@ public class ConfigureMethodGeneratorTests
         refs.Add(MetadataReference.CreateFromFile(typeof(CommandAttribute).Assembly.Location));
         refs.Add(MetadataReference.CreateFromFile(typeof(IServiceCollection).Assembly.Location));
         refs.Add(MetadataReference.CreateFromFile(typeof(IHostBuilder).Assembly.Location));
+        // `triaxis.CommandLine` is built against netstandard2.0, so without the
+        // netstandard façade Roslyn can't fully bind its types from a .NET Framework
+        // host — `[Command(params string[])]` resolves by name but its constructor
+        // arguments come back empty, which then propagates to an empty path and an
+        // `_root` umbrella name on Windows. Modern .NET hosts get this implicitly via
+        // TPA above; mono auto-resolves it. .NET Framework needs an explicit load.
+        try
+        {
+            refs.Add(MetadataReference.CreateFromFile(Assembly.Load("netstandard").Location));
+        }
+        catch (System.IO.FileNotFoundException)
+        {
+            // No netstandard available — modern .NET hosts already covered via TPA.
+        }
         return refs.ToArray();
     }
 
@@ -90,6 +105,28 @@ public class ConfigureMethodGeneratorTests
         Assert.That(tree, Is.Not.Null);
         Assert.That(tree, Does.Contain("ICommandConfigurator"));
         Assert.That(tree, Does.Contain("global::GreetCommand.Configure();"));
+    }
+
+    [Test]
+    public void Generator_EmitsUmbrellaClass_WithNestedAction()
+    {
+        const string source = """
+            using triaxis.CommandLine;
+
+            [Command("greet")]
+            public class GreetCommand
+            {
+                public void Execute() { }
+            }
+            """;
+
+        var tree = RunGeneratorAndGetCommandTree(source);
+        Assert.That(tree, Is.Not.Null);
+        // One umbrella class per command holds the binder helpers and a nested
+        // `Action` class — call sites read as `Greet.Action(...)`.
+        Assert.That(tree, Does.Contain("internal static class Greet"));
+        Assert.That(tree, Does.Contain("internal sealed class Action"));
+        Assert.That(tree, Does.Contain("Action = new Greet.Action(getServiceProvider),"));
     }
 
     [Test]
