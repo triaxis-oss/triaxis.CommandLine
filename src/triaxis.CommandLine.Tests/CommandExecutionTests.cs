@@ -277,7 +277,7 @@ public abstract class BaseWithAsync
 [Command("derived-sync-wins")]
 public class DerivedSyncOverridesBaseAsync : BaseWithAsync
 {
-    public new void Execute()
+    public void Execute()
     {
         State.WasRun = true;
         State.Name = "derived-sync";
