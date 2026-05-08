@@ -45,11 +45,15 @@ Examples target net8.0; the libraries target netstandard2.0 and netstandard2.1.
 `ServiceProvider`, then delegates to `ParseResult.Invoke`/`InvokeAsync` — System.CommandLine
 handles dispatch, Ctrl+C, and default exception handling.
 
-### Source-generated `*_Action` classes
+### Source-generated umbrella class per command
 
-One `AsynchronousCommandLineAction` per `[Command]` class. The per-command lifecycle
-is split across three methods on a `*_Binder` static helper so the action can stage
-them as needed:
+Each `[Command]` class gets one `internal static class {SafeName}` umbrella in
+`triaxis.CommandLine.Generated`. The umbrella holds the binder helpers and one
+nested action class per entry point — `Action` for the primary, plus one named
+after each `[ActionOption]` method (so the tree wiring reads as
+`new Greet.Action(...)` and an action option as `new Greet.MigrateAsync()`).
+The per-command lifecycle is split across three methods on the umbrella so the
+nested action class can stage them as needed:
 
 - `CreateInstance(ParseResult [, IServiceProvider])` — `new T(ctor-DI?)` with an
   object initializer that writes the parsed values for required `[Argument]` /
@@ -108,7 +112,8 @@ for logging — the level is baked into the logger at creation time.
 - `ToolBuilder` — concrete builder, owns `IServiceCollection`, `IConfigurationManager`
 - `CommandTreeNode` — lightweight model describing the command tree, merged via `ApplyTo(Command)`
 - `ArgumentDefinition<T>` / `OptionDefinition<T>` — type-safe descriptors that `Create()` fresh S.CL symbols
-- Generated `*_Action` — `AsynchronousCommandLineAction` per `[Command]` class
+- Generated `{SafeName}.Action` — `AsynchronousCommandLineAction` nested in the
+  per-command umbrella static class
 - `InvocationContext` — passed through middleware: Services, ParseResult, CommandType,
   InvocationResult, ExitCode, CancellationToken
 - `ICommandExecutor` / `DefaultCommandExecutor` — runs middleware chain + finalization

@@ -1,5 +1,6 @@
 namespace triaxis.CommandLine.Tests;
 
+using System.Reflection;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.Extensions.DependencyInjection;
@@ -28,6 +29,16 @@ public class ConfigureServicesGeneratorTests
         }
         refs.Add(MetadataReference.CreateFromFile(typeof(CommandAttribute).Assembly.Location));
         refs.Add(MetadataReference.CreateFromFile(typeof(IServiceCollection).Assembly.Location));
+        // See ConfigureMethodGeneratorTests.BuildReferences — without netstandard the
+        // .NET Framework host can't fully bind triaxis.CommandLine's types.
+        try
+        {
+            refs.Add(MetadataReference.CreateFromFile(Assembly.Load("netstandard").Location));
+        }
+        catch (System.IO.FileNotFoundException)
+        {
+            // No netstandard available — modern .NET hosts already covered via TPA.
+        }
         return refs.ToArray();
     }
 
