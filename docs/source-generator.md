@@ -196,6 +196,91 @@ and reports these errors when the shape is otherwise invalid:
 Standalone commands still use the same `[Argument]`/`[Option]`/`[Options]` binding
 machinery — only the DI- and middleware-related pieces are dropped.
 
+## Alternate entry points (`[ActionOption]`)
+
+Methods on a `[Command]` class can be marked with `[ActionOption]` to expose alternate
+entry points as boolean flag options. The generator emits one extra `OptionDefinition<bool>`
+per `[ActionOption]` method, plus a dedicated action class per method whose `Action`
+property the option carries. Binding logic (accessors, instance construction, `[Options]`
+resolution, argument/option binding) is hoisted into a per-command static helper class
+so each entry-point class stays minimal.
+
+The shape of the emitted code, given a regular command with one DI-routed action option
+and one builder-taking action option:
+
+```csharp
+// Shared per-command binder — accessors + a single Build method whose
+// IServiceProvider parameter is null on the standalone path.
+internal static class BackupCommand_Binder
+{
+    [UnsafeAccessor(...)] private static extern ref string __access_Target(BackupCommand instance);
+    // ...
+
+    internal static BackupCommand Build(ParseResult parseResult, IServiceProvider? provider = null)
+    {
+        // Construction is branch-free: provider?.GetRequiredService<…>()! short-circuits
+        // to null on the standalone path, and the null-forgiving `!` keeps the compiler
+        // happy assigning to non-nullable destinations. The action-option method that
+        // runs in the standalone path is responsible for not dereferencing
+        // constructor- or [Inject]-supplied services.
+        var instance = new BackupCommand(provider?.GetRequiredService<MyService>()!);
+        instance.Logger = provider?.GetRequiredService<ILogger<BackupCommand>>()!;
+
+        // [Options] resolution + foreach over parseResult.Children
+        return instance;
+    }
+}
+
+// Primary entry point (DI path).
+internal sealed class BackupCommand_Action(Func<IServiceProvider> getServiceProvider) : AsynchronousCommandLineAction
+{
+    public override async Task<int> InvokeAsync(...)
+    {
+        var instance = BackupCommand_Binder.Build(parseResult, provider);
+        await instance.ExecuteAsync(...);
+        // ...
+    }
+}
+
+// [ActionOption] ListAsync — same DI path, different method.
+internal sealed class BackupCommand_Action_ListAsync(Func<IServiceProvider> getServiceProvider) : AsynchronousCommandLineAction { ... }
+
+// [ActionOption] MigrateAsync(IToolBuilder, CancellationToken) — standalone path.
+internal sealed class BackupCommand_Action_MigrateAsync : AsynchronousCommandLineAction, IStandaloneAction
+{
+    public Task<int> InvokeAsync(IToolBuilder builder, ParseResult parseResult, CancellationToken ct)
+    {
+        var instance = BackupCommand_Binder.Build(parseResult);  // no provider — standalone
+        return instance.MigrateAsync(builder, ct);
+    }
+    // fallback throws when invoked without a builder
+}
+```
+
+The option in the tree carries the matching action:
+
+```csharp
+new OptionDefinition<bool>("--migrate")
+{
+    Arity = ArgumentArity.ZeroOrOne,
+    Action = new BackupCommand_Action_MigrateAsync(),
+}
+```
+
+When the option is matched, System.CommandLine resolves `ParseResult.Action` to the
+option's action — replacing the command's primary action for that invocation. Because
+each action class chooses its own interfaces, a builder-taking action option on a
+regular `ExecuteAsync` command implements `IStandaloneAction` and triggers the
+`StandaloneHost` short-circuit in `ToolBuilder.Build()` independently of the primary's
+kind.
+
+The `IServiceProvider?` parameter is only emitted when the command actually needs both
+modes: a DI-only command (no standalone-style action options) takes a non-nullable
+`IServiceProvider provider`, and a standalone-only command (no DI-routed entry points)
+drops the parameter entirely. Mixed-kind commands take the nullable form and route every
+DI-touching expression through `provider?.…!` so a standalone-path call short-circuits
+to null without any `if (provider is null)` branching in the generated body.
+
 ## Key points
 
 - **`CommandTreeNode`** is a lightweight model — no System.CommandLine types are created
