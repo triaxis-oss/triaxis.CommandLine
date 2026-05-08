@@ -88,6 +88,30 @@ rather than a compile-time guard. Multiple `[ConfigureServices]` methods across 
 assembly are supported; the generator emits them in a stable order (ordinal by
 declaring type's fully-qualified name, then by method name).
 
+### Per-command `Configure`
+
+A static `Configure` method on a `[Command]` type fires only when that command is
+actually invoked, after parsing and before the service provider is built — so
+registrations land in the host that runs the command:
+
+```csharp
+[Command("greet")]
+public class GreetCommand
+{
+    [Inject] private IGreeter _greeter = null!;
+
+    public void Execute() => _greeter.Greet();
+
+    public static void Configure(IServiceCollection services)
+        => services.AddSingleton<IGreeter, ConsoleGreeter>();
+}
+```
+
+The method must be `static` and return `void`. It can take any of `IToolBuilder`,
+`IHostBuilder`, or `IServiceCollection` — including no parameters at all. See the
+[source-generator docs](source-generator.md#per-command-configure) for emission
+details.
+
 `TryAddTransient` / `TryAddSingleton` in the library means you can replace any of the
 defaults from `ConfigureServices`:
 

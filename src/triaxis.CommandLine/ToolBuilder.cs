@@ -212,6 +212,14 @@ class ToolBuilder : IToolBuilder, IHostBuilder
     {
         var parseResult = Parse();
 
+        // Run the matched command's [Command] Configure hook before any IHostBuilder
+        // callbacks fire so it can register services the command depends on. Built-in
+        // actions (--help / --version) are different ParseResult.Action types and skip it.
+        if (parseResult.Action is ICommandConfigurator configurator)
+        {
+            configurator.Configure(this);
+        }
+
         // Short-circuit for commands that own their own host: no service provider,
         // no middleware, no ToolHost — the command's MainAsync runs with access to
         // this builder so it can replay registrations onto its own host.
