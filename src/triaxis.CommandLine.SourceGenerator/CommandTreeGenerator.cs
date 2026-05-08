@@ -2156,9 +2156,44 @@ public class CommandTreeGenerator : IIncrementalGenerator
         var name = member.MemberName.TrimStart('_');
         if (member.Kind == MemberKind.Argument)
         {
-            return name.ToUpperInvariant();
+            return ToKebabCase(name, upper: true);
         }
-        return (name.Length == 1 ? "-" : "--") + name;
+        return (name.Length == 1 ? "-" : "--") + ToKebabCase(name, upper: false);
+    }
+
+    /// <summary>
+    /// Converts a PascalCase / camelCase identifier to kebab-case. Inserts a hyphen
+    /// at lower→upper boundaries and between an acronym run and a following word
+    /// (e.g. <c>ParseHTMLDocument</c> → <c>parse-html-document</c>). When
+    /// <paramref name="upper"/> is true, the result is uppercased instead
+    /// (SCREAMING-KEBAB, used for argument names).
+    /// </summary>
+    private static string ToKebabCase(string value, bool upper)
+    {
+        if (string.IsNullOrEmpty(value))
+        {
+            return value;
+        }
+
+        var sb = new System.Text.StringBuilder(value.Length + 4);
+        for (int i = 0; i < value.Length; i++)
+        {
+            var c = value[i];
+            if (i > 0 && char.IsUpper(c))
+            {
+                var prev = value[i - 1];
+                var nextLower = i + 1 < value.Length && char.IsLower(value[i + 1]);
+                if ((!char.IsUpper(prev) && prev != '-') || (char.IsUpper(prev) && nextLower))
+                {
+                    if (sb.Length > 0 && sb[sb.Length - 1] != '-')
+                    {
+                        sb.Append('-');
+                    }
+                }
+            }
+            sb.Append(upper ? char.ToUpperInvariant(c) : char.ToLowerInvariant(c));
+        }
+        return sb.ToString();
     }
 
     private static string GetMemberFieldName(MemberModel member)

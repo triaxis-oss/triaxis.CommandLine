@@ -181,8 +181,8 @@ in stock System.CommandLine works here — there's no separate binder to teach.
 | --- | --- |
 | Option not specified on command line | Member keeps its initializer value. |
 | Option specified without a value (e.g. `bool` flag) | `parseResult.GetValue(_Option)` — usually `true` for bools. |
-| `[Option]` with no `Name` | Strips leading underscores and adds `--` (or `-` for single-char). |
-| `[Argument]` with no `Name` | Strips leading underscores and uppercases. |
+| `[Option]` with no `Name` | Strips leading underscores, converts to kebab-case, and adds `--` (or `-` for single-char). e.g. `MyOption` → `--my-option`. |
+| `[Argument]` with no `Name` | Strips leading underscores, converts to kebab-case, then uppercases. e.g. `MyArg` → `MY-ARG`. |
 | `[Argument]` with no tokens | Member keeps its initializer; the binder skips the write. |
 | `required` C# modifier on member | Argument arity becomes `(1, max)`; option becomes `Required = true`. |
 | `Required = true` on attribute | Same effect; overrides the `required` modifier. |

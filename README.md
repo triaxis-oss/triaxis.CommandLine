@@ -209,7 +209,7 @@ Bind parsed values to **fields or properties** using `[Argument]` (positional) o
 
 | Property | Meaning |
 | --- | --- |
-| `Name` | Explicit name. Defaults to the member name. |
+| `Name` | Explicit name. Defaults to the member name converted to kebab-case (e.g. `MyOption` → `--my-option`, `MyArg` → `MY-ARG`). |
 | `Description` | Shown in `--help`. |
 | `Order` | Sort order for help and positional ordering. |
 
