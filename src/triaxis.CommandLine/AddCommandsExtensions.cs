@@ -32,6 +32,25 @@ public static partial class ToolBuilderExtensions
     }
 
     /// <summary>
+    /// Maps <typeparamref name="TException"/> (and subclasses) to a clean exit: the
+    /// exception's message is logged via <c>ILogger.LogError</c> and the process exits
+    /// with <paramref name="exitCode"/> instead of surfacing as an unhandled crash.
+    /// </summary>
+    public static IToolBuilder MapException<TException>(this IToolBuilder builder, int exitCode = -1)
+        where TException : Exception
+        => builder.MapException(ex =>
+            ex is TException ? new CommandError(exitCode, ex.Message) : null);
+
+    /// <summary>
+    /// Maps <typeparamref name="TException"/> (and subclasses) to a clean exit using a
+    /// caller-supplied projection that builds the <see cref="CommandError"/> (exit code
+    /// plus a structured-logging message template) from the typed exception.
+    /// </summary>
+    public static IToolBuilder MapException<TException>(this IToolBuilder builder, Func<TException, CommandError> map)
+        where TException : Exception
+        => builder.MapException(ex => ex is TException typed ? map(typed) : null);
+
+    /// <summary>
     /// Adds a recursive option to the root command in a position that keeps the
     /// help output ordered from most-specific to least-specific on every command:
     /// after any local options and other user-added recursive options, but before

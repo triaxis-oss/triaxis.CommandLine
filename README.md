@@ -528,15 +528,27 @@ builder.AddMiddleware(async (context, next) =>
 ### Error handling
 
 Throw `CommandErrorException` from a command to report a user-facing failure. The default
-executor logs it and exits with code `-1` without a stack trace:
+executor logs it and exits without a stack trace. The exit code defaults to `-1` and is
+configurable per throw via the `ExitCode` initializer:
 
 ```csharp
 throw new CommandErrorException("File {Path} was not found", path);
+throw new CommandErrorException("Config {Path} invalid", path) { ExitCode = 78 };
 ```
 
 Any other exception bubbles up to System.CommandLine's default handler, which prints the
-exception and returns a non-zero exit code. You can replace the executor entirely by
-registering your own `ICommandExecutor` in `ConfigureServices`.
+exception and returns a non-zero exit code — unless you register an exception mapper to
+give it the same clean treatment:
+
+```csharp
+builder.MapException<TimeoutException>(exitCode: 124);
+builder.MapException<HttpRequestException>(
+    ex => new CommandError(75, "Upstream call failed: {Reason}", ex.Message));
+```
+
+Mappers run in registration order; the built-in `CommandErrorException` handling stays as
+a final fallback. You can also replace the executor entirely by registering your own
+`ICommandExecutor` in `ConfigureServices`.
 
 ### Cancellation
 

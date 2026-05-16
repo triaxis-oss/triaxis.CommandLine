@@ -80,14 +80,19 @@ public async Task ExecuteAsync(InvocationContext context, Func<Task> command)
             await context.InvocationResult.EnsureCompleteAsync(context.GetCancellationToken());
         }
     }
-    catch (CommandErrorException e)
+    catch (Exception e) when (Map(e) is { } error)
     {
-        context.ExitCode = -1;
+        context.ExitCode = error.ExitCode;
         var logger = _loggerFactory.CreateLogger(context.CommandType.FullName ?? context.CommandType.Name);
-        logger.LogError(e.Message, e.MessageArguments);
+        logger.LogError(error.MessageTemplate, error.MessageArguments);
     }
 }
 ```
+
+`Map` walks the registered `ExceptionMapper`s in registration order, then a built-in
+fallback that maps `CommandErrorException` to
+`new CommandError(e.ExitCode, e.Message, e.MessageArguments)` (`ExitCode` defaults to `-1`).
+If no mapper matches, the filter is `false` and the exception propagates unchanged.
 
 Three observations:
 
@@ -98,9 +103,10 @@ Three observations:
    `ICommandInvocationResult<T>` streams to the console. Middleware can inspect or replace
    `context.InvocationResult` after `next` returns, but finalization (enumeration,
    flushing) happens after every middleware has completed its `after` phase.
-3. **`CommandErrorException` is caught here** — and only here. Any other exception
-   propagates up to System.CommandLine, which handles it with its default rules (print and
-   return non-zero).
+3. **Only mapped exceptions are caught here.** `CommandErrorException` is mapped by a
+   built-in fallback; anything else is caught only if a registered `ExceptionMapper`
+   claims it. Unmapped exceptions propagate up to System.CommandLine, which handles them
+   with its default rules (print and return non-zero).
 
 ## Writing middleware — patterns
 
@@ -195,11 +201,12 @@ the chain itself — middleware is wired up by `DefaultCommandExecutor`, not by 
 
 ## Error handling
 
-Two kinds of errors reach middleware:
+Three kinds of errors reach middleware:
 
 | Exception type | Handled by | Behaviour |
 | --- | --- | --- |
-| `CommandErrorException` | `DefaultCommandExecutor` | Caught, logged via `ILogger<CommandType>`, `ExitCode = -1`. No stack trace. |
+| `CommandErrorException` | built-in mapper | Caught, logged via `ILogger<CommandType>`, `ExitCode` from the exception (default `-1`). No stack trace. |
+| Anything with a registered `ExceptionMapper` | that mapper | Caught, logged, `ExitCode` from the mapper's `CommandError`. No stack trace. |
 | Everything else | System.CommandLine | Propagates out of `InvokeAsync`; System.CommandLine prints and returns non-zero. |
 
 `CommandErrorException` takes a message template and arguments so it plays well with
@@ -210,10 +217,43 @@ throw new CommandErrorException("File {Path} not found (errno {Err})", path, err
 ```
 
 The message template is passed directly to `logger.LogError`, which means `{Path}` and
-`{Err}` become structured log properties.
+`{Err}` become structured log properties. The exit code defaults to `-1` and is
+configurable per throw:
 
-If you want to treat any exception as a user-visible error (for example to hide stack
-traces in production), add a middleware that catches and rethrows:
+```csharp
+throw new CommandErrorException("Config {Path} invalid", path) { ExitCode = 78 };
+```
+
+### Mapping more exception types to a clean exit
+
+`MapException` registers a mapper that turns an exception escaping a command into a
+logged error plus an exit code — the same clean treatment `CommandErrorException` gets,
+without the throw site having to know about `CommandErrorException`:
+
+```csharp
+// Log the exception's message, exit with -1 (the default):
+builder.MapException<OperationCanceledException>();
+
+// Pick the exit code:
+builder.MapException<TimeoutException>(exitCode: 124);
+
+// Full control: build the CommandError yourself (template + structured args):
+builder.MapException<HttpRequestException>(
+    ex => new CommandError(75, "Upstream call failed: {Reason}", ex.Message));
+
+// The primitive both helpers build on — return null to defer to the next mapper:
+builder.MapException(ex => ex is DbException db && db.IsTransient
+    ? new CommandError(75, "Transient DB error: {Message}", db.Message)
+    : null);
+```
+
+Mappers are consulted in registration order; the built-in `CommandErrorException`
+fallback runs last, so it keeps working even when other mappers are registered (and a
+user-registered catch-all can still override it). A mapper returning `null` lets the
+next one try; if none match, the exception propagates to System.CommandLine unchanged.
+
+Equivalently, middleware can catch and rethrow as `CommandErrorException` — useful when
+you also want to transform the message rather than just choose an exit code:
 
 ```csharp
 builder.AddMiddleware(async (context, next) =>
@@ -285,5 +325,6 @@ you're in charge of honouring the token.
 6. Each middleware runs its "after" section in reverse order.
 7. `DefaultCommandExecutor` calls `EnsureCompleteAsync` on `context.InvocationResult`
    (streaming object output happens here).
-8. `CommandErrorException` is caught and turned into `ExitCode = -1` + log entry.
+8. A mapped exception (registered `ExceptionMapper`, or `CommandErrorException` via the
+   built-in fallback) is caught and turned into the mapped `ExitCode` + log entry.
 9. Generated action returns `context.ExitCode` to System.CommandLine.

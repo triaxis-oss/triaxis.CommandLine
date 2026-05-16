@@ -58,7 +58,8 @@ Run() / RunAsync()     ← extension methods on IToolBuilder
 | `CommandTreeNode` | Lightweight model describing the command tree. Returned by the source-generated factory, merged into `RootCommand` via `ApplyTo()`. |
 | `ArgumentDefinition<T>` / `OptionDefinition<T>` | Type-safe descriptors in the tree model. `Create()` produces fresh System.CommandLine `Argument<T>`/`Option<T>` instances. |
 | Generated `{Command}.Action` classes | One `AsynchronousCommandLineAction` nested in a per-command `internal static class {Command}` umbrella. Emitted by `triaxis.CommandLine.SourceGenerator`. Constructs the command via the umbrella's `CreateInstance` / `BindOptions` / `InjectServices` lifecycle, then invokes `Execute`/`ExecuteAsync`. |
-| `ICommandExecutor` / `DefaultCommandExecutor` | Runs the middleware chain around command execution and finalizes the result. |
+| `ICommandExecutor` / `DefaultCommandExecutor` | Runs the middleware chain around command execution, finalizes the result, and turns mapped exceptions into a clean exit. |
+| `ExceptionMapper` / `CommandError` | A registered `ExceptionMapper` maps an exception to a `CommandError` (exit code + structured-logging message) for a clean exit instead of an unhandled crash. |
 | `InvocationContext` | Passed through middleware: `Services`, `ParseResult`, `CommandType`, `InvocationResult`, `ExitCode`, `CancellationToken`. |
 | `ICommandInvocationResult[<T>]` | Uniform wrapper around anything a command can return. |
 
