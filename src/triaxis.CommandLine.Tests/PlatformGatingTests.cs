@@ -168,6 +168,15 @@ public class PlatformGatingTests
 [TestFixture]
 public class CommandTreeNodeIsSupportedTests
 {
+    private sealed class StubAction : System.CommandLine.Invocation.AsynchronousCommandLineAction
+    {
+        public override Task<int> InvokeAsync(ParseResult parseResult, CancellationToken cancellationToken)
+            => Task.FromResult(0);
+    }
+
+    private static CommandTreeNode Leaf(string name, bool supported = true) =>
+        new(name) { Action = new StubAction(), IsSupported = supported };
+
     [Test]
     public void IsSupported_DefaultsToTrue()
     {
@@ -183,8 +192,8 @@ public class CommandTreeNodeIsSupportedTests
         {
             Subcommands =
             {
-                new CommandTreeNode("kept"),
-                new CommandTreeNode("skipped") { IsSupported = false },
+                Leaf("kept"),
+                Leaf("skipped", supported: false),
             },
         };
 
@@ -199,15 +208,102 @@ public class CommandTreeNodeIsSupportedTests
         var parent = new Command("root");
         var tree = new CommandTreeNode("")
         {
-            Subcommands =
-            {
-                new CommandTreeNode("a") { IsSupported = true },
-                new CommandTreeNode("b") { IsSupported = true },
-            },
+            Subcommands = { Leaf("a"), Leaf("b") },
         };
 
         tree.ApplyTo(parent);
 
         Assert.That(parent.Subcommands.Select(c => c.Name), Is.EquivalentTo(new[] { "a", "b" }));
+    }
+
+    [Test]
+    public void ApplyTo_TrimsIntermediateNodeWhenAllChildrenGatedOut()
+    {
+        var parent = new Command("root");
+        var tree = new CommandTreeNode("")
+        {
+            Subcommands =
+            {
+                new CommandTreeNode("group")
+                {
+                    Subcommands =
+                    {
+                        Leaf("win", supported: false),
+                        Leaf("nix", supported: false),
+                    },
+                },
+            },
+        };
+
+        tree.ApplyTo(parent);
+
+        Assert.That(parent.Subcommands, Is.Empty);
+    }
+
+    [Test]
+    public void ApplyTo_KeepsIntermediateNodeWhenAnyChildSupported()
+    {
+        var parent = new Command("root");
+        var tree = new CommandTreeNode("")
+        {
+            Subcommands =
+            {
+                new CommandTreeNode("group")
+                {
+                    Subcommands =
+                    {
+                        Leaf("win", supported: false),
+                        Leaf("nix"),
+                    },
+                },
+            },
+        };
+
+        tree.ApplyTo(parent);
+
+        var group = parent.Subcommands.Single();
+        Assert.That(group.Name, Is.EqualTo("group"));
+        Assert.That(group.Subcommands.Select(c => c.Name), Is.EquivalentTo(new[] { "nix" }));
+    }
+
+    [Test]
+    public void ApplyTo_TrimsNestedIntermediateNodesRecursively()
+    {
+        var parent = new Command("root");
+        var tree = new CommandTreeNode("")
+        {
+            Subcommands =
+            {
+                new CommandTreeNode("outer")
+                {
+                    Subcommands =
+                    {
+                        new CommandTreeNode("inner")
+                        {
+                            Subcommands = { Leaf("leaf", supported: false) },
+                        },
+                    },
+                },
+            },
+        };
+
+        tree.ApplyTo(parent);
+
+        Assert.That(parent.Subcommands, Is.Empty);
+    }
+
+    [Test]
+    public void ApplyTo_KeepsActionNodeEvenWhenAllChildrenGatedOut()
+    {
+        var parent = new Command("root");
+        var withAction = Leaf("cmd");
+        withAction.Subcommands.Add(Leaf("sub", supported: false));
+        var tree = new CommandTreeNode("") { Subcommands = { withAction } };
+
+        tree.ApplyTo(parent);
+
+        var cmd = parent.Subcommands.Single();
+        Assert.That(cmd.Name, Is.EqualTo("cmd"));
+        Assert.That(cmd.Subcommands, Is.Empty);
     }
 }
