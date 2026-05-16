@@ -478,6 +478,12 @@ command doesn't appear in help output or parse as a valid verb on non-matching
 platforms. `IsSupported` defaults to `true`; the generator only emits it when
 platform attributes are present.
 
+Trimming is recursive: an intermediate grouping node has no action of its own,
+so when every command in its subtree is gated out on the current OS the node
+collapses to nothing and is dropped instead of being materialized as an empty
+command group. A node is kept only when it is supported and either carries an
+action or has at least one applicable descendant.
+
 - Multiple `[SupportedOSPlatform]` attributes combine with a logical OR.
 - Attributes on **base classes** are inherited — the generator walks the base
   chain explicitly (`SupportedOSPlatformAttribute` declares `Inherited=false`,

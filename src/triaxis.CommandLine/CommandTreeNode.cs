@@ -27,9 +27,22 @@ public class CommandTreeNode(string name)
     public bool IsSupported { get; set; } = true;
 
     /// <summary>
+    /// Whether this node contributes anything to the target tree on the current
+    /// platform. A node is applicable when it is supported and either carries an
+    /// <see cref="Action"/> or has at least one applicable subcommand. An
+    /// intermediate grouping node whose subtree is entirely platform-gated away
+    /// collapses to inapplicable and is trimmed rather than left as an empty
+    /// command group.
+    /// </summary>
+    private bool IsApplicable =>
+        IsSupported && (Action is not null || Subcommands.Any(static c => c.IsApplicable));
+
+    /// <summary>
     /// Applies this node's properties to an existing <see cref="Command"/>,
     /// creating fresh System.CommandLine types for all arguments, options, and subcommands.
-    /// Subcommands with matching names are merged recursively.
+    /// Subcommands with matching names are merged recursively. Subcommands that are
+    /// not applicable on the current platform — unsupported leaves and intermediate
+    /// nodes whose entire subtree is gated out — are skipped.
     /// </summary>
     public void ApplyTo(Command target)
     {
@@ -76,7 +89,7 @@ public class CommandTreeNode(string name)
 
         foreach (var childNode in Subcommands)
         {
-            if (!childNode.IsSupported)
+            if (!childNode.IsApplicable)
             {
                 continue;
             }
