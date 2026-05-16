@@ -36,6 +36,20 @@ public class FailingCommand
     }
 }
 
+[Command("fail-code")]
+public class FailingWithCodeCommand
+{
+    public Task ExecuteAsync()
+        => throw new CommandErrorException("nope {Value}", 7) { ExitCode = 3 };
+}
+
+[Command("boom")]
+public class BoomCommand
+{
+    public Task ExecuteAsync()
+        => throw new InvalidOperationException("kaboom");
+}
+
 public record NumberBox(int Value);
 
 [Command("count")]
@@ -345,6 +359,79 @@ public class CommandExecutionTests
         var exitCode = await builder.RunAsync();
 
         Assert.That(exitCode, Is.EqualTo(-1));
+    }
+
+    [Test]
+    public async Task Run_CommandErrorException_UsesConfiguredExitCode()
+    {
+        var builder = CreateBuilder(["fail-code"]);
+
+        var exitCode = await builder.RunAsync();
+
+        Assert.That(exitCode, Is.EqualTo(3));
+    }
+
+    [Test]
+    public async Task Run_MappedException_DefaultsToExitCodeMinusOne()
+    {
+        var builder = CreateBuilder(["boom"]);
+        builder.MapException<InvalidOperationException>();
+
+        var exitCode = await builder.RunAsync();
+
+        Assert.That(exitCode, Is.EqualTo(-1));
+    }
+
+    [Test]
+    public async Task Run_MappedException_UsesConfiguredExitCode()
+    {
+        var builder = CreateBuilder(["boom"]);
+        builder.MapException<InvalidOperationException>(exitCode: 42);
+
+        var exitCode = await builder.RunAsync();
+
+        Assert.That(exitCode, Is.EqualTo(42));
+    }
+
+    [Test]
+    public async Task Run_MappedException_ProjectionControlsExitCode()
+    {
+        var builder = CreateBuilder(["boom"]);
+        builder.MapException<InvalidOperationException>(
+            ex => new CommandError(7, "boom: {Reason}", ex.Message));
+
+        var exitCode = await builder.RunAsync();
+
+        Assert.That(exitCode, Is.EqualTo(7));
+    }
+
+    [Test]
+    public async Task Run_CommandErrorException_StillHandled_WhenOtherMappersRegistered()
+    {
+        var builder = CreateBuilder(["fail"]);
+        builder.MapException<InvalidOperationException>(exitCode: 9);
+
+        var exitCode = await builder.RunAsync();
+
+        Assert.That(exitCode, Is.EqualTo(-1));
+    }
+
+    [Test]
+    public async Task Run_UnmappedException_IsNotSwallowed()
+    {
+        var builder = CreateBuilder(["boom"]);
+
+        // No mapper registered for InvalidOperationException: the executor must not
+        // turn it into a clean exit — System.CommandLine's default handling takes over.
+        try
+        {
+            var exitCode = await builder.RunAsync();
+            Assert.That(exitCode, Is.Not.EqualTo(0));
+        }
+        catch (InvalidOperationException)
+        {
+            Assert.Pass();
+        }
     }
 
     [Test]

@@ -13,6 +13,15 @@ public interface IToolBuilder : IHostBuilder
     IConfigurationManager Configuration { get; }
     Command GetCommand(params string[] path);
     IToolBuilder AddMiddleware(InvocationMiddleware middleware);
+
+    /// <summary>
+    /// Registers an <see cref="ExceptionMapper"/> that turns an exception escaping a
+    /// command into a clean exit (a logged error and an exit code) instead of letting
+    /// it surface as an unhandled crash. Mappers are consulted in registration order;
+    /// <see cref="CommandErrorException"/> is handled by a built-in fallback.
+    /// </summary>
+    IToolBuilder MapException(ExceptionMapper mapper);
+
     IToolBuilder ConfigureServices(Action<Microsoft.Extensions.DependencyInjection.IServiceCollection> configure);
     Func<IServiceProvider> GetServiceProviderAccessor();
 

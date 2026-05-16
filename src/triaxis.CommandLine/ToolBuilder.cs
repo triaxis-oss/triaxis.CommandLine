@@ -16,6 +16,7 @@ class ToolBuilder : IToolBuilder, IHostBuilder
     private readonly string[] _args;
     private readonly RootCommand _root;
     private readonly List<InvocationMiddleware> _middlewares;
+    private readonly List<ExceptionMapper> _exceptionMappers;
     private readonly ServiceCollection _services;
     private readonly ConfigurationManager _configuration;
     private readonly Dictionary<object, object> _properties = new();
@@ -31,6 +32,7 @@ class ToolBuilder : IToolBuilder, IHostBuilder
         _args = args.ToArray();
         _root = new RootCommand();
         _middlewares = new();
+        _exceptionMappers = new();
         _services = new ServiceCollection();
         _configuration = new ConfigurationManager();
     }
@@ -68,6 +70,15 @@ class ToolBuilder : IToolBuilder, IHostBuilder
     public ToolBuilder AddMiddleware(InvocationMiddleware middleware)
     {
         _middlewares.Add(middleware);
+        return this;
+    }
+
+    IToolBuilder IToolBuilder.MapException(ExceptionMapper mapper)
+        => MapException(mapper);
+
+    public ToolBuilder MapException(ExceptionMapper mapper)
+    {
+        _exceptionMappers.Add(mapper);
         return this;
     }
 
@@ -259,7 +270,7 @@ class ToolBuilder : IToolBuilder, IHostBuilder
         _services.AddSingleton<IConfiguration>(_configuration);
         _services.AddLogging();
         _services.TryAddSingleton<ICommandExecutor>(sp =>
-            new DefaultCommandExecutor(_middlewares, sp.GetRequiredService<ILoggerFactory>()));
+            new DefaultCommandExecutor(_middlewares, _exceptionMappers, sp.GetRequiredService<ILoggerFactory>()));
 
         _serviceProvider = _services.BuildServiceProvider();
 
