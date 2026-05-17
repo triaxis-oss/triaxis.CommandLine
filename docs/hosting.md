@@ -89,6 +89,46 @@ overloads are replayed by `ApplyTo` (immediate sources via the builder's
 `IConfigurationManager`, deferred ones via the `ConfigureAppConfiguration` callback list),
 so the alternate-host story works unchanged.
 
+### Scoped configuration & subtree remapping
+
+`UseScopedConfiguration` groups sources into precedence layers
+(`ConfigurationScope`, least → most specific: `Builtin`, `Machine`, `User`,
+`EnvironmentVariables`, `Override`) and optionally **remaps a subtree** onto another
+path. The key guarantee: a remapped subtree overlays *its own* scope's primary tree,
+but a less specific scope's subtree **never** overrides a more specific scope's
+primary value — so a built-in environment overlay can't clobber an explicit user or
+override setting.
+
+```csharp
+Tool.CreateBuilder(args)
+    .UseScopedConfiguration(cfg => cfg
+        .Add(ConfigurationScope.Builtin, c => c.AddJsonFile("appsettings.json", optional: true))
+        .Add(ConfigurationScope.User,    c => c.AddJsonFile(userPath, optional: true))
+        .Add(ConfigurationScope.Override, c => c.AddJsonFile(explicitPath, optional: true))
+        // overlay the selected environment section onto the root tree:
+        .Remap("Environments:Production")
+        // or move a subtree to an explicit target path:
+        .Remap("Profiles:CI", "Logging"))
+    .AddCommandsFromAssembly()
+    .Run();
+```
+
+The merged result is exposed as a **single** `IConfigurationSource` whose internal
+precedence is, per key (last wins): for each scope ascending in specificity, that
+scope's *primary* tree, then that scope's *remapped subtree*. That ordering is what
+makes `subtree(scope) < primary(moreSpecificScope)` hold while
+`subtree(scope) > primary(sameScope)`. Being one source, it replays through `ApplyTo`
+as a unit and its precedence is independent of where it sits in an outer builder.
+
+`Remap(fromPath)` overlays the subtree onto the root; `Remap(fromPath, toPath)` moves
+it under `toPath`. Remaps apply independently to every scope that has sources.
+
+The opinionated `UseDefaultConfiguration` is built on this: `appsettings.json` →
+`Builtin`, the all-users override file → `Machine`, the per-user override files →
+`User`, environment variables → `EnvironmentVariables`. Its effective precedence is
+unchanged (the machine probe is additive); pass its `configure` hook to add an
+`Override` source or `Remap` rules.
+
 ### Standalone commands (`Main` / `MainAsync`)
 
 A command can opt out of the CLI-side service provider entirely by declaring `Main`
