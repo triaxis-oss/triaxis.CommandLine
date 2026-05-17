@@ -423,6 +423,25 @@ Tool.CreateBuilder(args)
     .Run();
 ```
 
+To add your own configuration sources fluently, use `ConfigureConfiguration` — the
+configuration-side counterpart to `ConfigureServices`, so you don't have to cast to
+`IHostBuilder` or reach into the raw `IConfigurationManager`:
+
+```csharp
+Tool.CreateBuilder(args)
+    .ConfigureConfiguration(c => c.AddJsonFile("custom.json", optional: true))
+    .ConfigureConfiguration((ctx, c) =>
+    {
+        var env = ctx.GetInvocationContext().ParseResult.GetValue<string>("--environment");
+        c.AddJsonFile($"appsettings.{env}.json", optional: true);
+    })
+    .Run();
+```
+
+The single-argument overload runs immediately against `IToolBuilder.Configuration`; the
+two-argument overload is deferred until `Build()` and can branch on the parsed command
+line. See [Hosting integration](docs/hosting.md) for details.
+
 Bind typed options in the usual way:
 
 ```csharp
