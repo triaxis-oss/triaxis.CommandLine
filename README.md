@@ -457,7 +457,11 @@ Tool.CreateBuilder(args)
 ```
 
 `UseDefaultConfiguration` is built on this and accepts a `configure` hook for adding an
-`Override` source or `Remap` rules. See [Hosting integration](docs/hosting.md#scoped-configuration--subtree-remapping).
+`Override` source or `Remap` rules. The same machine/user probing is also exposed as
+composable `ScopedConfigurationBuilder` helpers — `AddBuiltinConfiguration`,
+`AddJsonOverrides`, `AddEnvironmentOverrides`, and the format-neutral `AddOverrides`
+engine (bring your own provider, e.g. YAML) — for hand-composed pipelines. See
+[Hosting integration](docs/hosting.md#scoped-configuration--subtree-remapping).
 
 Bind typed options in the usual way:
 

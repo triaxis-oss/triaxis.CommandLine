@@ -134,6 +134,116 @@ public class ScopedConfigurationTests
         Assert.That(config["B"], Is.EqualTo("builtin-B"), "Builtin subtree still supplies B");
     }
 
+    private static (Func<Environment.SpecialFolder, string> Resolve, string Root) TempFolders()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "txcl-overrides-" + Guid.NewGuid().ToString("N"));
+        string Sub(string name)
+        {
+            var p = Path.Combine(root, name);
+            Directory.CreateDirectory(p);
+            return p;
+        }
+
+        string machine = Sub("machine"), roaming = Sub("roaming"), local = Sub("local");
+        Func<Environment.SpecialFolder, string> resolve = f => f switch
+        {
+            Environment.SpecialFolder.CommonApplicationData => machine,
+            Environment.SpecialFolder.ApplicationData => roaming,
+            Environment.SpecialFolder.LocalApplicationData => local,
+            _ => throw new ArgumentOutOfRangeException(nameof(f)),
+        };
+        return (resolve, root);
+    }
+
+    private static readonly Action<IConfigurationBuilder, string, string> ReadValueIntoX =
+        (cfg, dir, file) =>
+        {
+            // Mirrors a real provider added with optional:true — an absent file
+            // contributes nothing, but the source is still registered.
+            var path = Path.Combine(dir, file);
+            if (File.Exists(path))
+            {
+                cfg.AddInMemoryCollection(new Dictionary<string, string?> { ["X"] = File.ReadAllText(path) });
+            }
+        };
+
+    [Test]
+    public void AddOverridesLayersUserOverMachineAndLocalLast()
+    {
+        var (resolve, root) = TempFolders();
+        try
+        {
+            File.WriteAllText(Path.Combine(root, "machine", "o.cfg"), "machine");
+            File.WriteAllText(Path.Combine(root, "roaming", "o.cfg"), "user-roaming");
+            File.WriteAllText(Path.Combine(root, "local", "o.cfg"), "user-local");
+
+            var config = Build(b => b.AddOverrides("o.cfg", ReadValueIntoX, resolve));
+
+            Assert.That(config["X"], Is.EqualTo("user-local"),
+                "User scope beats Machine, and within User the LocalApplicationData probe is added last");
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Test]
+    public void AddOverridesFallsBackToMachineWhenNoUserFile()
+    {
+        var (resolve, root) = TempFolders();
+        try
+        {
+            File.WriteAllText(Path.Combine(root, "machine", "o.cfg"), "machine");
+
+            var config = Build(b => b.AddOverrides("o.cfg", ReadValueIntoX, resolve));
+
+            Assert.That(config["X"], Is.EqualTo("machine"),
+                "the Machine probe supplies the value when no per-user file exists");
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Test]
+    public void AddOverridesSkipsAbsentFiles()
+    {
+        var (resolve, root) = TempFolders();
+        try
+        {
+            var config = Build(b => b.AddOverrides("o.cfg", ReadValueIntoX, resolve));
+
+            Assert.That(config["X"], Is.Null, "no file in any probed folder contributes nothing");
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Test]
+    public void AddOverridesRegistersEachFolderEvenWhenFilesAbsent()
+    {
+        // The file is registered unconditionally so a watcher exists for a file
+        // written later; otherwise a long-running process never sees it.
+        var (resolve, root) = TempFolders();
+        try
+        {
+            var calls = new List<string>();
+            _ = Build(b => b.AddOverrides("o.cfg", (_, dir, file) => calls.Add(Path.Combine(dir, file)), resolve));
+
+            Assert.That(calls, Has.Count.EqualTo(3),
+                "addFile must run for the Machine probe and both User probes regardless of file presence");
+            Assert.That(calls, Has.All.EndsWith("o.cfg"));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
     private sealed class ReloadableSource(Dictionary<string, string?> data) : IConfigurationSource
     {
         public ReloadableProvider? Provider { get; private set; }

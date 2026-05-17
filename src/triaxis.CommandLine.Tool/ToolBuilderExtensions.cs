@@ -114,4 +114,59 @@ public static class ToolBuilderExtensions
         ((IHostBuilder)builder).UseDefaultConfiguration(configOverridePath, environmentVariablePrefix, configure);
         return builder;
     }
+
+    /// <summary>
+    /// Adds <paramref name="fileName"/> from <see cref="AppContext.BaseDirectory"/> to the
+    /// <see cref="ConfigurationScope.Builtin"/> scope as an optional JSON file — the
+    /// application defaults shipped alongside the executable.
+    /// </summary>
+    /// <returns>The same builder, for fluent chaining.</returns>
+    public static ScopedConfigurationBuilder AddBuiltinConfiguration(
+        this ScopedConfigurationBuilder scoped,
+        string fileName = "appsettings.json",
+        bool reloadOnChange = true)
+        => scoped.Add(ConfigurationScope.Builtin, cfg =>
+        {
+            cfg.SetBasePath(AppContext.BaseDirectory);
+            cfg.AddJsonFile(fileName, optional: true, reloadOnChange: reloadOnChange);
+        });
+
+    /// <summary>
+    /// Registers the JSON override file <paramref name="relativePath"/> (extension
+    /// included, so callers pick <c>.json</c> freely) in the per-machine and per-user
+    /// folders → the <see cref="ConfigurationScope.Machine"/> /
+    /// <see cref="ConfigurationScope.User"/> scopes. The JSON flavour of
+    /// <see cref="AddOverrides(ScopedConfigurationBuilder, string, Action{IConfigurationBuilder, string, string})"/>:
+    /// the file is added as optional and watched, so one written after start-up is
+    /// picked up live.
+    /// </summary>
+    /// <returns>The same builder, for fluent chaining.</returns>
+    public static ScopedConfigurationBuilder AddJsonOverrides(
+        this ScopedConfigurationBuilder scoped,
+        string relativePath,
+        bool reloadOnChange = true)
+        => scoped.AddOverrides(relativePath, (cfg, directory, fileName) =>
+        {
+            // PhysicalFileProvider throws if its root is missing; the watchable case is
+            // an absent *file* in an existing config folder, so only that is supported.
+            if (Directory.Exists(directory))
+            {
+                cfg.AddJsonFile(
+                    new PhysicalFileProvider(directory),
+                    fileName,
+                    optional: true,
+                    reloadOnChange: reloadOnChange);
+            }
+        });
+
+    /// <summary>
+    /// Adds environment variables (filtered by <paramref name="prefix"/>) to the
+    /// <see cref="ConfigurationScope.EnvironmentVariables"/> scope.
+    /// </summary>
+    /// <returns>The same builder, for fluent chaining.</returns>
+    public static ScopedConfigurationBuilder AddEnvironmentOverrides(
+        this ScopedConfigurationBuilder scoped,
+        string prefix)
+        => scoped.Add(ConfigurationScope.EnvironmentVariables,
+            cfg => cfg.AddEnvironmentVariables(prefix));
 }
