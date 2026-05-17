@@ -120,6 +120,10 @@ for logging — the level is baked into the logger at creation time.
 - `ICommandInvocationResult` / `ICommandInvocationResult<T>` — wraps command return
   values for streaming enumeration (used by ObjectOutput)
 - `VerbosityOptions` — public static option definitions for `--verbosity`/`-v`/`-q`
+- `IPersistentConfigurationProvider` — `IConfigurationProvider` + `Set`/`Save`; the
+  writable-source contract. `IConfiguration.Update(scope, cp => …)` resolves the
+  writable provider for one `ConfigurationScope` (via the scoped source, even behind
+  a host's chained provider) and persists deterministically
 
 ## Workflow
 

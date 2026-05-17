@@ -21,11 +21,13 @@ internal sealed class ScopedConfigurationSource(
 
     private sealed class ScopedConfigurationProvider(
         IReadOnlyDictionary<ConfigurationScope, IReadOnlyList<Action<IConfigurationBuilder>>> scopes,
-        IReadOnlyList<(string From, string? To)> remaps) : ConfigurationProvider
+        IReadOnlyList<(string From, string? To)> remaps) : ConfigurationProvider, IScopedPersistentLookup
     {
         // Built once and kept alive so each scope's providers (and their file
         // watchers) stay active; a reload in any of them re-runs the fold below.
-        private List<IConfigurationRoot>? _roots;
+        // The scope tag is retained so a scope-targeted write can find its
+        // writable provider — the flat fold below otherwise erases scope identity.
+        private List<(ConfigurationScope Scope, IConfigurationRoot Root)>? _roots;
 
         public override void Load()
         {
@@ -47,7 +49,7 @@ internal sealed class ScopedConfigurationSource(
                     }
 
                     IConfigurationRoot root = cb.Build();
-                    _roots.Add(root);
+                    _roots.Add((scope, root));
                     ChangeToken.OnChange(root.GetReloadToken, Reload);
                 }
             }
@@ -58,7 +60,7 @@ internal sealed class ScopedConfigurationSource(
             // specific scope's primary, while within a scope the subtree overlays it.
             var data = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
 
-            foreach (IConfigurationRoot root in _roots)
+            foreach (var (_, root) in _roots)
             {
                 foreach (var kv in root.AsEnumerable())
                 {
@@ -101,5 +103,57 @@ internal sealed class ScopedConfigurationSource(
             Load();
             OnReload();
         }
+
+        public IPersistentConfigurationProvider GetPersistentProvider(ConfigurationScope scope)
+        {
+            if (_roots is null)
+            {
+                Load();
+            }
+
+            IConfigurationRoot? root = null;
+            foreach (var (s, r) in _roots!)
+            {
+                if (s == scope)
+                {
+                    root = r;
+                    break;
+                }
+            }
+
+            if (root is null)
+            {
+                throw new InvalidOperationException(
+                    $"No configuration sources are registered for scope '{scope}'.");
+            }
+
+            // Last writable provider wins, matching within-scope precedence (a later
+            // source in a scope overrides an earlier one).
+            IPersistentConfigurationProvider? persistent = null;
+            foreach (var provider in root.Providers)
+            {
+                if (provider is IPersistentConfigurationProvider p)
+                {
+                    persistent = p;
+                }
+            }
+
+            return persistent ?? throw new InvalidOperationException(
+                $"Scope '{scope}' has no writable configuration source. Register an " +
+                $"{nameof(IPersistentConfigurationProvider)} for that scope through UseScopedConfiguration.");
+        }
     }
+}
+
+/// <summary>
+/// Surfaced by the scope-layered configuration provider so a scope-targeted write
+/// can locate the writable provider for a given <see cref="ConfigurationScope"/> —
+/// the flat fold that merges scopes otherwise erases scope identity.
+/// </summary>
+internal interface IScopedPersistentLookup
+{
+    /// <exception cref="InvalidOperationException">
+    /// The scope has no registered sources, or none of them is writable.
+    /// </exception>
+    IPersistentConfigurationProvider GetPersistentProvider(ConfigurationScope scope);
 }

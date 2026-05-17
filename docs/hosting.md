@@ -164,6 +164,32 @@ scoped source folds reloads back in and propagates them, so an override file edi
 *or created* after start-up is picked up live. `UseDefaultConfiguration` is unchanged
 and is not built on these; they are an additive surface for hand-composed pipelines.
 
+#### Persisting scope-targeted changes
+
+`IConfiguration.Update(scope, cp => …)` mutates and persists the writable source
+registered for one `ConfigurationScope`, e.g. write the user override without
+touching machine or builtin:
+
+```csharp
+configuration.Update(ConfigurationScope.User, cp => cp.Set("MyTool:Token", token));
+```
+
+The mutation runs against that scope's `IPersistentConfigurationProvider`; `Save()`
+is called once the callback returns and raises the provider's reload token, so the
+live `IConfiguration` reflects the write immediately. Scope targeting is
+deterministic — it writes exactly the requested layer rather than guessing from
+source position — and the scoped source is located even when a host nests it behind
+a chained provider.
+
+The base package ships only the contract: `IPersistentConfigurationProvider` is
+`IConfigurationProvider` plus `Set` and `Save`. A provider deriving from
+`ConfigurationProvider` already exposes a matching public `Set`, so a concrete
+writer (a writable JSON/YAML file provider supplied by the application or a
+higher-level package) adds only `Save()`. `Update` throws `InvalidOperationException`
+when no scope-layered source is present, or when the target scope has no writable
+source — a scope-targeted write requires `UseScopedConfiguration` /
+`UseDefaultConfiguration`.
+
 ### Standalone commands (`Main` / `MainAsync`)
 
 A command can opt out of the CLI-side service provider entirely by declaring `Main`

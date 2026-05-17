@@ -244,6 +244,81 @@ public class ScopedConfigurationTests
         }
     }
 
+    [Test]
+    public void UpdateWritesToTheScopePersistentProviderAndPersists()
+    {
+        var writable = new WritableSource();
+        var scoped = new ScopedConfigurationBuilder();
+        scoped.Add(ConfigurationScope.Builtin, InMemory(("X", "builtin")));
+        scoped.Add(ConfigurationScope.User, c => c.Add(writable));
+        var config = new ConfigurationBuilder().Add(scoped.BuildSource()).Build();
+
+        config.Update(ConfigurationScope.User, cp => cp.Set("X", "written"));
+
+        Assert.That(writable.Provider!.SaveCount, Is.EqualTo(1),
+            "Save is called once after the mutation");
+        Assert.That(config["X"], Is.EqualTo("written"),
+            "the write lands in the User scope and Save propagates it to the live configuration");
+    }
+
+    [Test]
+    public void UpdateThrowsWhenNoScopedSourceIsPresent()
+    {
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?> { ["X"] = "v" })
+            .Build();
+
+        Assert.That(() => config.Update(ConfigurationScope.User, _ => { }),
+            Throws.InvalidOperationException);
+    }
+
+    [Test]
+    public void UpdateThrowsWhenTheTargetScopeHasNoWritableSource()
+    {
+        var config = Build(b => b
+            .Add(ConfigurationScope.User, InMemory(("X", "user"))));
+
+        Assert.That(() => config.Update(ConfigurationScope.User, cp => cp.Set("X", "v")),
+            Throws.InvalidOperationException);
+    }
+
+    [Test]
+    public void UpdateFindsTheScopedSourceBehindAChainedProvider()
+    {
+        var writable = new WritableSource();
+        var scoped = new ScopedConfigurationBuilder();
+        scoped.Add(ConfigurationScope.User, c => c.Add(writable));
+        var inner = new ConfigurationBuilder().Add(scoped.BuildSource()).Build();
+        // AddConfiguration wraps `inner` in a ChainedConfigurationProvider, mirroring
+        // how a host nests app configuration.
+        var outer = new ConfigurationBuilder().AddConfiguration(inner).Build();
+
+        outer.Update(ConfigurationScope.User, cp => cp.Set("X", "via-chain"));
+
+        Assert.That(outer["X"], Is.EqualTo("via-chain"));
+    }
+
+    private sealed class WritableSource : IConfigurationSource
+    {
+        public WritableProvider? Provider { get; private set; }
+
+        public IConfigurationProvider Build(IConfigurationBuilder builder)
+            => Provider = new WritableProvider();
+    }
+
+    private sealed class WritableProvider : ConfigurationProvider, IPersistentConfigurationProvider
+    {
+        public int SaveCount { get; private set; }
+
+        // Set is inherited from ConfigurationProvider and satisfies the interface.
+
+        public void Save()
+        {
+            SaveCount++;
+            OnReload();
+        }
+    }
+
     private sealed class ReloadableSource(Dictionary<string, string?> data) : IConfigurationSource
     {
         public ReloadableProvider? Provider { get; private set; }
