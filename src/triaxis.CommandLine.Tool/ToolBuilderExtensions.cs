@@ -46,39 +46,61 @@ public static class ToolBuilderExtensions
     /// <param name="environmentVariablePrefix">
     /// Optional prefix for environment-variable configuration (e.g. <c>"MYTOOL_"</c>).
     /// </param>
+    /// <param name="configure">
+    /// Optional hook to add further scoped sources (e.g. an <see cref="ConfigurationScope.Override"/>
+    /// file) or subtree <see cref="ScopedConfigurationBuilder.Remap">remaps</see>.
+    /// </param>
     /// <remarks>
+    /// Sources are tagged by <see cref="ConfigurationScope"/> and assembled into a single
+    /// scope-layered source: <c>appsettings.json</c> is <see cref="ConfigurationScope.Builtin"/>,
+    /// the override file probed under the all-users data folder is
+    /// <see cref="ConfigurationScope.Machine"/>, the per-user data folders are
+    /// <see cref="ConfigurationScope.User"/>, and environment variables are
+    /// <see cref="ConfigurationScope.EnvironmentVariables"/>. The effective precedence is
+    /// unchanged from a flat source list; the machine probe is purely additive.
     /// Targets <see cref="IHostBuilder"/> so the same configuration bootstrap can be reused
     /// by alternate hosts (e.g. <c>WebApplication.CreateBuilder(args).Host.UseDefaultConfiguration(...)</c>).
     /// For <see cref="IToolBuilder"/> an overload of the same name preserves the fluent CLI chain.
     /// </remarks>
     public static IHostBuilder UseDefaultConfiguration(this IHostBuilder builder,
         string? configOverridePath = null,
-        string? environmentVariablePrefix = null)
+        string? environmentVariablePrefix = null,
+        Action<ScopedConfigurationBuilder>? configure = null)
     {
-        builder.ConfigureAppConfiguration((_, config) =>
+        builder.UseScopedConfiguration(scoped =>
         {
-            config.SetBasePath(AppContext.BaseDirectory);
-            config.AddJsonFile("appsettings.json", optional: true);
+            scoped.Add(ConfigurationScope.Builtin, config =>
+            {
+                config.SetBasePath(AppContext.BaseDirectory);
+                config.AddJsonFile("appsettings.json", optional: true);
+            });
 
             if (configOverridePath is not null)
             {
-                void AddOverrideConfig(Environment.SpecialFolder folder)
+                void Probe(ConfigurationScope scope, Environment.SpecialFolder folder)
                 {
-                    var path = Path.Combine(Environment.GetFolderPath(folder), configOverridePath);
-                    if (File.Exists(path))
+                    scoped.Add(scope, config =>
                     {
-                        config.AddJsonFile(new PhysicalFileProvider(Path.GetDirectoryName(path)!), Path.GetFileName(path), optional: false, reloadOnChange: false);
-                    }
+                        var path = Path.Combine(Environment.GetFolderPath(folder), configOverridePath);
+                        if (File.Exists(path))
+                        {
+                            config.AddJsonFile(new PhysicalFileProvider(Path.GetDirectoryName(path)!), Path.GetFileName(path), optional: false, reloadOnChange: false);
+                        }
+                    });
                 }
 
-                AddOverrideConfig(Environment.SpecialFolder.ApplicationData);
-                AddOverrideConfig(Environment.SpecialFolder.LocalApplicationData);
+                Probe(ConfigurationScope.Machine, Environment.SpecialFolder.CommonApplicationData);
+                Probe(ConfigurationScope.User, Environment.SpecialFolder.ApplicationData);
+                Probe(ConfigurationScope.User, Environment.SpecialFolder.LocalApplicationData);
             }
 
             if (environmentVariablePrefix is not null)
             {
-                config.AddEnvironmentVariables(environmentVariablePrefix);
+                scoped.Add(ConfigurationScope.EnvironmentVariables,
+                    config => config.AddEnvironmentVariables(environmentVariablePrefix));
             }
+
+            configure?.Invoke(scoped);
         });
 
         return builder;
@@ -86,9 +108,10 @@ public static class ToolBuilderExtensions
 
     public static IToolBuilder UseDefaultConfiguration(this IToolBuilder builder,
         string? configOverridePath = null,
-        string? environmentVariablePrefix = null)
+        string? environmentVariablePrefix = null,
+        Action<ScopedConfigurationBuilder>? configure = null)
     {
-        ((IHostBuilder)builder).UseDefaultConfiguration(configOverridePath, environmentVariablePrefix);
+        ((IHostBuilder)builder).UseDefaultConfiguration(configOverridePath, environmentVariablePrefix, configure);
         return builder;
     }
 }

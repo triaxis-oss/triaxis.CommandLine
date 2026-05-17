@@ -442,6 +442,23 @@ The single-argument overload runs immediately against `IToolBuilder.Configuratio
 two-argument overload is deferred until `Build()` and can branch on the parsed command
 line. See [Hosting integration](docs/hosting.md) for details.
 
+For environment-style overlays, `UseScopedConfiguration` groups sources into precedence
+scopes (`Builtin` < `Machine` < `User` < `EnvironmentVariables` < `Override`) and can
+remap a subtree onto the root (or any path). A less specific scope's overlay never
+overrides a more specific scope's explicit value:
+
+```csharp
+Tool.CreateBuilder(args)
+    .UseScopedConfiguration(cfg => cfg
+        .Add(ConfigurationScope.Builtin, c => c.AddJsonFile("appsettings.json", optional: true))
+        .Add(ConfigurationScope.User,    c => c.AddJsonFile(userPath, optional: true))
+        .Remap("Environments:Production"))
+    .Run();
+```
+
+`UseDefaultConfiguration` is built on this and accepts a `configure` hook for adding an
+`Override` source or `Remap` rules. See [Hosting integration](docs/hosting.md#scoped-configuration--subtree-remapping).
+
 Bind typed options in the usual way:
 
 ```csharp
