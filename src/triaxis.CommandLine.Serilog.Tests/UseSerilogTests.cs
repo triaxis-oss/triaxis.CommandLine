@@ -107,6 +107,19 @@ public class UseSerilogTests
     }
 
     [Test]
+    public void UseDefaultLogging_AppliesSerilogAndVerbosityOptions()
+    {
+        var builder = Tool.CreateBuilder([]);
+        var result = builder.UseDefaultLogging();
+
+        Assert.That(result, Is.SameAs(builder), "UseDefaultLogging should return the same builder for chaining");
+        var names = builder.RootCommand.Options.Select(o => o.Name).ToList();
+        Assert.That(names, Does.Contain("--verbosity"));
+        Assert.That(names, Does.Contain("-v"));
+        Assert.That(names, Does.Contain("-q"));
+    }
+
+    [Test]
     public void UseSerilog_OnPlainHostBuilder_RegistersLoggerFactory()
     {
         // The UseSerilog extension should be usable on any IHostBuilder, not only

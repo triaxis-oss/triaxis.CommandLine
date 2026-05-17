@@ -90,6 +90,25 @@ public class ToolBuilderTests
     }
 
     [Test]
+    public void Configure_RunsCallbackWithBuilderAndReturnsItForChaining()
+    {
+        var builder = Tool.CreateBuilder([]);
+        IToolBuilder? seen = null;
+
+        var result = builder.Configure(b =>
+        {
+            seen = b;
+            b.Configuration.AddInMemoryCollection(
+                new Dictionary<string, string?> { ["Hook:Ran"] = "yes" });
+        });
+
+        Assert.That(seen, Is.SameAs(builder), "the callback should receive the same builder");
+        Assert.That(result, Is.SameAs(builder), "Configure should return the same builder for chaining");
+        Assert.That(builder.Configuration["Hook:Ran"], Is.EqualTo("yes"),
+            "the callback should be able to customize the builder");
+    }
+
+    [Test]
     public void AddMiddleware_ReturnsSameBuilderForChaining()
     {
         var builder = Tool.CreateBuilder([]);

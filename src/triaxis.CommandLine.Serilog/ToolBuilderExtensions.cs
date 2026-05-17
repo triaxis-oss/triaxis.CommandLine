@@ -101,6 +101,20 @@ public static class ToolBuilderExtensions
         return builder;
     }
 
+    /// <summary>
+    /// Wires up the default logging stack — <see cref="UseSerilog(IToolBuilder, bool, Action{IConfiguration, LoggerConfiguration})"/>
+    /// followed by <see cref="UseVerbosityOptions"/> — in a single call. Convenient for a
+    /// <c>[Configure]</c> hook, whose presence makes the source-generated entry point skip
+    /// the opinionated defaults, so default logging can be restored with one line.
+    /// </summary>
+    /// <returns>The same builder, for fluent chaining.</returns>
+    public static IToolBuilder UseDefaultLogging(this IToolBuilder builder)
+    {
+        builder.UseSerilog();
+        builder.UseVerbosityOptions();
+        return builder;
+    }
+
     private static bool IsForceColorSet(ref bool sixteen)
     {
         var forceColor = System.Environment.GetEnvironmentVariable("FORCE_COLOR");

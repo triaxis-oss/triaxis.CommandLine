@@ -590,6 +590,56 @@ command discovery never relies on `Assembly.GetCallingAssembly()`. When only the
 for `triaxis.CommandLine.LoggingCommand`), the generator emits a simpler fallback that
 calls `AddCommandsFromAssembly(typeof(GeneratedProgram).Assembly).Run()`.
 
+### Builder customization via `[Configure]`
+
+`[ConfigureServices]` only ever registers services on top of the opinionated default
+stack. When a hook needs to touch the builder or host itself — add configuration
+sources, swap logging, replace the defaults entirely — mark a static method with
+`[Configure]` instead. It accepts any combination (each at most once, in any order) of
+`IToolBuilder` / `IHostBuilder` / `IServiceCollection` — the same shapes a per-command
+`Configure` allows — and the generator folds each matching method into the chain as a
+`.Configure(b => …)` call. `IServiceCollection` is reached through the immediate
+`b.ConfigureServices(s => …)` callback (it has no fluent-chain accessor); builder/host
+parameters use the captured builder directly. Other shapes are ignored. Multiple hooks
+are emitted in a stable ordinal order (by declaring type's fully-qualified name, then by
+method name).
+
+```csharp
+public static class Startup
+{
+    [Configure]
+    public static void Setup(IToolBuilder builder, IServiceCollection services)
+    {
+        builder.UseDefaultLogging();
+        builder.UseDefaultConfiguration();
+        services.AddSingleton<IMyService, MyService>();
+    }
+}
+```
+
+Because a `[Configure]` hook takes ownership of the opinionated builder setup, **its
+presence makes the generated entry point skip the logging and default-configuration
+helpers** (`UseSerilog`, `UseVerbosityOptions`, `UseDefaultConfiguration`) — even
+alongside `[ConfigureServices]`. Command discovery and `UseObjectOutput` are *structural*
+(driven by the discovered commands and their return types, not opinionated defaults), so
+they are still emitted. For a value-returning command alongside the hook above, the chain
+is:
+
+```csharp
+return global::triaxis.CommandLine.Tool.CreateBuilder(args)
+    .AddCommandsFromAssembly(typeof(GeneratedProgram).Assembly)
+    .UseObjectOutput()
+    .Configure(b => b.ConfigureServices(s => global::Startup.Setup(b, s)))
+    .Run();
+```
+
+(`.UseObjectOutput()` is omitted when no `[Command]` returns a value, exactly as in the
+full default chain.) A hook that wants logging/configuration back should restore them with
+`UseDefaultLogging()` (the combined `UseSerilog` + `UseVerbosityOptions` one-liner) and
+`UseDefaultConfiguration()` — **not** `UseDefaults()`, which calls `AddCommandsFromAssembly`
+again and would register every command a second time. Use the simpler `[ConfigureServices]`
+hook when you only need to register services and want to keep the default stack untouched.
+
 ### Per-command `Configure`
 
 A `[Command]`-attributed type can declare an optional `Configure` method that the

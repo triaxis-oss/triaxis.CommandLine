@@ -27,8 +27,7 @@ public static class ToolBuilderExtensions
         // UseVerbosityOptions / UseObjectOutput are appended after every local
         // option in the root command's option list.
         builder.AddCommandsFromAssembly(commandsAssembly ?? Assembly.GetCallingAssembly());
-        builder.UseSerilog();
-        builder.UseVerbosityOptions();
+        builder.UseDefaultLogging();
         builder.UseObjectOutput();
         builder.UseDefaultConfiguration(configOverridePath, environmentVariablePrefix);
         return builder;

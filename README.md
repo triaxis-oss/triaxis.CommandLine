@@ -326,6 +326,32 @@ parameter. Multiple hooks across the assembly are supported; the generator emits
 them in a stable ordinal order (by declaring type's fully-qualified name, then by
 method name).
 
+When a hook needs to customize the builder or host itself (add configuration sources,
+swap logging, replace the defaults), use `[Configure]` instead. It accepts any
+combination of `IToolBuilder` / `IHostBuilder` / `IServiceCollection`:
+
+```csharp
+public static class Startup
+{
+    [Configure]
+    public static void Setup(IToolBuilder builder, IServiceCollection services)
+    {
+        builder.UseDefaultLogging();
+        builder.UseDefaultConfiguration();
+        services.AddSingleton<IMyService, MyService>();
+    }
+}
+```
+
+Because a `[Configure]` hook owns builder setup, its presence makes the generated entry
+point **skip the opinionated logging and default-configuration helpers** (`UseSerilog`,
+`UseVerbosityOptions`, `UseDefaultConfiguration`) — restore them with `UseDefaultLogging()`
+(the combined `UseSerilog` + `UseVerbosityOptions` one-liner) and `UseDefaultConfiguration()`
+as shown, not `UseDefaults()`, which would re-register every command. Command discovery
+and `UseObjectOutput()` are still generated automatically (the latter whenever a `[Command]`
+returns a value), so a hook never needs to add those. `[ConfigureServices]` is unaffected
+and stays the right choice when you only register services.
+
 For any pre-container setup specific to a command — registering services, adding
 middleware, tweaking the host — declare a static `Configure` method on the command
 type. The generator wires it onto the command's action so it fires only when that

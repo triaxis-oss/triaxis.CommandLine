@@ -95,13 +95,27 @@ public class CommandTreeGenerator : IIncrementalGenerator
             .Select(static (m, _) => m!)
             .Collect();
 
+        // The general [Configure] hook: same parameter shapes a per-command
+        // Configure method allows (IToolBuilder / IHostBuilder / IServiceCollection,
+        // any combination), so a single static method can register services and add
+        // configuration sources without a hand-written Main.
+        var configureHooks = context.SyntaxProvider
+            .ForAttributeWithMetadataName(
+                "triaxis.CommandLine.ConfigureAttribute",
+                predicate: static (node, _) => node is MethodDeclarationSyntax,
+                transform: static (ctx, _) => ExtractConfigureHook(ctx))
+            .Where(static m => m is not null)
+            .Select(static (m, _) => m!)
+            .Collect();
+
         var entryPointModel = context.CompilationProvider
             .Combine(entryPointProps)
             .Combine(collected)
             .Combine(configureServicesHooks)
+            .Combine(configureHooks)
             .Select(static (pair, ct) =>
             {
-                var (((compilation, props), commands), hooks) = pair;
+                var ((((compilation, props), commands), csHooks), cHooks) = pair;
                 if (compilation.Options.OutputKind != OutputKind.ConsoleApplication)
                 {
                     return null;
@@ -126,9 +140,16 @@ public class CommandTreeGenerator : IIncrementalGenerator
 
                 // Stable emission order so generator output is deterministic across
                 // reorderings of source files.
-                var orderedHooks = hooks.IsDefaultOrEmpty
+                var orderedServicesHooks = csHooks.IsDefaultOrEmpty
                     ? ImmutableArray<ConfigureServicesHookModel>.Empty
-                    : hooks
+                    : csHooks
+                        .OrderBy(h => h.DeclaringTypeFqn, StringComparer.Ordinal)
+                        .ThenBy(h => h.MethodName, StringComparer.Ordinal)
+                        .ToImmutableArray();
+
+                var orderedConfigureHooks = cHooks.IsDefaultOrEmpty
+                    ? ImmutableArray<ConfigureHookModel>.Empty
+                    : cHooks
                         .OrderBy(h => h.DeclaringTypeFqn, StringComparer.Ordinal)
                         .ThenBy(h => h.MethodName, StringComparer.Ordinal)
                         .ToImmutableArray();
@@ -137,7 +158,8 @@ public class CommandTreeGenerator : IIncrementalGenerator
                     hasToolPackage ? props.ConfigOverridePath : null,
                     hasToolPackage ? props.EnvironmentVariablePrefix : null,
                     producesOutput,
-                    orderedHooks);
+                    orderedServicesHooks,
+                    orderedConfigureHooks);
             });
 
         context.RegisterSourceOutput(entryPointModel, static (spc, model) =>
@@ -167,7 +189,16 @@ public class CommandTreeGenerator : IIncrementalGenerator
             {
                 w.Block("internal static int Main(string[] args)", () =>
                 {
-                    if (model.HasToolPackage)
+                    // A [Configure] hook takes ownership of the opinionated builder
+                    // setup, so its presence drops the logging and default-configuration
+                    // helpers (UseSerilog / UseVerbosityOptions / UseDefaultConfiguration)
+                    // from the generated chain. Command discovery and UseObjectOutput
+                    // stay regardless — they are structural (driven by the discovered
+                    // commands and their return types), not opinionated defaults a hook
+                    // would re-add. A hook restores logging/config via UseDefaultLogging()
+                    // and UseDefaultConfiguration() rather than UseDefaults(), which would
+                    // register commands a second time.
+                    if (model.HasToolPackage && model.ConfigureHooks.IsDefaultOrEmpty)
                     {
                         // Chain the individual helpers directly (instead of calling
                         // UseDefaults) so that UseObjectOutput — and with it the
@@ -202,21 +233,23 @@ public class CommandTreeGenerator : IIncrementalGenerator
                         w.WriteLine(".Run();");
                         w.Indent--;
                     }
+                    else if (model.ConfigureServicesHooks.IsDefaultOrEmpty && model.ConfigureHooks.IsDefaultOrEmpty)
+                    {
+                        w.WriteLine("return global::triaxis.CommandLine.Tool.CreateBuilder(args).AddCommandsFromAssembly(typeof(GeneratedProgram).Assembly).Run();");
+                    }
                     else
                     {
-                        if (model.ConfigureServicesHooks.IsDefaultOrEmpty)
+                        w.WriteLine("return global::triaxis.CommandLine.Tool.CreateBuilder(args)");
+                        w.Indent++;
+                        w.WriteLine(".AddCommandsFromAssembly(typeof(GeneratedProgram).Assembly)");
+                        if (model.HasToolPackage && model.ProducesOutput)
                         {
-                            w.WriteLine("return global::triaxis.CommandLine.Tool.CreateBuilder(args).AddCommandsFromAssembly(typeof(GeneratedProgram).Assembly).Run();");
+                            w.WriteLine(".UseObjectOutput()");
                         }
-                        else
-                        {
-                            w.WriteLine("return global::triaxis.CommandLine.Tool.CreateBuilder(args)");
-                            w.Indent++;
-                            w.WriteLine(".AddCommandsFromAssembly(typeof(GeneratedProgram).Assembly)");
-                            EmitConfigureServicesHooks(w, model.ConfigureServicesHooks);
-                            w.WriteLine(".Run();");
-                            w.Indent--;
-                        }
+                        EmitConfigureServicesHooks(w, model.ConfigureServicesHooks);
+                        EmitConfigureHooks(w, model.ConfigureHooks);
+                        w.WriteLine(".Run();");
+                        w.Indent--;
                     }
                 });
             });
@@ -302,6 +335,72 @@ public class CommandTreeGenerator : IIncrementalGenerator
         return new ConfigureServicesHookModel(
             method.ContainingType.ToDisplayString(FqnFormat),
             method.Name);
+    }
+
+    private static void EmitConfigureHooks(IndentedTextWriter w, ImmutableArray<ConfigureHookModel> hooks)
+    {
+        if (hooks.IsDefaultOrEmpty)
+        {
+            return;
+        }
+        foreach (var hook in hooks)
+        {
+            var args = hook.Parameters.Select(static p => p switch
+            {
+                ConfigureParamKind.ToolBuilder => "b",
+                ConfigureParamKind.HostBuilder => "b",
+                ConfigureParamKind.ServiceCollection => "s",
+                _ => throw new InvalidOperationException("unreachable"),
+            });
+            var call = $"{hook.DeclaringTypeFqn}.{hook.MethodName}({string.Join(", ", args)})";
+
+            // IServiceCollection isn't reachable from a fluent chain, so route through
+            // the immediate ConfigureServices callback to obtain it. Builder/host
+            // parameters use the captured builder directly.
+            var body = hook.Parameters.Contains(ConfigureParamKind.ServiceCollection)
+                ? $"b.ConfigureServices(s => {call})"
+                : call;
+            w.WriteLine($".Configure(b => {body})");
+        }
+    }
+
+    private static ConfigureHookModel? ExtractConfigureHook(GeneratorAttributeSyntaxContext ctx)
+    {
+        if (ctx.TargetSymbol is not IMethodSymbol method)
+        {
+            return null;
+        }
+
+        // The generated entry point invokes the hook without a command instance, so
+        // only static methods are usable. Non-matching shapes are silently skipped,
+        // mirroring the legacy [ConfigureServices] discovery.
+        if (!method.IsStatic)
+        {
+            return null;
+        }
+
+        if (method.ReturnType.SpecialType != SpecialType.System_Void)
+        {
+            return null;
+        }
+
+        var kinds = new ConfigureParamKind[method.Parameters.Length];
+        var seen = ConfigureParamKind.None;
+        for (var i = 0; i < method.Parameters.Length; i++)
+        {
+            var kind = ClassifyConfigureParam(method.Parameters[i].Type);
+            if (kind == ConfigureParamKind.None || (seen & kind) != 0)
+            {
+                return null;
+            }
+            seen |= kind;
+            kinds[i] = kind;
+        }
+
+        return new ConfigureHookModel(
+            method.ContainingType.ToDisplayString(FqnFormat),
+            method.Name,
+            kinds.ToImmutableArray());
     }
 
     private static ImmutableArray<AssemblyCommandModel> ExtractAssemblyCommands(Compilation compilation)
@@ -2874,11 +2973,17 @@ record EntryPointModel(
     string? ConfigOverridePath,
     string? EnvironmentVariablePrefix,
     bool ProducesOutput,
-    ImmutableArray<ConfigureServicesHookModel> ConfigureServicesHooks);
+    ImmutableArray<ConfigureServicesHookModel> ConfigureServicesHooks,
+    ImmutableArray<ConfigureHookModel> ConfigureHooks);
 
 record ConfigureServicesHookModel(
     string DeclaringTypeFqn,
     string MethodName);
+
+record ConfigureHookModel(
+    string DeclaringTypeFqn,
+    string MethodName,
+    ImmutableArray<ConfigureParamKind> Parameters);
 
 record AccessPathSegment(
     string MemberName,
