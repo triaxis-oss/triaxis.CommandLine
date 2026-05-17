@@ -31,8 +31,14 @@ public class ConfigureHookGeneratorTests
                 }
             }
         }
+        // Reference the assemblies the generator must resolve explicitly: their
+        // presence in the runner's TPA set is not reliable on every OS, and when
+        // one is missing the corresponding [Configure] parameter classification
+        // silently falls through to None and the generator emits the no-hooks
+        // fallback (notably the IHostBuilder signature on the Windows runner).
         refs.Add(MetadataReference.CreateFromFile(typeof(CommandAttribute).Assembly.Location));
         refs.Add(MetadataReference.CreateFromFile(typeof(IServiceCollection).Assembly.Location));
+        refs.Add(MetadataReference.CreateFromFile(typeof(Microsoft.Extensions.Hosting.IHostBuilder).Assembly.Location));
         try
         {
             refs.Add(MetadataReference.CreateFromFile(Assembly.Load("netstandard").Location));
