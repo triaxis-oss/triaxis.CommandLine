@@ -57,6 +57,38 @@ Both are composable — call them as many times as you want. The deferred overlo
 fully assembled `HostBuilderContext`, including the build-time `InvocationContext` (see
 below).
 
+### `ConfigureConfiguration`
+
+`ConfigureConfiguration` is the configuration-side counterpart to `ConfigureServices`,
+with the same two-overload shape. It keeps the fluent `IToolBuilder` chain intact, so you
+don't have to cast to `IHostBuilder` (which would return `IHostBuilder`) or reach into the
+raw `IConfigurationManager` to add sources:
+
+```csharp
+Tool.CreateBuilder(args)
+    .ConfigureConfiguration(config =>
+        config.AddJsonFile("appsettings.json", optional: true))
+    .ConfigureConfiguration((ctx, config) =>
+    {
+        var env = ctx.GetInvocationContext().ParseResult.GetValue<string>("--environment");
+        config.AddJsonFile($"appsettings.{env}.json", optional: true);
+    })
+    .AddCommandsFromAssembly()
+    .Run();
+```
+
+| Overload | When it runs | Access to `HostBuilderContext`? |
+| --- | --- | --- |
+| `ConfigureConfiguration(Action<IConfigurationBuilder>)` | Immediately, against `builder.Configuration`. | No. |
+| `ConfigureConfiguration(Action<HostBuilderContext, IConfigurationBuilder>)` | Deferred until `Build()`. | Yes. |
+
+The immediate overload adds the source to `IToolBuilder.Configuration` right away, so it is
+visible to any later configuration reads on the builder. The deferred overload runs during
+`Build()` and can branch on the parsed command line via `ctx.GetInvocationContext()`. Both
+overloads are replayed by `ApplyTo` (immediate sources via the builder's
+`IConfigurationManager`, deferred ones via the `ConfigureAppConfiguration` callback list),
+so the alternate-host story works unchanged.
+
 ### Standalone commands (`Main` / `MainAsync`)
 
 A command can opt out of the CLI-side service provider entirely by declaring `Main`

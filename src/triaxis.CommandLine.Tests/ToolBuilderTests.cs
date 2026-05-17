@@ -109,6 +109,45 @@ public class ToolBuilderTests
     }
 
     [Test]
+    public void ConfigureConfiguration_ImmediateOverload_AddsSourceAndReturnsBuilder()
+    {
+        var builder = Tool.CreateBuilder([]);
+        var result = builder.ConfigureConfiguration(c => c.AddInMemoryCollection(
+            new Dictionary<string, string?> { ["Greeting:Name"] = "Meatbag" }));
+
+        Assert.That(result, Is.SameAs(builder),
+            "ConfigureConfiguration should return the same builder for chaining");
+        Assert.That(builder.Configuration["Greeting:Name"], Is.EqualTo("Meatbag"),
+            "the immediate overload should add the source as soon as it is called");
+    }
+
+    [Test]
+    public async Task ConfigureConfiguration_DeferredOverload_AppliesAtBuildWithParseResult()
+    {
+        var capture = new ConfigCapture();
+        var builder = Tool.CreateBuilder(["config-capture"]);
+        builder.ConfigureServices(s => s.AddSingleton(capture));
+
+        var result = builder.ConfigureConfiguration((ctx, c) =>
+        {
+            var command = ctx.GetInvocationContext().ParseResult.CommandResult.Command.Name;
+            c.AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Captured:Command"] = command,
+            });
+        });
+        builder.AddCommandsFromAssembly(typeof(ToolBuilderTests).Assembly);
+
+        Assert.That(result, Is.SameAs(builder),
+            "ConfigureConfiguration should return the same builder for chaining");
+
+        await builder.RunAsync();
+
+        Assert.That(capture.Value, Is.EqualTo("config-capture"),
+            "the deferred overload should be applied during Build() with access to the parsed command line");
+    }
+
+    [Test]
     public void AddMiddleware_ReturnsSameBuilderForChaining()
     {
         var builder = Tool.CreateBuilder([]);
@@ -244,6 +283,27 @@ public class LifetimeCapture
     public bool StoppingFired { get; set; }
     public bool StoppedFired { get; set; }
     public bool StopApplicationCalledStoppingFired { get; set; }
+}
+
+public class ConfigCapture
+{
+    public string? Value { get; set; }
+}
+
+[Command("config-capture")]
+public class ConfigCaptureCommand
+{
+    [Inject]
+    public IConfiguration Configuration { get; set; } = null!;
+
+    [Inject]
+    public ConfigCapture Capture { get; set; } = null!;
+
+    public Task ExecuteAsync()
+    {
+        Capture.Value = Configuration["Captured:Command"];
+        return Task.CompletedTask;
+    }
 }
 
 [Command("lifetime-resolve")]
