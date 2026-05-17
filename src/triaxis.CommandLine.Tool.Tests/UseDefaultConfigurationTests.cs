@@ -134,6 +134,110 @@ public class UseDefaultConfigurationTests
     }
 
     [Test]
+    public async Task AddEnvironmentOverrides_ReadsPrefixedEnvironment()
+    {
+        Environment.SetEnvironmentVariable("TXSCOPED_envkey", "envvalue");
+        try
+        {
+            var builder = Tool.CreateBuilder(["greet"])
+                .UseSerilog()
+                .UseVerbosityOptions()
+                .UseScopedConfiguration(s => s.AddEnvironmentOverrides("TXSCOPED_"))
+                .AddCommandsFromAssembly(typeof(UseDefaultConfigurationTests).Assembly);
+
+            await builder.RunAsync();
+            Assert.That(builder.Configuration["envkey"], Is.EqualTo("envvalue"));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("TXSCOPED_envkey", null);
+        }
+    }
+
+    [Test]
+    public async Task AddBuiltinConfiguration_ReadsFileFromBaseDirectory()
+    {
+        var name = $"appsettings.{Guid.NewGuid():N}.json";
+        var path = Path.Combine(AppContext.BaseDirectory, name);
+        File.WriteAllText(path, """{ "builtinKey": "fromBaseDir" }""");
+        try
+        {
+            var builder = Tool.CreateBuilder(["greet"])
+                .UseSerilog()
+                .UseVerbosityOptions()
+                .UseScopedConfiguration(s => s.AddBuiltinConfiguration(name, reloadOnChange: false))
+                .AddCommandsFromAssembly(typeof(UseDefaultConfigurationTests).Assembly);
+
+            await builder.RunAsync();
+            Assert.That(builder.Configuration["builtinKey"], Is.EqualTo("fromBaseDir"));
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Test]
+    public async Task AddJsonOverrides_UserFileOverridesBuiltin()
+    {
+        var builtinName = $"appsettings.{Guid.NewGuid():N}.json";
+        var builtinPath = Path.Combine(AppContext.BaseDirectory, builtinName);
+        var overrideName = $"override.{Guid.NewGuid():N}.json";
+        var overridePath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), overrideName);
+        Directory.CreateDirectory(Path.GetDirectoryName(overridePath)!);
+        File.WriteAllText(builtinPath, """{ "shared": "builtin" }""");
+        File.WriteAllText(overridePath, """{ "shared": "user" }""");
+        try
+        {
+            var builder = Tool.CreateBuilder(["greet"])
+                .UseSerilog()
+                .UseVerbosityOptions()
+                .UseScopedConfiguration(s => s
+                    .AddBuiltinConfiguration(builtinName, reloadOnChange: false)
+                    .AddJsonOverrides(overrideName, reloadOnChange: false))
+                .AddCommandsFromAssembly(typeof(UseDefaultConfigurationTests).Assembly);
+
+            await builder.RunAsync();
+            Assert.That(builder.Configuration["shared"], Is.EqualTo("user"),
+                "the per-user override (User scope) wins over the Builtin appsettings");
+        }
+        finally
+        {
+            File.Delete(builtinPath);
+            File.Delete(overridePath);
+        }
+    }
+
+    [Test]
+    public async Task AddJsonOverrides_AbsentFileIsRegisteredHarmlessly()
+    {
+        // The override is registered even when missing (so a watcher exists for a file
+        // written later); an absent optional file must not throw or shadow the builtin.
+        var builtinName = $"appsettings.{Guid.NewGuid():N}.json";
+        var builtinPath = Path.Combine(AppContext.BaseDirectory, builtinName);
+        File.WriteAllText(builtinPath, """{ "shared": "builtin" }""");
+        try
+        {
+            var builder = Tool.CreateBuilder(["greet"])
+                .UseSerilog()
+                .UseVerbosityOptions()
+                .UseScopedConfiguration(s => s
+                    .AddBuiltinConfiguration(builtinName, reloadOnChange: false)
+                    .AddJsonOverrides($"never-written.{Guid.NewGuid():N}.json"))
+                .AddCommandsFromAssembly(typeof(UseDefaultConfigurationTests).Assembly);
+
+            await builder.RunAsync();
+            Assert.That(builder.Configuration["shared"], Is.EqualTo("builtin"),
+                "an absent optional override neither throws nor hides the builtin value");
+        }
+        finally
+        {
+            File.Delete(builtinPath);
+        }
+    }
+
+    [Test]
     public void RecursiveOptions_OrderedAfterUserDefinedOptions_RegardlessOfRegistrationOrder()
     {
         // Recursive options (--verbosity, --output) must appear AFTER the user's
