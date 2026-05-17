@@ -88,6 +88,40 @@ rather than a compile-time guard. Multiple `[ConfigureServices]` methods across 
 assembly are supported; the generator emits them in a stable order (ordinal by
 declaring type's fully-qualified name, then by method name).
 
+### Customizing the builder with `[Configure]`
+
+`[ConfigureServices]` only hands you an `IServiceCollection` and always runs *on top of*
+the opinionated default stack. When a startup hook needs to touch the builder or host
+itself — add configuration sources, change logging, or replace the defaults — mark a
+static method with `[Configure]` instead. It accepts **any combination** (each at most
+once, in any order) of `IToolBuilder` / `IHostBuilder` / `IServiceCollection` — the same
+signatures a [per-command `Configure`](#per-command-configure) method allows:
+
+```csharp
+public static class Startup
+{
+    [Configure]
+    public static void Setup(IToolBuilder builder, IServiceCollection services)
+    {
+        builder.UseDefaultLogging();
+        builder.UseDefaultConfiguration();
+        services.AddSingleton<IMyService, MyService>();
+    }
+}
+```
+
+The requirements match `[ConfigureServices]` (static, `void`, accessible, non-matching
+shapes ignored, stable ordinal order). The difference is ownership: because the hook can
+fully configure the builder, **its presence makes the source-generated entry point skip
+the opinionated logging and default-configuration helpers** (`UseSerilog`,
+`UseVerbosityOptions`, `UseDefaultConfiguration`). A hook restores them with
+`UseDefaultLogging()` — the combined `UseSerilog` + `UseVerbosityOptions` one-liner — and
+`UseDefaultConfiguration()`, not `UseDefaults()`, which would register every command a
+second time. Command discovery and `UseObjectOutput()` are still generated automatically
+(the latter whenever a `[Command]` returns a value), so the hook never adds those. Keep
+using `[ConfigureServices]` when you only need to register services and want the default
+stack left in place.
+
 ### Per-command `Configure`
 
 A `Configure` method on a `[Command]` type fires only when that command is actually
