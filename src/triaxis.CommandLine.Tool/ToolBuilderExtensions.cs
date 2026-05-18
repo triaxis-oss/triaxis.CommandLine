@@ -140,6 +140,12 @@ public static class ToolBuilderExtensions
     /// the file is added as optional and watched, so one written after start-up is
     /// picked up live.
     /// </summary>
+    /// <remarks>
+    /// The provider is writable, so
+    /// <see cref="PersistentConfigurationExtensions.Update">Update</see> can persist a
+    /// scope-targeted change to the per-machine or per-user override without touching
+    /// the others.
+    /// </remarks>
     /// <returns>The same builder, for fluent chaining.</returns>
     public static ScopedConfigurationBuilder AddJsonOverrides(
         this ScopedConfigurationBuilder scoped,
@@ -151,7 +157,31 @@ public static class ToolBuilderExtensions
             // an absent *file* in an existing config folder, so only that is supported.
             if (Directory.Exists(directory))
             {
-                cfg.AddJsonFile(
+                cfg.AddPersistentJsonFile(
+                    new PhysicalFileProvider(directory),
+                    fileName,
+                    optional: true,
+                    reloadOnChange: reloadOnChange);
+            }
+        });
+
+    /// <summary>
+    /// YAML counterpart of
+    /// <see cref="AddJsonOverrides(ScopedConfigurationBuilder, string, bool)"/> —
+    /// registers the writable YAML override file <paramref name="relativePath"/> in the
+    /// per-machine and per-user folders → the <see cref="ConfigurationScope.Machine"/> /
+    /// <see cref="ConfigurationScope.User"/> scopes.
+    /// </summary>
+    /// <returns>The same builder, for fluent chaining.</returns>
+    public static ScopedConfigurationBuilder AddYamlOverrides(
+        this ScopedConfigurationBuilder scoped,
+        string relativePath,
+        bool reloadOnChange = true)
+        => scoped.AddOverrides(relativePath, (cfg, directory, fileName) =>
+        {
+            if (Directory.Exists(directory))
+            {
+                cfg.AddPersistentYamlFile(
                     new PhysicalFileProvider(directory),
                     fileName,
                     optional: true,

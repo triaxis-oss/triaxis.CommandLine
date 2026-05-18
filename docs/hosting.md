@@ -138,9 +138,12 @@ hook — without re-deriving the folders or precedence:
 ```csharp
 builder.UseScopedConfiguration(s => s
     .AddBuiltinConfiguration()                 // appsettings.json (or a custom name) from AppContext.BaseDirectory → Builtin
-    .AddJsonOverrides("myapp/config.json")     // per-machine + per-user probes → Machine / User
+    .AddJsonOverrides("myapp/config.json")     // per-machine + per-user probes → Machine / User (writable)
     .AddEnvironmentOverrides("MYAPP_"));        // environment variables → EnvironmentVariables
 ```
+
+`AddYamlOverrides` is the YAML twin of `AddJsonOverrides`; both register *writable*
+providers (see [Persisting scope-targeted changes](#persisting-scope-targeted-changes)).
 
 `AddOverrides(relativePath, addFile)` is the format-neutral engine: it registers the
 file in `CommonApplicationData` (→ `Machine`), then `ApplicationData` and
@@ -151,11 +154,13 @@ the file's possibly-absent parent. The file is registered **unconditionally, whe
 or not it exists yet** — so `addFile` must add it as `optional` with reload-on-change;
 otherwise a file written after start-up (the common case for user/machine overrides
 in a long-running process) is never picked up because no watcher was attached.
-`AddJsonOverrides` is just the JSON-flavoured wrapper — supply a YAML one the same way:
+`AddJsonOverrides` / `AddYamlOverrides` are the JSON/YAML-flavoured wrappers (built on
+`AddPersistentJsonFile` / `AddPersistentYamlFile`). To plug in a different format, pass
+your own `addFile` delegate:
 
 ```csharp
-s.AddOverrides("myapp/config.yaml", (c, dir, file) =>
-    c.AddYamlFile(new PhysicalFileProvider(dir), file, optional: true, reloadOnChange: true));
+s.AddOverrides("myapp/config.toml", (c, dir, file) =>
+    c.AddTomlFile(new PhysicalFileProvider(dir), file, optional: true, reloadOnChange: true));
 ```
 
 The override path keeps its extension, so you choose `.json` / `.yaml` / `.yml`
@@ -182,13 +187,21 @@ source position — and the scoped source is located even when a host nests it b
 a chained provider.
 
 The base package ships only the contract: `IPersistentConfigurationProvider` is
-`IConfigurationProvider` plus `Set` and `Save`. A provider deriving from
-`ConfigurationProvider` already exposes a matching public `Set`, so a concrete
-writer (a writable JSON/YAML file provider supplied by the application or a
-higher-level package) adds only `Save()`. `Update` throws `InvalidOperationException`
-when no scope-layered source is present, or when the target scope has no writable
-source — a scope-targeted write requires `UseScopedConfiguration` /
-`UseDefaultConfiguration`.
+`IConfigurationProvider` plus `Save` (`Set` is already on `IConfigurationProvider`, so
+a `ConfigurationProvider`-derived writer adds only `Save()`). The **Tool** package
+ships the concrete writers — `AddPersistentJsonFile` / `AddPersistentYamlFile` (and
+the `AddJsonOverrides` / `AddYamlOverrides` helpers that wrap them) register a
+writable file provider, so `Update` works out of the box without a custom writer.
+They read exactly like `AddJsonFile` (optional, reload-on-change). `Save()` applies
+the **minimal edit**: it patches only the keys changed since the last save, so
+comments, whitespace, key order, and untouched values are kept byte-for-byte. New
+keys are inserted (creating missing parents) and a JSON array that gains a
+non-positional key is rewritten in place to an object; a brand-new file, or a
+document the editor will not touch (flow-style YAML, anchors, a non-object root),
+gets a fresh canonical document instead. `Update` throws
+`InvalidOperationException` when no scope-layered source is present, or when the
+target scope has no writable source — a scope-targeted write requires
+`UseScopedConfiguration` / `UseDefaultConfiguration`.
 
 ### Standalone commands (`Main` / `MainAsync`)
 

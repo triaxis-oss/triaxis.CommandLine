@@ -120,10 +120,18 @@ for logging — the level is baked into the logger at creation time.
 - `ICommandInvocationResult` / `ICommandInvocationResult<T>` — wraps command return
   values for streaming enumeration (used by ObjectOutput)
 - `VerbosityOptions` — public static option definitions for `--verbosity`/`-v`/`-q`
-- `IPersistentConfigurationProvider` — `IConfigurationProvider` + `Set`/`Save`; the
-  writable-source contract. `IConfiguration.Update(scope, cp => …)` resolves the
-  writable provider for one `ConfigurationScope` (via the scoped source, even behind
-  a host's chained provider) and persists deterministically
+- `IPersistentConfigurationProvider` — `IConfigurationProvider` + `Save` (`Set` is
+  already on `IConfigurationProvider`); the writable-source contract.
+  `IConfiguration.Update(scope, cp => …)` resolves the writable provider for one
+  `ConfigurationScope` (via the scoped source, even behind a host's chained provider)
+  and persists deterministically. Concrete writers live in the Tool package:
+  `JsonPersistentConfigurationSource` / `YamlPersistentConfigurationSource`
+  (`FileConfigurationProvider` + `Save`), surfaced as `AddPersistentJsonFile` /
+  `AddPersistentYamlFile` and the `AddJsonOverrides` / `AddYamlOverrides` helpers.
+  `Save` is a minimal edit via `Json`/`YamlConfigurationEditor`: only changed keys
+  are patched (comments/whitespace/order kept verbatim; tokens are captured with
+  their trivia and re-emitted); array→object rewrite when an array gains a
+  non-positional key; fresh write only for a new/uneditable file
 
 ## Workflow
 
@@ -152,4 +160,6 @@ for logging — the level is baked into the logger at creation time.
 - **Serilog**: + Serilog, Serilog.Extensions.Logging, Serilog.Sinks.Console,
   Serilog.Settings.Configuration
 - **Tool**: + M.E.Configuration.Json, M.E.Configuration.EnvironmentVariables,
-  M.E.FileProviders.Physical; references Serilog + ObjectOutput
+  M.E.FileProviders.Physical; references Serilog + ObjectOutput. The persistent
+  JSON/YAML writers reuse System.Text.Json and ObjectOutput's transitive YamlDotNet —
+  no extra dependency
