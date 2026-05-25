@@ -25,7 +25,8 @@ public static class ToolBuilderRunExtensions
 
     public static async Task<int> RunAsync(this IToolBuilder builder)
     {
-        using var host = builder.Build();
+        var host = builder.Build();
+        await using var hostDisposal = host.AsAsyncDisposable();
         await host.StartAsync();
         try
         {

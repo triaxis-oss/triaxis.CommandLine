@@ -4,7 +4,7 @@ using System.CommandLine.Parsing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
-class ToolHost(IServiceProvider services, ParseResult parseResult) : IHost, IHostApplicationLifetime
+class ToolHost(IServiceProvider services, ParseResult parseResult) : IHost, IHostApplicationLifetime, IAsyncDisposable
 {
     private IHostedService[]? _hostedServices;
     private readonly CancellationTokenSource _startedSource = new();
@@ -63,5 +63,13 @@ class ToolHost(IServiceProvider services, ParseResult parseResult) : IHost, IHos
         _stoppingSource.Dispose();
         _stoppedSource.Dispose();
         (services as IDisposable)?.Dispose();
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _startedSource.Dispose();
+        _stoppingSource.Dispose();
+        _stoppedSource.Dispose();
+        await services.AsAsyncDisposable().DisposeAsync();
     }
 }

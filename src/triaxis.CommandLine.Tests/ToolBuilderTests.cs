@@ -262,6 +262,28 @@ public class ToolBuilderTests
     }
 
     [Test]
+    public async Task RunAsync_DisposesAsyncOnlyDisposableServices()
+    {
+        var tracker = new AsyncDisposalTracker();
+        var builder = Tool.CreateBuilder(["lifetime-resolve"]);
+        builder.ConfigureServices(s =>
+        {
+            s.AddSingleton(tracker);
+            s.AddSingleton<AsyncOnlyDisposable>();
+        });
+        builder.ConfigureServices(s => s.AddSingleton(new LifetimeCapture()));
+        builder.AddCommandsFromAssembly(typeof(ToolBuilderTests).Assembly);
+
+        // Force the singleton to be instantiated so the provider tracks it for disposal.
+        builder.ConfigureServices(s => s.AddHostedService<AsyncDisposableActivator>());
+
+        Assert.That(async () => await builder.RunAsync(), Throws.Nothing,
+            "RunAsync must dispose IAsyncDisposable-only services without throwing");
+        Assert.That(tracker.DisposedAsync, Is.True,
+            "the async-only disposable should be disposed via DisposeAsync");
+    }
+
+    [Test]
     public async Task HostApplicationLifetime_StopApplication_FiresStopping()
     {
         var capture = new LifetimeCapture();
@@ -288,6 +310,27 @@ public class LifetimeCapture
 public class ConfigCapture
 {
     public string? Value { get; set; }
+}
+
+public class AsyncDisposalTracker
+{
+    public bool DisposedAsync { get; set; }
+}
+
+public sealed class AsyncOnlyDisposable(AsyncDisposalTracker tracker) : IAsyncDisposable
+{
+    public ValueTask DisposeAsync()
+    {
+        tracker.DisposedAsync = true;
+        return default;
+    }
+}
+
+public sealed class AsyncDisposableActivator : IHostedService
+{
+    public AsyncDisposableActivator(AsyncOnlyDisposable _) { }
+    public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 }
 
 [Command("config-capture")]
