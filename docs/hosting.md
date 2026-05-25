@@ -392,12 +392,20 @@ public static int Run(this IToolBuilder builder)
 
 public static async Task<int> RunAsync(this IToolBuilder builder)
 {
-    using var host = builder.Build();
+    var host = builder.Build();
+    await using var hostDisposal = host.AsAsyncDisposable();
     await host.StartAsync();
     try { return await ((ToolHost)host).InvokeAsync(); }
     finally { await host.StopAsync(); }
 }
 ```
+
+`AsAsyncDisposable()` is an internal extension that returns the target itself when it
+already implements `IAsyncDisposable`, otherwise a tiny adapter that forwards
+`DisposeAsync` to `IDisposable.Dispose`. `RunAsync` uses it to tear down containers
+holding `IAsyncDisposable`-only services without hitting `ServiceProvider.Dispose()`'s
+sync-only check. Sync `Run` keeps sync semantics — if you register async-only
+disposables, call `RunAsync`.
 
 If you want finer-grained control, call `Build()` yourself:
 
@@ -435,7 +443,8 @@ class ToolHost(IServiceProvider services, ParseResult parseResult) : IHost, IHos
     public int Invoke();            // parseResult.Invoke()
     public Task<int> InvokeAsync(); // parseResult.InvokeAsync()
 
-    public void Dispose();          // disposes CTS instances and the ServiceProvider
+    public void Dispose();              // disposes CTS instances + the ServiceProvider
+    public ValueTask DisposeAsync();    // same, but awaits IAsyncDisposable services
 }
 ```
 
@@ -451,8 +460,10 @@ Lifecycle:
 3. `Invoke` / `InvokeAsync` runs the command via `ParseResult.Invoke`/`InvokeAsync`.
 4. `StopAsync` fires `ApplicationStopping`, calls `StopAsync` on every hosted service in
    **reverse** order, then fires `ApplicationStopped`.
-5. `Dispose` disposes the lifetime `CancellationTokenSource` instances and the
-   `ServiceProvider`.
+5. `Dispose` / `DisposeAsync` disposes the lifetime `CancellationTokenSource` instances
+   and the `ServiceProvider`. `RunAsync` always takes the async path; sync `Run` uses
+   `Dispose` and will surface `ServiceProvider`'s usual error if a singleton implements
+   only `IAsyncDisposable`.
 
 Any exception thrown during `Invoke` / `InvokeAsync` escapes to `Run` / `RunAsync`, which
 still runs `StopAsync` in a `finally`. Hosted services therefore get a chance to shut down

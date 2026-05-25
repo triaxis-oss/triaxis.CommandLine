@@ -97,7 +97,10 @@ raw `Command` objects manually, use your own `Option<T>`/`Argument<T>` instances
 ## Service provider lifecycle
 
 A single `IServiceProvider` is built inside `IHostBuilder.Build()` and wrapped in a
-`ToolHost`. `ToolHost.Dispose()` disposes the provider at the end of `Run`/`RunAsync`.
+`ToolHost`. `ToolHost` implements both `IDisposable` and `IAsyncDisposable`; `RunAsync`
+goes through `DisposeAsync` so containers holding `IAsyncDisposable`-only services shut
+down cleanly. Sync `Run` keeps sync semantics — register async-only disposables only
+when using `RunAsync`.
 
 `ParseResult` is registered as a **singleton** during build so that anything resolved later
 (loggers, option binders, formatter providers) can read parsed values. This is how

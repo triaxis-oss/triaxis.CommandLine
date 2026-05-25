@@ -10,7 +10,7 @@ using Microsoft.Extensions.Hosting;
 /// built; <c>Start</c>/<c>Stop</c> are no-ops. The command owns its own lifecycle and
 /// optionally builds its own host via <see cref="IToolBuilder.ApplyTo"/>.
 /// </summary>
-sealed class StandaloneHost(IToolBuilder builder, IStandaloneAction action, ParseResult parseResult) : IHost
+sealed class StandaloneHost(IToolBuilder builder, IStandaloneAction action, ParseResult parseResult) : IHost, IAsyncDisposable
 {
     // No CLI-side services are built; commands that need config/DI build their own host
     // and call builder.ApplyTo(target) to inherit the builder's registrations.
@@ -30,4 +30,6 @@ sealed class StandaloneHost(IToolBuilder builder, IStandaloneAction action, Pars
     {
         (Services as IDisposable)?.Dispose();
     }
+
+    public ValueTask DisposeAsync() => Services.AsAsyncDisposable().DisposeAsync();
 }
