@@ -83,6 +83,20 @@ public class YamlConfigurationTests
     }
 
     [Test]
+    public void AddYamlFileResolvesAnAbsolutePathWithoutAnExplicitProvider()
+    {
+        var dir = TempDir();
+        var absolute = Path.Combine(dir, "abs.yaml");
+        File.WriteAllText(absolute, "Logging:\n  Level: Trace\n");
+
+        // null provider + rooted path: the builder must split it into a folder-rooted
+        // provider, otherwise the absolute Path is rooted at the base dir and lost.
+        var config = Build(b => b.AddYamlFile(absolute));
+
+        Assert.That(config["Logging:Level"], Is.EqualTo("Trace"));
+    }
+
+    [Test]
     public void OptionalMissingYamlFileIsANoop()
     {
         var config = Build(b => b.AddYamlFile("does-not-exist.yaml", optional: true));

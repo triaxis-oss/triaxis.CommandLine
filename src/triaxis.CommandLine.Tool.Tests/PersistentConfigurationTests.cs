@@ -150,6 +150,21 @@ public class PersistentConfigurationTests
     }
 
     [Test]
+    public void PersistentYamlFileResolvesAnAbsolutePathWithoutAnExplicitProvider()
+    {
+        var dir = TempDir();
+        var absolute = Path.Combine(dir, "abs.yaml");
+        File.WriteAllText(absolute, "Svc:\n  Token: rooted\n");
+
+        var builder = new ConfigurationBuilder();
+        builder.AddPersistentYamlFile(absolute, optional: true, reloadOnChange: false);
+        var config = builder.Build();
+
+        Assert.That(config["Svc:Token"], Is.EqualTo("rooted"),
+            "a rooted --config path with no explicit provider must still load");
+    }
+
+    [Test]
     public void SaveThrowsWhenTheProviderHasNoPhysicalPath()
     {
         var config = BuildScoped(s => s.Add(ConfigurationScope.User, c =>

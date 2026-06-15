@@ -39,6 +39,10 @@ public static class PersistentConfigurationBuilderExtensions
             s.Path = path;
             s.Optional = optional;
             s.ReloadOnChange = reloadOnChange;
+            // A rooted path with no explicit provider must be split into a folder-rooted
+            // PhysicalFileProvider + file name; otherwise EnsureDefaults roots at the base
+            // dir and the absolute Path is never found. No-op for relative paths/providers.
+            s.ResolveFileProvider();
         });
 
     public static IConfigurationBuilder AddPersistentJsonFile(
@@ -61,6 +65,7 @@ public static class PersistentConfigurationBuilderExtensions
             s.Path = path;
             s.Optional = optional;
             s.ReloadOnChange = reloadOnChange;
+            s.ResolveFileProvider();
         });
 
     public static IConfigurationBuilder AddPersistentYamlFile(
@@ -90,6 +95,7 @@ public static class PersistentConfigurationBuilderExtensions
             s.Path = path;
             s.Optional = optional;
             s.ReloadOnChange = reloadOnChange;
+            s.ResolveFileProvider();
         });
 
     /// <inheritdoc cref="AddYamlFile(IConfigurationBuilder, IFileProvider, string, bool, bool)"/>
