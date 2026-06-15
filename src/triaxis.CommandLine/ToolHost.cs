@@ -58,12 +58,7 @@ class ToolHost(IServiceProvider services, ParseResult parseResult) : IHost, IHos
     public Task<int> InvokeAsync() => parseResult.InvokeAsync();
 
     public void Dispose()
-    {
-        _startedSource.Dispose();
-        _stoppingSource.Dispose();
-        _stoppedSource.Dispose();
-        (services as IDisposable)?.Dispose();
-    }
+        => DisposeAsync().AsTask().GetAwaiter().GetResult();
 
     public async ValueTask DisposeAsync()
     {
