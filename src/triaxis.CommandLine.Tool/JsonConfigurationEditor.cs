@@ -29,6 +29,9 @@ internal static class JsonConfigurationEditor
         AllowTrailingCommas = true,
     };
 
+    // Indentation step for newly created nested objects.
+    private const string Indent = "  ";
+
     private struct Tok
     {
         public string Lead;
@@ -70,12 +73,21 @@ internal static class JsonConfigurationEditor
         public Tok Close;
     }
 
-    public static string Apply(string original, IEnumerable<KeyValuePair<string, string?>> changes)
+    // `full` is the complete current configuration, written verbatim only when the
+    // document can't be edited in place (a non-object root, malformed JSON), so the
+    // rewrite never drops keys it wasn't asked to change. Defaults to `changes` for a
+    // brand-new file, where the two are the same.
+    public static string Apply(
+        string original,
+        IEnumerable<KeyValuePair<string, string?>> changes,
+        IEnumerable<KeyValuePair<string, string?>>? full = null)
     {
+        full ??= changes;
+
         if (string.IsNullOrWhiteSpace(original))
         {
             // Nothing on disk yet — there is nothing to preserve.
-            return Fresh(changes);
+            return Fresh(full);
         }
 
         try
@@ -84,7 +96,7 @@ internal static class JsonConfigurationEditor
             var reader = new Utf8JsonReader(bytes, ReaderOptions);
             if (!reader.Read())
             {
-                return Fresh(changes);
+                return Fresh(full);
             }
 
             int pos = 0;
@@ -94,12 +106,12 @@ internal static class JsonConfigurationEditor
             if (root is not Obj obj)
             {
                 // A non-object root (array or bare scalar) can't carry keys.
-                return Fresh(changes);
+                return Fresh(full);
             }
 
             foreach (var change in changes)
             {
-                ApplyOne(obj, change.Key.Split(':'), 0, change.Value);
+                ApplyOne(obj, change.Key.Split(':'), 0, change.Value, RootIndent(obj));
             }
 
             var sb = new StringBuilder();
@@ -109,11 +121,11 @@ internal static class JsonConfigurationEditor
         }
         catch (JsonException)
         {
-            return Fresh(changes);
+            return Fresh(full);
         }
     }
 
-    private static void ApplyOne(Obj obj, string[] path, int depth, string? value)
+    private static void ApplyOne(Obj obj, string[] path, int depth, string? value, string indent)
     {
         string key = path[depth];
         bool last = depth == path.Length - 1;
@@ -130,8 +142,8 @@ internal static class JsonConfigurationEditor
 
         if (member is null)
         {
-            member = NewMember(obj, key);
-            member.Value = last ? Scalar(value!) : new Obj { Open = T("{"), Close = T("}") };
+            member = NewMember(obj, key, indent);
+            member.Value = last ? Scalar(value!) : NewObject();
             obj.Members.Add(member);
         }
 
@@ -149,29 +161,40 @@ internal static class JsonConfigurationEditor
         }
         if (member.Value is not Obj child)
         {
-            member.Value = child = new Obj { Open = T("{"), Close = T("}") };
+            member.Value = child = NewObject();
         }
-        ApplyOne(child, path, depth + 1, value);
+        ApplyOne(child, path, depth + 1, value, indent + Indent);
     }
 
-    private static Member NewMember(Obj obj, string key)
+    private static Member NewMember(Obj obj, string key, string indent)
     {
-        // Mirror an existing sibling's pre-key trivia (newline + indent, plus the
-        // comma that separates members); fall back to a derived indent when empty.
         string lead;
         if (obj.Members.Count > 0)
         {
-            lead = "," + StripLeadingComma(obj.Members[0].Name.Lead);
+            // A sibling: a comma plus the members' own indented line. Derived from a
+            // sibling's indentation only — never its full lead, which may carry a
+            // comment that would then be duplicated.
+            string sample = obj.Members[obj.Members.Count - 1].Name.Lead;
+            lead = sample.IndexOf('\n') >= 0 ? ",\n" + IndentOf(sample) : ", ";
         }
         else
         {
-            string indent = IndentOf(obj.Open.Lead);
-            lead = $"\n{indent}  ";
-            obj.Close.Lead = $"\n{indent}" + obj.Close.Lead.TrimStart(' ', '\t');
+            // The first member of a (possibly freshly created) object sits one step in;
+            // its closing brace lines up with the object's own indent.
+            lead = "\n" + indent;
+            string outer = indent.Length >= Indent.Length ? indent.Substring(0, indent.Length - Indent.Length) : "";
+            obj.Close.Lead = "\n" + outer + obj.Close.Lead.TrimStart(' ', '\t');
         }
 
         return new Member { Key = key, Name = new Tok { Lead = lead, Text = JsonScalar(key) }, Colon = new Tok { Text = ": " } };
     }
+
+    private static Obj NewObject() => new() { Open = T("{"), Close = T("}") };
+
+    // The indentation of the root object's members, so newly created nested objects
+    // can be stepped in relative to it. An empty object defaults to one step.
+    private static string RootIndent(Obj obj)
+        => obj.Members.Count > 0 ? IndentOf(obj.Members[0].Name.Lead) : Indent;
 
     private static void Remove(Obj obj, Member member)
     {

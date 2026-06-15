@@ -16,6 +16,10 @@ using YamlDotNet.Serialization;
 /// </summary>
 internal static class YamlConfigurationEditor
 {
+    // Indentation step for newly created nested mappings. The block step is not encoded
+    // anywhere a single edit can recover, so use the conventional two spaces.
+    private const string Indent = "  ";
+
     private sealed class UneditableException : Exception;
 
     private struct Tok
@@ -54,11 +58,20 @@ internal static class YamlConfigurationEditor
         public List<Elem> Elems = [];
     }
 
-    public static string Apply(string original, IEnumerable<KeyValuePair<string, string?>> changes)
+    // `full` is the complete current configuration; it is written verbatim only when the
+    // document can't be edited in place (flow style, anchors, a non-mapping root), so the
+    // rewrite never drops the keys it wasn't asked to change. Defaults to `changes` for a
+    // brand-new file, where the two are the same.
+    public static string Apply(
+        string original,
+        IEnumerable<KeyValuePair<string, string?>> changes,
+        IEnumerable<KeyValuePair<string, string?>>? full = null)
     {
+        full ??= changes;
+
         if (string.IsNullOrWhiteSpace(original))
         {
-            return Fresh(changes);
+            return Fresh(full);
         }
 
         try
@@ -70,12 +83,12 @@ internal static class YamlConfigurationEditor
 
             if (root is not Map map)
             {
-                return Fresh(changes);
+                return Fresh(full);
             }
 
             foreach (var change in changes)
             {
-                ApplyOne(map, change.Key.Split(':'), 0, change.Value);
+                ApplyOne(map, change.Key.Split(':'), 0, change.Value, "");
             }
 
             var sb = new StringBuilder();
@@ -85,17 +98,17 @@ internal static class YamlConfigurationEditor
         }
         catch (UneditableException)
         {
-            return Fresh(changes);
+            return Fresh(full);
         }
         catch (YamlException)
         {
-            return Fresh(changes);
+            return Fresh(full);
         }
     }
 
     // ---- transform -----------------------------------------------------------
 
-    private static void ApplyOne(Map map, string[] path, int depth, string? value)
+    private static void ApplyOne(Map map, string[] path, int depth, string? value, string indent)
     {
         string key = path[depth];
         bool last = depth == path.Length - 1;
@@ -105,18 +118,43 @@ internal static class YamlConfigurationEditor
         {
             if (member is not null)
             {
+                int index = map.Members.IndexOf(member);
                 map.Members.Remove(member);
+                // The first member's lead carries the parent ':' (and any header comment);
+                // if it is removed, hand that prefix to the new first member so the mapping
+                // keeps its separator instead of collapsing to a bare key.
+                if (index == 0 && map.Members.Count > 0)
+                {
+                    string lead = member.Key.Tok.Lead;
+                    int newline = lead.LastIndexOf('\n');
+                    map.Members[0].Key.Tok.Lead = (newline >= 0 ? lead.Substring(0, newline) : "") + map.Members[0].Key.Tok.Lead;
+                }
             }
             return;
         }
 
         if (member is null)
         {
-            member = NewMember(map, key);
-            member.Value = last
-                ? NewScalar(value!, ": ")
-                : new Map();
-            map.Members.Add(member);
+            if (value is null)
+            {
+                return;   // removing a key that does not exist: nothing to do
+            }
+
+            // The first member of a freshly created mapping carries the parent ':'
+            // separator and uses the indent handed down from the level above; a new
+            // sibling in an existing mapping mirrors its neighbours' indentation and only
+            // needs a newline before it.
+            bool fresh = map.Members.Count == 0;
+            string level = fresh ? indent : MemberIndent(map);
+            map.Members.Add(new Member
+            {
+                Name = key,
+                Key = new Scalar { Tok = new Tok { Lead = (fresh ? ":\n" : "\n") + level, Text = YamlScalar(key) } },
+                Value = last
+                    ? NewScalar(value, ": ")
+                    : BuildBranch(path, depth + 1, value, level + Indent),
+            });
+            return;
         }
 
         if (last)
@@ -140,25 +178,34 @@ internal static class YamlConfigurationEditor
         {
             member.Value = child = new Map();
         }
-        ApplyOne(child, path, depth + 1, value);
+        ApplyOne(child, path, depth + 1, value, MemberIndent(map) + Indent);
     }
 
-    private static Member NewMember(Map map, string key)
+    // A new nested branch whose parent did not exist: a chain of single-member mappings
+    // down to the scalar leaf. Each mapping is a fresh value, so its sole member's key
+    // lead opens with the parent ':' separator.
+    private static Map BuildBranch(string[] path, int depth, string value, string indent)
     {
-        // Mirror an existing sibling's pre-key run (newline + indent); for an empty
-        // mapping there is nothing on disk to anchor to, so the document must be
-        // rebuilt rather than guessing an indentation that may be wrong.
-        if (map.Members.Count == 0)
+        bool last = depth == path.Length - 1;
+        var member = new Member
         {
-            throw new UneditableException();
-        }
-
-        string lead = map.Members[map.Members.Count - 1].Key.Tok.Lead;
-        return new Member
-        {
-            Name = key,
-            Key = new Scalar { Tok = new Tok { Lead = lead, Text = YamlScalar(key) } },
+            Name = path[depth],
+            Key = new Scalar { Tok = new Tok { Lead = ":\n" + indent, Text = YamlScalar(path[depth]) } },
+            Value = last ? NewScalar(value, ": ") : BuildBranch(path, depth + 1, value, indent + Indent),
         };
+        var map = new Map();
+        map.Members.Add(member);
+        return map;
+    }
+
+    // The indentation (whitespace after the last newline) shared by a mapping's members.
+    // A first member's lead also carries the parent ':' and any leading comments, so only
+    // the run after the last newline is the indent.
+    private static string MemberIndent(Map map)
+    {
+        string siblingLead = map.Members[map.Members.Count - 1].Key.Tok.Lead;
+        int newline = siblingLead.LastIndexOf('\n');
+        return newline >= 0 ? siblingLead.Substring(newline + 1) : siblingLead;
     }
 
     private static Map ToMap(Seq seq)

@@ -32,7 +32,7 @@ internal sealed class YamlPersistentConfigurationProvider(YamlPersistentConfigur
     public void Save()
     {
         PersistentConfigurationFile.Rewrite(Source, original =>
-            YamlConfigurationEditor.Apply(original, _dirty));
+            YamlConfigurationEditor.Apply(original, _dirty, Data));
         _dirty.Clear();
         OnReload();
     }

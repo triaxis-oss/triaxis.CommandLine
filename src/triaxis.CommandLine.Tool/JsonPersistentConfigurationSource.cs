@@ -89,7 +89,7 @@ internal sealed class JsonPersistentConfigurationProvider(JsonPersistentConfigur
     public void Save()
     {
         PersistentConfigurationFile.Rewrite(Source, original =>
-            JsonConfigurationEditor.Apply(original, _dirty));
+            JsonConfigurationEditor.Apply(original, _dirty, Data));
         _dirty.Clear();
         OnReload();
     }

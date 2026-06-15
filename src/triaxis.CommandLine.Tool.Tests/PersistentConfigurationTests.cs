@@ -302,11 +302,295 @@ public class PersistentConfigurationTests
             .Update(ConfigurationScope.User, cp => cp.Set("B", "2"));
 
         string updated = File.ReadAllText(Path.Combine(dir, "config.yaml"));
-        Assert.That(updated, Does.Contain("# header"));
+        // The new key starts its own line; the leading comment is not duplicated and
+        // A's value is not mangled into a trailing comment.
+        Assert.That(updated, Is.EqualTo("# header\nA: '1'\nB: '2'\n"));
 
         var reread = BuildScoped(s => AddUserFile(s, dir, "config.yaml", json: false));
         Assert.That(reread["A"], Is.EqualTo("1"));
         Assert.That(reread["B"], Is.EqualTo("2"));
+    }
+
+    [Test]
+    public void YamlInsertSiblingDoesNotCorruptThePrecedingValue()
+    {
+        var dir = TempDir();
+        File.WriteAllText(Path.Combine(dir, "config.yaml"), "First:\n  A: 1\n");
+
+        BuildScoped(s => AddUserFile(s, dir, "config.yaml", json: false))
+            .Update(ConfigurationScope.User, cp => cp.Set("First:B", "2"));
+
+        string updated = File.ReadAllText(Path.Combine(dir, "config.yaml"));
+        // Regression: the inserted sibling used to copy the first member's lead, which
+        // carries the parent ':' — turning "A: 1" into "A: 1:" and breaking the file.
+        Assert.That(updated, Is.EqualTo("First:\n  A: 1\n  B: '2'\n"));
+
+        var reread = BuildScoped(s => AddUserFile(s, dir, "config.yaml", json: false));
+        Assert.That(reread["First:A"], Is.EqualTo("1"));
+        Assert.That(reread["First:B"], Is.EqualTo("2"));
+    }
+
+    [Test]
+    public void YamlSetNewNestedValueCreatesParentsInPlaceAndKeepsSiblings()
+    {
+        var dir = TempDir();
+        File.WriteAllText(Path.Combine(dir, "config.yaml"), "A:\n  B: 1\n");
+
+        BuildScoped(s => AddUserFile(s, dir, "config.yaml", json: false))
+            .Update(ConfigurationScope.User, cp => cp.Set("A:C:D", "2"));
+
+        // The missing C/D branch is created in place; the existing A:B is untouched
+        // (it used to be dropped when the insert fell back to a fresh, dirty-only write).
+        string updated = File.ReadAllText(Path.Combine(dir, "config.yaml"));
+        Assert.That(updated, Is.EqualTo("A:\n  B: 1\n  C:\n    D: '2'\n"));
+
+        var reread = BuildScoped(s => AddUserFile(s, dir, "config.yaml", json: false));
+        Assert.That(reread["A:B"], Is.EqualTo("1"));
+        Assert.That(reread["A:C:D"], Is.EqualTo("2"));
+    }
+
+    [Test]
+    public void YamlSetNewTopLevelNestedKeyKeepsExisting()
+    {
+        var dir = TempDir();
+        File.WriteAllText(Path.Combine(dir, "config.yaml"), "Existing: 1\n");
+
+        BuildScoped(s => AddUserFile(s, dir, "config.yaml", json: false))
+            .Update(ConfigurationScope.User, cp => cp.Set("New:Sub", "v"));
+
+        string updated = File.ReadAllText(Path.Combine(dir, "config.yaml"));
+        Assert.That(updated, Is.EqualTo("Existing: 1\nNew:\n  Sub: v\n"));
+    }
+
+    [Test]
+    public void YamlScalarReplacedByMappingWhenAChildKeyIsSet()
+    {
+        var dir = TempDir();
+        File.WriteAllText(Path.Combine(dir, "config.yaml"), "A: 1\n");
+
+        BuildScoped(s => AddUserFile(s, dir, "config.yaml", json: false))
+            .Update(ConfigurationScope.User, cp => cp.Set("A:B", "v"));
+
+        string updated = File.ReadAllText(Path.Combine(dir, "config.yaml"));
+        Assert.That(updated, Is.EqualTo("A:\n  B: v\n"));
+    }
+
+    [Test]
+    public void YamlMultipleEditsInOneSavePreserveUntouchedKeysAndComments()
+    {
+        var dir = TempDir();
+        File.WriteAllText(Path.Combine(dir, "config.yaml"), "# c\nSvc:\n  Token: old\n  Url: u\n");
+
+        BuildScoped(s => AddUserFile(s, dir, "config.yaml", json: false))
+            .Update(ConfigurationScope.User, cp =>
+            {
+                cp.Set("Svc:Token", "new");
+                cp.Set("Svc:Retries", "3");
+                cp.Set("Other:X", "y");
+            });
+
+        string updated = File.ReadAllText(Path.Combine(dir, "config.yaml"));
+        Assert.That(updated, Is.EqualTo(
+            "# c\nSvc:\n  Token: new\n  Url: u\n  Retries: '3'\nOther:\n  X: y\n"));
+    }
+
+    [Test]
+    public void YamlUneditableFileFallsBackWithoutDroppingData()
+    {
+        var dir = TempDir();
+        // Flow style is rejected by the in-place editor; the fallback must still write
+        // back every key, not just the one that changed.
+        File.WriteAllText(Path.Combine(dir, "config.yaml"), "{ A: 1, B: 2 }\n");
+
+        BuildScoped(s => AddUserFile(s, dir, "config.yaml", json: false))
+            .Update(ConfigurationScope.User, cp => cp.Set("C", "3"));
+
+        var reread = BuildScoped(s => AddUserFile(s, dir, "config.yaml", json: false));
+        Assert.That(reread["A"], Is.EqualTo("1"));
+        Assert.That(reread["B"], Is.EqualTo("2"));
+        Assert.That(reread["C"], Is.EqualTo("3"));
+    }
+
+    [Test]
+    public void YamlRemoveFirstMemberOfMapping()
+    {
+        var dir = TempDir();
+        File.WriteAllText(Path.Combine(dir, "config.yaml"), "A:\n  B: 1\n  C: 2\n");
+        BuildScoped(s => AddUserFile(s, dir, "config.yaml", json: false))
+            .Update(ConfigurationScope.User, cp => cp.Set("A:B", null));
+        // Removing the first key must keep A's ':' separator, not collapse it to "A".
+        Assert.That(File.ReadAllText(Path.Combine(dir, "config.yaml")), Is.EqualTo("A:\n  C: 2\n"));
+        var reread = BuildScoped(s => AddUserFile(s, dir, "config.yaml", json: false));
+        Assert.That(reread["A:C"], Is.EqualTo("2"));
+        Assert.That(reread["A:B"], Is.Null);
+    }
+
+    [Test]
+    public void YamlIncrementalDeepNestingAcrossSaves()
+    {
+        var dir = TempDir();
+        BuildScoped(s => AddUserFile(s, dir, "config.yaml", json: false))
+            .Update(ConfigurationScope.User, cp => cp.Set("A:B:C", "1"));
+        BuildScoped(s => AddUserFile(s, dir, "config.yaml", json: false))
+            .Update(ConfigurationScope.User, cp => cp.Set("A:B:D", "2"));
+        var reread = BuildScoped(s => AddUserFile(s, dir, "config.yaml", json: false));
+        Assert.That(reread["A:B:C"], Is.EqualTo("1"));
+        Assert.That(reread["A:B:D"], Is.EqualTo("2"));
+    }
+
+    [Test]
+    public void YamlValueWithSpecialCharactersRoundTrips()
+    {
+        var dir = TempDir();
+        File.WriteAllText(Path.Combine(dir, "config.yaml"), "K: x\n");
+        BuildScoped(s => AddUserFile(s, dir, "config.yaml", json: false))
+            .Update(ConfigurationScope.User, cp => cp.Set("Url", "http://a:b/c #1"));
+        var reread = BuildScoped(s => AddUserFile(s, dir, "config.yaml", json: false));
+        Assert.That(reread["Url"], Is.EqualTo("http://a:b/c #1"));
+        Assert.That(reread["K"], Is.EqualTo("x"));
+    }
+
+    [Test]
+    public void YamlSetKeyUnderSequenceConvertsAndKeepsContext()
+    {
+        var dir = TempDir();
+        File.WriteAllText(Path.Combine(dir, "config.yaml"), "Top: t\nArr:\n  - x\n  - y\n");
+        BuildScoped(s => AddUserFile(s, dir, "config.yaml", json: false))
+            .Update(ConfigurationScope.User, cp => cp.Set("Arr:k", "v"));
+        var reread = BuildScoped(s => AddUserFile(s, dir, "config.yaml", json: false));
+        Assert.That(reread["Top"], Is.EqualTo("t"));
+        Assert.That(reread["Arr:k"], Is.EqualTo("v"));
+    }
+
+    [Test]
+    public void YamlEmptyFileSetNestedThenAddSibling()
+    {
+        var dir = TempDir();
+        BuildScoped(s => AddUserFile(s, dir, "config.yaml", json: false))
+            .Update(ConfigurationScope.User, cp => cp.Set("A:B", "1"));
+        BuildScoped(s => AddUserFile(s, dir, "config.yaml", json: false))
+            .Update(ConfigurationScope.User, cp => cp.Set("A:C", "2"));
+        var reread = BuildScoped(s => AddUserFile(s, dir, "config.yaml", json: false));
+        Assert.That(reread["A:B"], Is.EqualTo("1"));
+        Assert.That(reread["A:C"], Is.EqualTo("2"));
+    }
+
+    // ---- adversarial: JSON ---------------------------------------------------
+
+    [Test]
+    public void JsonNonObjectRootFallbackKeepsData()
+    {
+        var dir = TempDir();
+        File.WriteAllText(Path.Combine(dir, "config.json"), "[ \"a\", \"b\" ]\n");
+        BuildScoped(s => AddUserFile(s, dir, "config.json", json: true))
+            .Update(ConfigurationScope.User, cp => cp.Set("K", "v"));
+        var r = BuildScoped(s => AddUserFile(s, dir, "config.json", json: true));
+        Assert.That(r["0"], Is.EqualTo("a"));
+        Assert.That(r["1"], Is.EqualTo("b"));
+        Assert.That(r["K"], Is.EqualTo("v"));
+    }
+
+    [Test]
+    public void JsonRemoveFirstMemberKeepsSiblings()
+    {
+        var dir = TempDir();
+        File.WriteAllText(Path.Combine(dir, "config.json"), "{\n  \"A\": 1,\n  \"B\": 2\n}\n");
+        BuildScoped(s => AddUserFile(s, dir, "config.json", json: true))
+            .Update(ConfigurationScope.User, cp => cp.Set("A", null));
+        var r = BuildScoped(s => AddUserFile(s, dir, "config.json", json: true));
+        Assert.That(r["A"], Is.Null);
+        Assert.That(r["B"], Is.EqualTo("2"));
+    }
+
+    [Test]
+    public void JsonMultiEditAndNestedCreateKeepUntouched()
+    {
+        var dir = TempDir();
+        File.WriteAllText(Path.Combine(dir, "config.json"),
+            "{\n  // hdr\n  \"Svc\": { \"Token\": \"old\", \"Url\": \"u\" }\n}\n");
+        BuildScoped(s => AddUserFile(s, dir, "config.json", json: true))
+            .Update(ConfigurationScope.User, cp =>
+            {
+                cp.Set("Svc:Token", "new");
+                cp.Set("Svc:Retries", "3");
+                cp.Set("Other:X", "y");
+            });
+        string updated = File.ReadAllText(Path.Combine(dir, "config.json"));
+        // The comment is kept exactly once (not duplicated onto the new top-level key),
+        // and the freshly created nested object is indented relative to its parent.
+        Assert.That(updated, Is.EqualTo(
+            "{\n  // hdr\n  \"Svc\": { \"Token\": \"new\", \"Url\": \"u\", \"Retries\": \"3\" },\n  \"Other\": {\n    \"X\": \"y\"\n  }\n}\n"));
+        var r = BuildScoped(s => AddUserFile(s, dir, "config.json", json: true));
+        Assert.That(r["Svc:Token"], Is.EqualTo("new"));
+        Assert.That(r["Svc:Url"], Is.EqualTo("u"));
+        Assert.That(r["Svc:Retries"], Is.EqualTo("3"));
+        Assert.That(r["Other:X"], Is.EqualTo("y"));
+    }
+
+    [Test]
+    public void JsonIncrementalDeepNestingAcrossSaves()
+    {
+        var dir = TempDir();
+        BuildScoped(s => AddUserFile(s, dir, "config.json", json: true))
+            .Update(ConfigurationScope.User, cp => cp.Set("A:B:C", "1"));
+        BuildScoped(s => AddUserFile(s, dir, "config.json", json: true))
+            .Update(ConfigurationScope.User, cp => cp.Set("A:B:D", "2"));
+        var r = BuildScoped(s => AddUserFile(s, dir, "config.json", json: true));
+        Assert.That(r["A:B:C"], Is.EqualTo("1"));
+        Assert.That(r["A:B:D"], Is.EqualTo("2"));
+    }
+
+    // ---- adversarial: YAML edge inputs --------------------------------------
+
+    [Test]
+    public void YamlRootSequenceFallbackKeepsData()
+    {
+        var dir = TempDir();
+        File.WriteAllText(Path.Combine(dir, "config.yaml"), "- a\n- b\n");
+        BuildScoped(s => AddUserFile(s, dir, "config.yaml", json: false))
+            .Update(ConfigurationScope.User, cp => cp.Set("K", "v"));
+        var r = BuildScoped(s => AddUserFile(s, dir, "config.yaml", json: false));
+        Assert.That(r["0"], Is.EqualTo("a"));
+        Assert.That(r["1"], Is.EqualTo("b"));
+        Assert.That(r["K"], Is.EqualTo("v"));
+    }
+
+    [Test]
+    public void YamlAnchorFileFallbackKeepsData()
+    {
+        var dir = TempDir();
+        File.WriteAllText(Path.Combine(dir, "config.yaml"), "A: &x hello\nB: *x\n");
+        BuildScoped(s => AddUserFile(s, dir, "config.yaml", json: false))
+            .Update(ConfigurationScope.User, cp => cp.Set("C", "3"));
+        var r = BuildScoped(s => AddUserFile(s, dir, "config.yaml", json: false));
+        Assert.That(r["A"], Is.EqualTo("hello"));
+        Assert.That(r["B"], Is.EqualTo("hello"));
+        Assert.That(r["C"], Is.EqualTo("3"));
+    }
+
+    [Test]
+    public void YamlCrlfFilePreservesData()
+    {
+        var dir = TempDir();
+        File.WriteAllText(Path.Combine(dir, "config.yaml"), "Svc:\r\n  Token: old\r\n  Url: u\r\n");
+        BuildScoped(s => AddUserFile(s, dir, "config.yaml", json: false))
+            .Update(ConfigurationScope.User, cp => cp.Set("Svc:Token", "new"));
+        var r = BuildScoped(s => AddUserFile(s, dir, "config.yaml", json: false));
+        Assert.That(r["Svc:Token"], Is.EqualTo("new"));
+        Assert.That(r["Svc:Url"], Is.EqualTo("u"));
+    }
+
+    [Test]
+    public void YamlQuotedKeyAndBlockScalarSiblingPreserved()
+    {
+        var dir = TempDir();
+        File.WriteAllText(Path.Combine(dir, "config.yaml"), "'my key': v\nText: |\n  line1\n  line2\n");
+        BuildScoped(s => AddUserFile(s, dir, "config.yaml", json: false))
+            .Update(ConfigurationScope.User, cp => cp.Set("New", "n"));
+        var r = BuildScoped(s => AddUserFile(s, dir, "config.yaml", json: false));
+        Assert.That(r["my key"], Is.EqualTo("v"));
+        Assert.That(r["Text"], Is.EqualTo("line1\nline2\n"));
+        Assert.That(r["New"], Is.EqualTo("n"));
     }
 
     // A file provider with no physical backing — Save has nowhere to persist to.
