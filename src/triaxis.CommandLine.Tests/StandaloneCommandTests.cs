@@ -14,6 +14,8 @@ public class StandaloneCommandTests
         SimpleMain.Exit = null;
         CtMain.LastToken = default;
         CtMain.Ran = false;
+        CancelMain.Started = new();
+        CancelMain.Cancelled = false;
         BuilderMain.ReceivedBuilder = null;
         BuilderMain.ConfigValue = null;
         BuilderMain.ResolvedPort = 0;
@@ -99,10 +101,55 @@ public class StandaloneCommandTests
 
         await builder.RunAsync();
 
-        // The current StandaloneHost passes CancellationToken.None — the command
-        // is expected to wire its own process-termination handling if needed. The
-        // observable contract for now is that MainAsync's ct parameter is invoked.
         Assert.That(CtMain.Ran, Is.True);
+        // ct-main declares a CancellationToken, so StandaloneHost dispatches through
+        // ParseResult.InvokeAsync and System.CommandLine wires a real process-termination
+        // source even when RunAsync is called with no token — the token handed to MainAsync
+        // is cancelable, not CancellationToken.None.
+        Assert.That(CtMain.LastToken.CanBeCanceled, Is.True);
+    }
+
+    [Test]
+    public async Task MainAsync_ObservesCancellation_WhenTerminationSignalled()
+    {
+        var builder = Tool.CreateBuilder(["cancel-main"]);
+        builder.AddCommandsFromAssembly(typeof(StandaloneCommandTests).Assembly);
+
+        using var host = (StandaloneHost)((IHostBuilder)builder).Build();
+
+        // The token passed to InvokeAsync is linked into the same cancellation source that
+        // System.CommandLine's Ctrl+C / SIGTERM handler cancels — so cancelling it here is
+        // observably identical to a termination signal reaching the running command.
+        using var termination = new CancellationTokenSource();
+        var run = host.InvokeAsync(termination.Token);
+
+        var started = await Task.WhenAny(CancelMain.Started.Task, Task.Delay(TimeSpan.FromSeconds(5)));
+        Assert.That(started, Is.SameAs(CancelMain.Started.Task),
+            "MainAsync should have started and be awaiting cancellation.");
+
+        termination.Cancel();
+
+        var completed = await Task.WhenAny(run, Task.Delay(TimeSpan.FromSeconds(5)));
+        Assert.That(completed, Is.SameAs(run),
+            "Cancellation should let the command complete promptly.");
+
+        Assert.That(await run, Is.EqualTo(0));
+        Assert.That(CancelMain.Cancelled, Is.True,
+            "The standalone command must observe cancellation when termination is signalled.");
+    }
+
+    [Test]
+    public void MainAsync_WithoutCancellationToken_InvokedDirectly_PropagatesExceptions()
+    {
+        var builder = Tool.CreateBuilder(["throwing-main"]);
+        builder.AddCommandsFromAssembly(typeof(StandaloneCommandTests).Assembly);
+
+        // A token-less entry point can't observe cancellation, so StandaloneHost invokes the
+        // action directly and never touches System.CommandLine's invocation pipeline. The
+        // observable proof: the exception propagates out of RunAsync instead of being caught
+        // by S.CL's default exception handler (which would swallow it into exit code 1).
+        var ex = Assert.ThrowsAsync<InvalidOperationException>(async () => await builder.RunAsync());
+        Assert.That(ex!.Message, Is.EqualTo("boom"));
     }
 
     [Test]
@@ -243,6 +290,32 @@ public class CtMain
         Ran = true;
         return Task.CompletedTask;
     }
+}
+
+[Command("cancel-main")]
+public class CancelMain
+{
+    public static TaskCompletionSource<bool> Started { get; set; } = new();
+    public static bool Cancelled { get; set; }
+
+    public async Task MainAsync(CancellationToken ct)
+    {
+        Started.SetResult(true);
+        try
+        {
+            await Task.Delay(Timeout.Infinite, ct);
+        }
+        catch (OperationCanceledException)
+        {
+            Cancelled = true;
+        }
+    }
+}
+
+[Command("throwing-main")]
+public class ThrowingMain
+{
+    public Task MainAsync() => throw new InvalidOperationException("boom");
 }
 
 [Command("builder-main")]

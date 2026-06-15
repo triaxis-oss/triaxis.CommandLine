@@ -2242,17 +2242,24 @@ public class CommandTreeGenerator : IIncrementalGenerator
                 w.WriteLine();
             }
 
-            w.Block("public Task<int> InvokeAsync(IToolBuilder builder, ParseResult parseResult, CancellationToken cancellationToken)", () =>
-            {
-                w.WriteLine("return InvokeInternalAsync(builder, parseResult, cancellationToken);");
-            });
+            // Set by StandaloneHost before invocation so the body below can replay
+            // configuration via ApplyTo. Null when reached through the raw System.CommandLine
+            // pipeline — builder-taking methods then throw.
+            w.WriteLine("public global::triaxis.CommandLine.IToolBuilder? Builder { get; set; }");
             w.WriteLine();
 
-            // Fallback: invoked via raw System.CommandLine pipeline when no IToolBuilder
-            // is available. Methods requiring a builder throw; others run normally.
+            // Drives StandaloneHost's dispatch choice: a CancellationToken-accepting entry
+            // point routes through ParseResult.InvokeAsync (S.CL process-termination token);
+            // otherwise the action is invoked directly with no S.CL pipeline.
+            w.WriteLine($"public bool ObservesCancellation => {(acceptsCancellationToken ? "true" : "false")};");
+            w.WriteLine();
+
+            // Single async entry point. StandaloneHost invokes this directly for a token-less
+            // command, or via ParseResult.InvokeAsync (which supplies a process-termination
+            // token) when the command observes cancellation — matching the ToolHost path.
             w.Block("public override Task<int> InvokeAsync(ParseResult parseResult, CancellationToken cancellationToken)", () =>
             {
-                w.WriteLine("return InvokeInternalAsync(null, parseResult, cancellationToken);");
+                w.WriteLine("return InvokeInternalAsync(Builder, parseResult, cancellationToken);");
             });
             w.WriteLine();
 

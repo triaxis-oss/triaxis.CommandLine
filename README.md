@@ -199,10 +199,14 @@ public class ServeCommand
 
 Recognized signatures are `Main([IToolBuilder,] [CancellationToken])` returning
 `void` or `int`, and `MainAsync([IToolBuilder,] [CancellationToken])` returning `Task`
-or `Task<int>`. Standalone commands can still use `[Argument]`/`[Option]`/`[Options]`
-binding, but cannot mix with `[Inject]` members or constructor DI — their whole point is
-that no service provider is constructed on the CLI side. See
-[`examples/WebHost`](./examples/WebHost) for a full walkthrough.
+or `Task<int>`. Declaring a `CancellationToken` opts the command into System.CommandLine's
+process-termination handling: the `ct` above is wired to Ctrl+C / SIGTERM (the same token a
+`ToolHost` command gets), so `await app.RunAsync(ct)` shuts the host down cooperatively.
+Omit it and the command is invoked directly, with no framework cancellation machinery — it
+owns its lifecycle outright. Standalone commands can still use
+`[Argument]`/`[Option]`/`[Options]` binding, but cannot mix with `[Inject]` members or
+constructor DI — their whole point is that no service provider is constructed on the CLI
+side. See [`examples/WebHost`](./examples/WebHost) for a full walkthrough.
 
 ### Arguments and options
 
@@ -625,6 +629,11 @@ configurable termination timeout. Commands that do not accept a token get a
 during a non-cancellable command terminates the process immediately. The registration is
 disposed as soon as the command body returns, so it never fires during middleware or
 result finalization.
+
+This applies to the `ToolHost` path. Standalone `Main`/`MainAsync` commands opt into the
+same Ctrl+C / SIGTERM token only by declaring a `CancellationToken` parameter; without one
+they skip System.CommandLine's invocation pipeline entirely (see
+[Standalone commands](#standalone-commands-main--mainasync)).
 
 ## The Tool meta-package
 

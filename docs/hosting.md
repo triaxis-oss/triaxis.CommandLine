@@ -311,11 +311,27 @@ only capability removed is constructor/member DI.
 
 #### Cancellation
 
-For now, `StandaloneHost` passes `CancellationToken.None` to `Main`/`MainAsync`. Standalone
-commands are expected to wire their own process-termination handling if needed (e.g.
-via `Console.CancelKeyPress` or `PosixSignalRegistration`). Full cancellation flow
-on par with `ToolHost` (which benefits from System.CommandLine's `ProcessTerminationTimeout`)
-is a follow-up.
+Whether `StandaloneHost` involves System.CommandLine at all depends on the entry point's
+signature:
+
+- **`Main`/`MainAsync` declares a `CancellationToken`** — the host dispatches through
+  `ParseResult.InvokeAsync`, the same entry point `ToolHost` uses. This reuses S.CL's
+  process-termination handling: a token linked to its Ctrl+C / SIGTERM source (honoring
+  `ProcessTerminationTimeout`, 2 seconds by default) is threaded into the action and handed
+  to the `CancellationToken` parameter. A long-running command — e.g. a web host started
+  with `await app.RunAsync(ct)` — therefore gets cooperative cancellation on Ctrl+C/SIGTERM
+  without wiring its own `Console.CancelKeyPress` / `PosixSignalRegistration` handler.
+- **No `CancellationToken` parameter** — the command can't observe cancellation, so the host
+  invokes the action directly, with **no** S.CL invocation pipeline: no linked token source,
+  no termination handler. Ctrl+C falls back to the runtime default (immediate termination),
+  and the command is in sole control of its lifecycle — exactly as before this token wiring
+  existed. A command that self-hosts a framework with its own signal handling (e.g.
+  `app.RunAsync()` with no token) thus owns Ctrl+C outright, with nothing competing for it.
+
+The feature is purely additive: declare a `CancellationToken` to opt into the framework's
+termination token; omit it and nothing about the standalone path changes. One consequence of
+the split is exception handling — the S.CL path catches unhandled exceptions via its default
+handler (exit code 1), while the direct path lets them propagate out of `Run`/`RunAsync`.
 
 ### Reusable `IHostBuilder` extensions
 
