@@ -404,8 +404,9 @@ public static async Task<int> RunAsync(this IToolBuilder builder)
 already implements `IAsyncDisposable`, otherwise a tiny adapter that forwards
 `DisposeAsync` to `IDisposable.Dispose`. `RunAsync` uses it to tear down containers
 holding `IAsyncDisposable`-only services without hitting `ServiceProvider.Dispose()`'s
-sync-only check. Sync `Run` keeps sync semantics — if you register async-only
-disposables, call `RunAsync`.
+sync-only check. Sync `Dispose` bridges to the same async path
+(`DisposeAsync().AsTask().GetAwaiter().GetResult()`), so async-only disposables shut
+down cleanly under `Run` too — it just blocks on the teardown instead of awaiting it.
 
 If you want finer-grained control, call `Build()` yourself:
 
@@ -443,8 +444,8 @@ class ToolHost(IServiceProvider services, ParseResult parseResult) : IHost, IHos
     public int Invoke();            // parseResult.Invoke()
     public Task<int> InvokeAsync(); // parseResult.InvokeAsync()
 
-    public void Dispose();              // disposes CTS instances + the ServiceProvider
-    public ValueTask DisposeAsync();    // same, but awaits IAsyncDisposable services
+    public void Dispose();              // bridges to DisposeAsync().GetAwaiter().GetResult()
+    public ValueTask DisposeAsync();    // disposes CTS instances + awaits the ServiceProvider
 }
 ```
 
@@ -461,9 +462,9 @@ Lifecycle:
 4. `StopAsync` fires `ApplicationStopping`, calls `StopAsync` on every hosted service in
    **reverse** order, then fires `ApplicationStopped`.
 5. `Dispose` / `DisposeAsync` disposes the lifetime `CancellationTokenSource` instances
-   and the `ServiceProvider`. `RunAsync` always takes the async path; sync `Run` uses
-   `Dispose` and will surface `ServiceProvider`'s usual error if a singleton implements
-   only `IAsyncDisposable`.
+   and the `ServiceProvider`. `RunAsync` awaits `DisposeAsync` directly; sync `Run` uses
+   `Dispose`, which bridges to `DisposeAsync` (blocking on the result) so async-only
+   singletons are released either way.
 
 Any exception thrown during `Invoke` / `InvokeAsync` escapes to `Run` / `RunAsync`, which
 still runs `StopAsync` in a `finally`. Hosted services therefore get a chance to shut down

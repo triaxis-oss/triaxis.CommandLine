@@ -284,6 +284,28 @@ public class ToolBuilderTests
     }
 
     [Test]
+    public void Run_DisposesAsyncOnlyDisposableServices()
+    {
+        var tracker = new AsyncDisposalTracker();
+        var builder = Tool.CreateBuilder(["lifetime-resolve"]);
+        builder.ConfigureServices(s =>
+        {
+            s.AddSingleton(tracker);
+            s.AddSingleton<AsyncOnlyDisposable>();
+        });
+        builder.ConfigureServices(s => s.AddSingleton(new LifetimeCapture()));
+        builder.AddCommandsFromAssembly(typeof(ToolBuilderTests).Assembly);
+
+        // Force the singleton to be instantiated so the provider tracks it for disposal.
+        builder.ConfigureServices(s => s.AddHostedService<AsyncDisposableActivator>());
+
+        Assert.That(() => builder.Run(), Throws.Nothing,
+            "sync Run must bridge Dispose to DisposeAsync so async-only services release without throwing");
+        Assert.That(tracker.DisposedAsync, Is.True,
+            "the async-only disposable should be disposed via the sync Dispose bridge");
+    }
+
+    [Test]
     public async Task HostApplicationLifetime_StopApplication_FiresStopping()
     {
         var capture = new LifetimeCapture();

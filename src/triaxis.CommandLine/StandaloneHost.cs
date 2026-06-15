@@ -27,9 +27,7 @@ sealed class StandaloneHost(IToolBuilder builder, IStandaloneAction action, Pars
         => action.InvokeAsync(builder, parseResult, cancellationToken);
 
     public void Dispose()
-    {
-        (Services as IDisposable)?.Dispose();
-    }
+        => DisposeAsync().AsTask().GetAwaiter().GetResult();
 
     public ValueTask DisposeAsync() => Services.AsAsyncDisposable().DisposeAsync();
 }
