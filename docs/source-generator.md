@@ -184,11 +184,14 @@ internal static class Serve
 
     internal sealed class Action : AsynchronousCommandLineAction, IStandaloneAction
     {
-        public Task<int> InvokeAsync(IToolBuilder builder, ParseResult parseResult, CancellationToken cancellationToken)
-            => InvokeInternalAsync(builder, parseResult, cancellationToken);
+        // Stashed by StandaloneHost before invocation; null on the raw S.CL pipeline.
+        public IToolBuilder? Builder { get; set; }
+
+        // true only when the entry point declares a CancellationToken parameter.
+        public bool ObservesCancellation => false;
 
         public override Task<int> InvokeAsync(ParseResult parseResult, CancellationToken cancellationToken)
-            => InvokeInternalAsync(null, parseResult, cancellationToken);
+            => InvokeInternalAsync(Builder, parseResult, cancellationToken);
 
         private async Task<int> InvokeInternalAsync(IToolBuilder? builder, ParseResult parseResult, CancellationToken cancellationToken)
         {
@@ -204,6 +207,11 @@ internal static class Serve
 
 `ToolBuilder.Build()` pattern-matches `IStandaloneAction` and returns a minimal
 `StandaloneHost` instead of the full `ToolHost` — no service provider is ever built.
+`StandaloneHost` sets `Builder`, then dispatches based on `ObservesCancellation`: a
+token-accepting entry point routes through `ParseResult.InvokeAsync` (the same path
+`ToolHost` uses, so S.CL drives the `InvokeAsync(ParseResult, CancellationToken)` override
+with a process-termination-linked token); a token-less one is invoked directly with no S.CL
+pipeline at all.
 
 ### Discovery and validation
 
@@ -298,14 +306,16 @@ internal static class Backup
     // [ActionOption] MigrateAsync(IToolBuilder, CancellationToken) — standalone path.
     internal sealed class MigrateAsync : AsynchronousCommandLineAction, IStandaloneAction
     {
-        public Task<int> InvokeAsync(IToolBuilder builder, ParseResult parseResult, CancellationToken ct)
+        public IToolBuilder? Builder { get; set; }  // stashed by StandaloneHost
+
+        public override Task<int> InvokeAsync(ParseResult parseResult, CancellationToken ct)
         {
+            if (Builder is null) throw …;  // builder-taking entry point requires a builder
             var instance = CreateInstance(parseResult);  // no provider — standalone
             BindOptions(instance, parseResult);
             InjectServices(instance, null);  // [Inject] members short-circuit to null
-            return instance.MigrateAsync(builder, ct);
+            return instance.MigrateAsync(Builder, ct);
         }
-        // fallback throws when invoked without a builder
     }
 }
 ```

@@ -1,6 +1,7 @@
 namespace triaxis.CommandLine;
 
 using System.CommandLine;
+using System.CommandLine.Invocation;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
@@ -24,7 +25,20 @@ sealed class StandaloneHost(IToolBuilder builder, IStandaloneAction action, Pars
         => InvokeAsync().GetAwaiter().GetResult();
 
     public Task<int> InvokeAsync(CancellationToken cancellationToken = default)
-        => action.InvokeAsync(builder, parseResult, cancellationToken);
+    {
+        // Hand the action the builder so it can replay configuration via ApplyTo.
+        action.Builder = builder;
+
+        // A command that declares a CancellationToken opts into framework cancellation:
+        // dispatch through System.CommandLine so its process-termination handling (Ctrl+C /
+        // SIGTERM honoring ProcessTerminationTimeout) wires a real token into the action,
+        // exactly like ToolHost. A command without one can't observe cancellation, so invoke
+        // the action directly and keep the standalone path free of S.CL's invocation pipeline —
+        // it fully owns its own lifecycle, just as before this token wiring existed.
+        return action.ObservesCancellation
+            ? parseResult.InvokeAsync(cancellationToken: cancellationToken)
+            : ((AsynchronousCommandLineAction)action).InvokeAsync(parseResult, cancellationToken);
+    }
 
     public void Dispose()
         => DisposeAsync().AsTask().GetAwaiter().GetResult();
