@@ -144,6 +144,14 @@ builder.UseScopedConfiguration(s => s
 
 `AddYamlOverrides` is the YAML twin of `AddJsonOverrides`; both register *writable*
 providers (see [Persisting scope-targeted changes](#persisting-scope-targeted-changes)).
+For a plain **read-only** YAML layer the Tool package also exposes `AddYamlFile` /
+`AddYamlStream` — the YAML counterparts of the built-in `AddJsonFile` / `AddJsonStream`,
+same overloads and flattening — so you can layer your own YAML configuration without
+the writable machinery:
+
+```csharp
+builder.ConfigureConfiguration(c => c.AddYamlFile("appsettings.yaml", optional: true, reloadOnChange: true));
+```
 
 `AddOverrides(relativePath, addFile)` is the format-neutral engine: it registers the
 file in `CommonApplicationData` (→ `Machine`), then `ApplicationData` and

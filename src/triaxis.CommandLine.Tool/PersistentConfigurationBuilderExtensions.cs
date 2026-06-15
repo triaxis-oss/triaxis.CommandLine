@@ -69,4 +69,43 @@ public static class PersistentConfigurationBuilderExtensions
         bool optional = false,
         bool reloadOnChange = false)
         => builder.AddPersistentYamlFile(null, path, optional, reloadOnChange);
+
+    /// <summary>
+    /// Adds a read-only YAML configuration file — the YAML counterpart of <c>AddJsonFile</c>,
+    /// so consumers can layer their own YAML alongside (or instead of) the writable
+    /// <see cref="AddPersistentYamlFile(IConfigurationBuilder, string, bool, bool)"/>.
+    /// </summary>
+    /// <param name="fileProvider">
+    /// <see langword="null"/> falls back to the builder's default file provider.
+    /// </param>
+    public static IConfigurationBuilder AddYamlFile(
+        this IConfigurationBuilder builder,
+        IFileProvider? fileProvider,
+        string path,
+        bool optional,
+        bool reloadOnChange)
+        => builder.Add<YamlConfigurationSource>(s =>
+        {
+            s.FileProvider = fileProvider;
+            s.Path = path;
+            s.Optional = optional;
+            s.ReloadOnChange = reloadOnChange;
+        });
+
+    /// <inheritdoc cref="AddYamlFile(IConfigurationBuilder, IFileProvider, string, bool, bool)"/>
+    public static IConfigurationBuilder AddYamlFile(
+        this IConfigurationBuilder builder,
+        string path,
+        bool optional = false,
+        bool reloadOnChange = false)
+        => builder.AddYamlFile(null, path, optional, reloadOnChange);
+
+    /// <summary>
+    /// Adds a read-only YAML configuration stream — the YAML counterpart of
+    /// <c>AddJsonStream</c>. The caller owns the <paramref name="stream"/>.
+    /// </summary>
+    public static IConfigurationBuilder AddYamlStream(
+        this IConfigurationBuilder builder,
+        Stream stream)
+        => builder.Add<YamlStreamConfigurationSource>(s => s.Stream = stream);
 }
