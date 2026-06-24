@@ -238,6 +238,66 @@ public class UseDefaultConfigurationTests
     }
 
     [Test]
+    public async Task UseScopedConfiguration_RepeatedCalls_AccumulateIntoOneSourcePreservingPrecedence()
+    {
+        // The more specific scope is registered in the FIRST call, the less specific in
+        // a SECOND. If each call emitted its own source, the later Builtin layer would
+        // win at the outer root (plain last-added-wins); merged into one source, the
+        // scope fold keeps User (more specific) on top.
+        var builder = Tool.CreateBuilder(["greet"])
+            .UseSerilog()
+            .UseVerbosityOptions()
+            .UseScopedConfiguration(s => s.Add(ConfigurationScope.User,
+                c => c.AddInMemoryCollection(new Dictionary<string, string?> { ["X"] = "user" })))
+            .UseScopedConfiguration(s => s.Add(ConfigurationScope.Builtin,
+                c => c.AddInMemoryCollection(new Dictionary<string, string?> { ["X"] = "builtin" })))
+            .AddCommandsFromAssembly(typeof(UseDefaultConfigurationTests).Assembly);
+
+        await builder.RunAsync();
+
+        Assert.That(builder.Configuration["X"], Is.EqualTo("user"),
+            "repeated UseScopedConfiguration calls accumulate into one source, so scope precedence holds across calls");
+    }
+
+    [Test]
+    public async Task UseScopedConfiguration_RepeatedCalls_UpdateReachesScopeFromLaterCall()
+    {
+        // The writable User override is registered in a SECOND call. With one source per
+        // call, Update found the first source (Builtin only) and threw for the User
+        // scope; merged into one source, the scope-targeted write lands.
+        var overrideName = $"override.{Guid.NewGuid():N}.json";
+        var overridePath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), overrideName);
+        Directory.CreateDirectory(Path.GetDirectoryName(overridePath)!);
+        try
+        {
+            var builder = Tool.CreateBuilder(["greet"])
+                .UseSerilog()
+                .UseVerbosityOptions()
+                .UseScopedConfiguration(s => s.AddBuiltinConfiguration(
+                    $"appsettings.{Guid.NewGuid():N}.json", reloadOnChange: false))
+                .UseScopedConfiguration(s => s.AddJsonOverrides(overrideName, reloadOnChange: false))
+                .AddCommandsFromAssembly(typeof(UseDefaultConfigurationTests).Assembly);
+
+            await builder.RunAsync();
+
+            builder.Configuration.Update(ConfigurationScope.User, cp => cp.Set("written", "yes"));
+
+            Assert.That(builder.Configuration["written"], Is.EqualTo("yes"),
+                "a scope registered in a later call is reachable by a scope-targeted Update");
+            Assert.That(File.Exists(overridePath), Is.True,
+                "the User-scope write persists to the override file registered in the second call");
+        }
+        finally
+        {
+            if (File.Exists(overridePath))
+            {
+                File.Delete(overridePath);
+            }
+        }
+    }
+
+    [Test]
     public void RecursiveOptions_OrderedAfterUserDefinedOptions_RegardlessOfRegistrationOrder()
     {
         // Recursive options (--verbosity, --output) must appear AFTER the user's

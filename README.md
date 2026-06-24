@@ -460,6 +460,10 @@ Tool.CreateBuilder(args)
     .Run();
 ```
 
+Calling `UseScopedConfiguration` repeatedly (or alongside `UseDefaultConfiguration`)
+accumulates onto one shared builder and emits a single source, so scope precedence and
+scope-targeted `Update` keep working across calls rather than each call stacking a layer.
+
 `UseDefaultConfiguration` is built on this and accepts a `configure` hook for adding an
 `Override` source or `Remap` rules. The same machine/user probing is also exposed as
 composable `ScopedConfigurationBuilder` helpers — `AddBuiltinConfiguration`,
