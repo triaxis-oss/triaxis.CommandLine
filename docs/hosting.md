@@ -123,6 +123,15 @@ as a unit and its precedence is independent of where it sits in an outer builder
 `Remap(fromPath)` overlays the subtree onto the root; `Remap(fromPath, toPath)` moves
 it under `toPath`. Remaps apply independently to every scope that has sources.
 
+Calling `UseScopedConfiguration` more than once on the same host (including any mix of
+`UseScopedConfiguration` and `UseDefaultConfiguration`) **accumulates onto one shared
+`ScopedConfigurationBuilder`** and still emits a single source — it does not stack a new
+layer per call. This is required for correctness, not just tidiness: the scope
+precedence and scope-targeted `Update` both only hold *within* one source. Were each call
+its own layer, a later call's less specific scope would clobber an earlier call's more
+specific scope (plain last-added-wins at the outer root), and `Update` would only ever
+reach the first source's scopes.
+
 The opinionated `UseDefaultConfiguration` is built on this: `appsettings.json` →
 `Builtin`, the all-users override file → `Machine`, the per-user override files →
 `User`, environment variables → `EnvironmentVariables`. Its effective precedence is
