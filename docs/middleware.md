@@ -84,7 +84,7 @@ public async Task ExecuteAsync(InvocationContext context, Func<Task> command)
     {
         context.ExitCode = error.ExitCode;
         var logger = _loggerFactory.CreateLogger(context.CommandType.FullName ?? context.CommandType.Name);
-        logger.LogError(error.MessageTemplate, error.MessageArguments);
+        LogError(logger, error);
     }
 }
 ```
@@ -223,6 +223,13 @@ configurable per throw:
 ```csharp
 throw new CommandErrorException("Config {Path} invalid", path) { ExitCode = 78 };
 ```
+
+If the logging pipeline cannot render the template — most commonly because it has more
+holes than arguments, which makes `Microsoft.Extensions.Logging` throw a `FormatException`
+while formatting — the error is logged in a degraded form (raw template plus the
+arguments) instead of being lost. Without that fallback the formatting exception would
+escape the executor, so the command would report *nothing* and System.CommandLine's
+default handler would replace the mapped exit code with its own.
 
 ### Mapping more exception types to a clean exit
 

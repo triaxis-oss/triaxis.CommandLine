@@ -2,6 +2,7 @@ namespace triaxis.CommandLine.Tests;
 
 using System.Reflection;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 public class EchoState
 {
@@ -41,6 +42,13 @@ public class FailingWithCodeCommand
 {
     public Task ExecuteAsync()
         => throw new CommandErrorException("nope {Value}", 7) { ExitCode = 3 };
+}
+
+[Command("fail-unbalanced")]
+public class FailingWithUnbalancedTemplateCommand
+{
+    public Task ExecuteAsync()
+        => throw new CommandErrorException("missing {First} and {Second}", 1) { ExitCode = 5 };
 }
 
 [Command("boom")]
@@ -312,15 +320,46 @@ public class DerivedSyncOverridesBaseAsync : BaseWithAsync
     }
 }
 
+/// <summary>
+/// Renders every log message eagerly, like a real console/file provider would, so
+/// template rendering failures surface instead of staying latent.
+/// </summary>
+public sealed class CapturingLoggerProvider : ILoggerProvider, ILogger
+{
+    public List<string> Messages { get; } = [];
+
+    public ILogger CreateLogger(string categoryName) => this;
+
+    public void Dispose()
+    {
+    }
+
+    public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+    public bool IsEnabled(LogLevel logLevel) => true;
+
+    public void Log<TState>(
+        LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+        Func<TState, Exception?, string> formatter)
+    {
+        Messages.Add(formatter(state, exception));
+    }
+}
+
 [TestFixture]
 public class CommandExecutionTests
 {
-    private static IToolBuilder CreateBuilder(string[] args, EchoState? state = null)
+    private static IToolBuilder CreateBuilder(
+        string[] args, EchoState? state = null, CapturingLoggerProvider? logs = null)
     {
         var builder = Tool.CreateBuilder(args);
         if (state is not null)
         {
             builder.ConfigureServices(s => s.AddSingleton(state));
+        }
+        if (logs is not null)
+        {
+            builder.ConfigureServices(s => s.AddSingleton<ILoggerProvider>(logs));
         }
         builder.AddCommandsFromAssembly(typeof(CommandExecutionTests).Assembly);
         return builder;
@@ -369,6 +408,30 @@ public class CommandExecutionTests
         var exitCode = await builder.RunAsync();
 
         Assert.That(exitCode, Is.EqualTo(3));
+    }
+
+    [Test]
+    public async Task Run_CommandErrorException_LogsRenderedMessage()
+    {
+        var logs = new CapturingLoggerProvider();
+        var builder = CreateBuilder(["fail"], logs: logs);
+
+        await builder.RunAsync();
+
+        Assert.That(logs.Messages, Is.EqualTo(new[] { "something went wrong 42" }));
+    }
+
+    [Test]
+    public async Task Run_CommandErrorException_UnbalancedTemplate_StillLogsAndKeepsExitCode()
+    {
+        var logs = new CapturingLoggerProvider();
+        var builder = CreateBuilder(["fail-unbalanced"], logs: logs);
+
+        var exitCode = await builder.RunAsync();
+
+        Assert.That(exitCode, Is.EqualTo(5));
+        Assert.That(logs.Messages, Has.Count.EqualTo(1));
+        Assert.That(logs.Messages[0], Does.Contain("missing {First} and {Second}").And.Contain("[1]"));
     }
 
     [Test]
