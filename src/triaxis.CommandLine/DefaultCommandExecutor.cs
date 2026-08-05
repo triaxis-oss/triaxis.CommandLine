@@ -49,7 +49,26 @@ class DefaultCommandExecutor : ICommandExecutor
         {
             context.ExitCode = error.ExitCode;
             var logger = _loggerFactory.CreateLogger(context.CommandType.FullName ?? context.CommandType.Name);
+            LogError(logger, error);
+        }
+    }
+
+    private static void LogError(ILogger logger, CommandError error)
+    {
+        try
+        {
             logger.LogError(error.MessageTemplate, error.MessageArguments);
+        }
+        catch (Exception e)
+        {
+            // A template the logger cannot render (typically more holes than arguments)
+            // would otherwise escape here, replacing the error with silence and losing
+            // the mapped exit code to System.CommandLine's default handler.
+            logger.LogError(
+                "{MessageTemplate} [{MessageArguments}] (message template could not be rendered: {Reason})",
+                error.MessageTemplate,
+                string.Join(", ", error.MessageArguments),
+                e.GetBaseException().Message);
         }
     }
 
