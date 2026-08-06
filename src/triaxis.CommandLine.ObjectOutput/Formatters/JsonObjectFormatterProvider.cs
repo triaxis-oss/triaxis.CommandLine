@@ -1,7 +1,3 @@
-using System.Runtime.Serialization;
-using System.Text;
-using YamlDotNet.Serialization.Schemas;
-
 namespace triaxis.CommandLine.ObjectOutput.Formatters;
 
 class JsonObjectFormatterProvider : IObjectFormatterProvider

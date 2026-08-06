@@ -76,7 +76,7 @@ dotnet run -- hello --help                # System.CommandLine generated help
 `UseDefaultConfiguration()` and `AddCommandsFromAssembly()` — see [The `Tool`
 meta-package](#the-tool-meta-package) below. The source-generated entry point chains the
 individual helpers directly instead of calling `UseDefaults`, and omits `UseObjectOutput`
-(along with the YamlDotNet dependency) when no command produces output, so the formatter
+when no command produces output, so the formatter
 stack can be trimmed.
 
 ## Building blocks
@@ -420,8 +420,8 @@ Tool.CreateBuilder(args)
     .Run();
 ```
 
-Or, when you want finer control (e.g. to skip `UseObjectOutput` so YamlDotNet can be
-trimmed), call the helpers directly — this is what the source-generated `Main` does:
+Or, when you want finer control (e.g. to skip `UseObjectOutput` so the formatter stack
+can be trimmed), call the helpers directly — this is what the source-generated `Main` does:
 
 ```csharp
 Tool.CreateBuilder(args)
@@ -559,6 +559,13 @@ Supported return shapes:
 Use `[ObjectOutput]` to control field visibility (`Standard` / `Extended` / `Internal`) and to
 position computed/extension fields with `Before = nameof(...)` / `After = nameof(...)`.
 
+`Yaml` is emitted directly by the package rather than through a YAML library, so
+ObjectOutput carries no third-party dependency. A string is left unquoted only when it
+provably reads back unchanged under both YAML 1.1 and YAML 1.2 — so `yes`, `007`,
+`1:30:00` and `2026-08-06` come out quoted, while `hello world`, `--flag` and `::1` do
+not. Multi-line strings become literal block scalars. See
+[Object output](docs/object-output.md#8-yaml-output) for the details.
+
 For commands that emit multiple result sets, inject `IObjectOutputHandler` and call it directly:
 
 ```csharp
@@ -671,7 +678,7 @@ when you want `triaxis.CommandLine.ObjectOutput` to be trimmable).
 
 The source-generated entry point does **not** call `UseDefaults`. Instead it chains the
 individual helpers and omits `.UseObjectOutput()` when every `[Command]` class returns
-`void`/`Task`/`int`/`Task<int>`, so the ObjectOutput + YamlDotNet graph becomes
+`void`/`Task`/`int`/`Task<int>`, so the ObjectOutput graph becomes
 unreachable and the trimmer can drop it. Keep that in mind if you add more work to
 `UseDefaults`: it only runs for hand-written entry points that call it explicitly.
 
@@ -684,7 +691,7 @@ produces an equivalent `Main` that chains
 `.UseSerilog().UseVerbosityOptions()[.UseObjectOutput()].UseDefaultConfiguration().AddCommandsFromAssembly(...).Run()`.
 The `.UseObjectOutput()` call is emitted only when at least one `[Command]` class has a
 return type other than `void`/`Task`/`int`/`Task<int>` — projects whose commands all
-return one of those can trim `triaxis.CommandLine.ObjectOutput` (and `YamlDotNet`) out of
+return one of those can trim `triaxis.CommandLine.ObjectOutput` out of
 the published binary. The generator falls back to `AddCommandsFromAssembly().Run()` when
 only the base `triaxis.CommandLine` package is referenced, without the `Tool`
 meta-package.

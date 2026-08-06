@@ -99,6 +99,21 @@ a `CancellationToken` to the action. Commands accepting `CancellationToken` get
 cooperative cancellation. Commands that don't trigger `Environment.FailFast`
 (the registration is disposed after the command returns so it doesn't affect middleware).
 
+### YAML emitter
+
+`YamlWriter` writes block-style YAML 1.2 directly — no YAML library. It walks nested
+values through `IObjectDescriptor` (via `RuntimeObjectDescriptor.For` until the source
+generator supplies descriptors), so `[ObjectOutput]` ordering applies at every depth,
+not just the root. Line breaks are written as literal `\n`, never `TextWriter.NewLine`,
+so output is platform-independent.
+
+`PlainScalar.IsSafe` decides quoting. It rejects anything either YAML 1.1 (PyYAML, yq,
+Psych) or YAML 1.2 core (YamlDotNet) would resolve as a non-string, because the consumer
+is unknown at emit time. Uncertainty must always resolve to quoting — the failure mode is
+ugly output, never a wrong-typed value. Measured cost: ~3% unnecessary quoting over a
+~17k-string adversarial + fuzz corpus, verified in `YamlRoundTripTests` against YamlDotNet
+as an independent oracle (a test-only dependency).
+
 ### Serilog Integration
 
 The Serilog logger is created lazily inside a DI factory (`ILoggerProvider` singleton).
@@ -119,6 +134,7 @@ for logging — the level is baked into the logger at creation time.
 - `ICommandExecutor` / `DefaultCommandExecutor` — runs middleware chain + finalization
 - `ICommandInvocationResult` / `ICommandInvocationResult<T>` — wraps command return
   values for streaming enumeration (used by ObjectOutput)
+- `YamlWriter` / `PlainScalar` — in-house block-style YAML emitter and its quoting rule
 - `VerbosityOptions` — public static option definitions for `--verbosity`/`-v`/`-q`
 - `IPersistentConfigurationProvider` — `IConfigurationProvider` + `Save` (`Set` is
   already on `IConfigurationProvider`); the writable-source contract.
@@ -156,10 +172,12 @@ for logging — the level is baked into the logger at creation time.
 ## Dependencies
 
 - **Base**: System.CommandLine, M.E.DependencyInjection, M.E.Configuration, M.E.Logging
-- **ObjectOutput**: + YamlDotNet, M.E.Options, M.E.DI.Abstractions
+- **ObjectOutput**: + M.E.Options, M.E.DI.Abstractions (no third-party YAML/JSON library;
+  `YamlWriter` emits YAML directly and JSON goes through in-box System.Text.Json)
 - **Serilog**: + Serilog, Serilog.Extensions.Logging, Serilog.Sinks.Console,
   Serilog.Settings.Configuration
 - **Tool**: + M.E.Configuration.Json, M.E.Configuration.EnvironmentVariables,
-  M.E.FileProviders.Physical; references Serilog + ObjectOutput. The persistent
-  JSON/YAML writers reuse System.Text.Json and ObjectOutput's transitive YamlDotNet —
-  no extra dependency
+  M.E.FileProviders.Physical, YamlDotNet (YAML config source + persistent editor;
+  previously inherited transitively from ObjectOutput); references Serilog + ObjectOutput. The persistent
+  JSON/YAML writers reuse System.Text.Json and the Tool package's own YamlDotNet
+  reference — no extra dependency

@@ -21,6 +21,9 @@
     <PackageReference Include="NUnit3TestAdapter" />
     <PackageReference Include="NUnit.Analyzers" />
     <PackageReference Include="coverlet.collector" />
+    <!-- Independent YAML parser, used purely as a round-trip oracle for the emitter.
+         Deliberately not a dependency of the ObjectOutput package itself. -->
+    <PackageReference Include="YamlDotNet" />
   </ItemGroup>
 
 </Project>

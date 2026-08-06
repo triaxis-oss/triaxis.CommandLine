@@ -14,7 +14,7 @@ public static class ToolBuilderExtensions
     /// <remarks>
     /// The source-generated entry point does <b>not</b> call this method; it chains the
     /// individual helpers directly so projects without output-producing commands can
-    /// trim <c>triaxis.CommandLine.ObjectOutput</c> (and YamlDotNet) out of the published
+    /// trim <c>triaxis.CommandLine.ObjectOutput</c> out of the published
     /// binary. Keep that in mind if you add more work here — it won't be reachable from
     /// the generated <c>Main</c>.
     /// </remarks>

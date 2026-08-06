@@ -120,8 +120,8 @@ it is near the inner end of the chain.
 > the individual helpers directly instead of calling `UseDefaults`, and it only emits
 > `.UseObjectOutput()` when at least one `[Command]` class has a return type other than
 > `void`, `Task`, `int`, or `Task<int>`. In projects where every command is a void/int
-> return, `triaxis.CommandLine.ObjectOutput` (and therefore `YamlDotNet`) becomes
-> unreachable and can be dropped by the trimmer. Hand-written entry points that call
+> return, `triaxis.CommandLine.ObjectOutput` becomes unreachable and can be dropped by
+> the trimmer. Hand-written entry points that call
 > `UseDefaults()` still pull in the full stack — use the generated entry point or the
 > individual helpers (`UseSerilog().UseVerbosityOptions().UseDefaultConfiguration().AddCommandsFromAssembly(...)`)
 > to get the trimming benefit.
@@ -266,7 +266,7 @@ The shipped providers:
 | --- | --- | --- |
 | `TableObjectFormatterProvider` | `Table`, `Wide` | Columnar text with borders and padding; sizes columns dynamically. Respects `TableOutputOptions.Wide` for extended fields. |
 | `JsonObjectFormatterProvider` | `Json` | Streams via `Utf8JsonWriter`; writes an array for collections, an object for scalars. |
-| `YamlObjectFormatterProvider` | `Yaml` | Uses YamlDotNet. |
+| `YamlObjectFormatterProvider` | `Yaml` | Block-style YAML written directly by `YamlWriter`; no third-party YAML library. See [YAML output](#8-yaml-output). |
 | `RawObjectFormatterProvider` | `Raw` | Writes `element?.ToString()` per row. Useful for piping into other shell tools. |
 | `DiscardObjectFormatterProvider` | `None` | Consumes elements and throws them away — still drives the enumeration so side effects run. |
 
@@ -348,3 +348,64 @@ overloads for values, `IEnumerable<T>`, `IAsyncEnumerable<T>`, `Task<T>`, and
 The non-generic `IObjectOutputHandler` registered by `UseObjectOutput` is
 `DynamicObjectOutputHandler`, which dispatches to the correct `IObjectOutputHandler<T>` at
 runtime by looking at the result's element type — just like the middleware does.
+
+## 8. YAML output
+
+`-o yaml` is produced by `YamlWriter`, a block-style YAML 1.2 emitter in the ObjectOutput
+package itself. There is no third-party YAML dependency.
+
+The emitter never produces flow context except for empty containers (`{}` / `[]`), and it
+writes line breaks as `\n` explicitly rather than through `TextWriter.NewLine`, so output
+does not vary with the platform. Nested values are walked through the same
+`IObjectDescriptor` machinery as the root object, so `[ObjectOutput(Before = …)]` ordering
+applies at every depth rather than only at the top level.
+
+```yaml
+name: web-frontend
+replicas: 3
+ready: true
+version: v1.2.3-beta
+notes: "yes"
+description: |
+  Handles inbound HTTP.
+  Routes to the API tier.
+labels:
+  tier: front
+  env: prod
+ports:
+  - 80
+  - 443
+probes:
+  - path: /healthz
+    timeout: "1:30"
+taints: []
+```
+
+### When a string gets quoted
+
+A string is emitted unquoted only when `PlainScalar.IsSafe` proves it will read back as
+the same string. Because the consumer is not known at emit time, that test covers the
+**union** of YAML 1.1 (PyYAML, `yq`, Ruby's Psych) and YAML 1.2 core (YamlDotNet) — a
+token either schema would reinterpret is quoted. So `yes`, `y`, `off`, `null`, `007`,
+`1e10`, `1:30:00` (the shape `TimeSpan.ToString()` produces) and `2026-08-06` all come out
+quoted, while `hello world`, `v1.2.3-beta`, `user@example.com`, `--flag`, `::1` and
+`80/TCP` stay plain.
+
+Uncertainty always resolves to quoting, so the failure mode is output that is uglier than
+necessary, never a value that reads back as the wrong type. Measured against a corpus of
+~17,000 adversarial and fuzzed strings, that costs about 3% of values an unnecessary pair
+of quotes.
+
+Multi-line strings become literal block scalars (`|`, `|-`, `|+` depending on trailing
+newlines). Block form is declined — falling back to a double-quoted scalar — whenever it
+would not round-trip byte for byte: strings containing `\r` (block scalars normalise line
+breaks), lines with leading or trailing whitespace, and strings with only one content
+line.
+
+Whole-numbered `double` and `decimal` values are written with an explicit `.0` so they
+resolve as floats rather than integers on the way back.
+
+> **Breaking change in 2.6.** The YAML formatter no longer uses YamlDotNet, so registering
+> `IConfigureOptions<YamlDotNet.Serialization.SerializerBuilder>` no longer affects
+> output. Replace `YamlObjectFormatterProvider` via `ConfigureServices` if you need
+> different YAML.

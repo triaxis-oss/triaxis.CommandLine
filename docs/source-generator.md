@@ -561,7 +561,7 @@ When the consuming project is a console executable
 point (`Compilation.GetEntryPoint(ct) is null`), the generator emits an additional file
 `GeneratedProgram.g.cs`. Instead of calling `UseDefaults`, it chains the individual
 helpers directly so that `UseObjectOutput` — and with it the
-`triaxis.CommandLine.ObjectOutput` + YamlDotNet graph — can be omitted when no command
+`triaxis.CommandLine.ObjectOutput` graph — can be omitted when no command
 needs it:
 
 ```csharp
