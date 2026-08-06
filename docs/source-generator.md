@@ -458,6 +458,35 @@ reorder path: Remove+Add and the indexer setter both double-register the parent)
 creation (e.g. in tests or for commands not handled by the generator). It walks the
 `RootCommand` tree, creating and inserting subcommands in sorted position.
 
+### Root command and name collisions
+
+A `[Command]` with no path segments has no tree node of its own — it becomes the action
+of the root command, i.e. what runs when the tool is invoked with no verb.
+
+System.CommandLine names the root command after the executable and tokenizes the root
+together with its direct children through a single token map, so a top-level command
+that reuses the executable name makes the parser throw
+`An item with the same key has already been added` before any command runs. The
+generator rejects that combination up front:
+
+| ID | Condition |
+|---|---|
+| `TXCL007` | A top-level command (the first path segment, class-level or assembly-level) or one of a top-level command's aliases has the same name as the executable. |
+
+```csharp
+// mytool.exe — TXCL007: 'mytool' is already the root command's name
+[Command("mytool")]
+public class ToolCommand { public void Execute() { } }
+
+// the fix — no path, so the class *is* the root command
+[Command]
+public class ToolCommand { public void Execute() { } }
+```
+
+The check compares ordinally (matching the tokenizer) and only runs for console
+executables — a library's assembly name says nothing about the executable that will
+eventually host its commands.
+
 ## Platform-gated commands
 
 Commands annotated with one or more
