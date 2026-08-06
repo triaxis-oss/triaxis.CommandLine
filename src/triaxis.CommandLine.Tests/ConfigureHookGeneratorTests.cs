@@ -15,48 +15,9 @@ using triaxis.CommandLine.SourceGenerator;
 [TestFixture]
 public class ConfigureHookGeneratorTests
 {
-    private static readonly MetadataReference[] s_baseReferences = BuildReferences();
-
-    private static MetadataReference[] BuildReferences()
-    {
-        var refs = new List<MetadataReference>();
-        var tpa = (string?)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES");
-        if (tpa is not null)
-        {
-            foreach (var path in tpa.Split(Path.PathSeparator))
-            {
-                if (path.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
-                {
-                    refs.Add(MetadataReference.CreateFromFile(path));
-                }
-            }
-        }
-        // Reference the assemblies the generator must resolve explicitly: their
-        // presence in the runner's TPA set is not reliable on every OS, and when
-        // one is missing the corresponding [Configure] parameter classification
-        // silently falls through to None and the generator emits the no-hooks
-        // fallback (notably the IHostBuilder signature on the Windows runner).
-        refs.Add(MetadataReference.CreateFromFile(typeof(CommandAttribute).Assembly.Location));
-        refs.Add(MetadataReference.CreateFromFile(typeof(IServiceCollection).Assembly.Location));
-        refs.Add(MetadataReference.CreateFromFile(typeof(Microsoft.Extensions.Hosting.IHostBuilder).Assembly.Location));
-        try
-        {
-            refs.Add(MetadataReference.CreateFromFile(Assembly.Load("netstandard").Location));
-        }
-        catch (System.IO.FileNotFoundException)
-        {
-        }
-        return refs.ToArray();
-    }
-
     private static string? RunGeneratorAndGetEntryPoint(string userSource, OutputKind outputKind = OutputKind.ConsoleApplication)
     {
-        var syntaxTree = CSharpSyntaxTree.ParseText(userSource);
-        var compilation = CSharpCompilation.Create(
-            assemblyName: "TestAssembly",
-            syntaxTrees: [syntaxTree],
-            references: s_baseReferences,
-            options: new CSharpCompilationOptions(outputKind));
+        var compilation = GeneratorTestCompilation.Create(userSource, "TestAssembly", outputKind);
 
         var runResult = CSharpGeneratorDriver
             .Create(new CommandTreeGenerator())

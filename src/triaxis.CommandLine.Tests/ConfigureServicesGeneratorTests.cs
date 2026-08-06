@@ -9,47 +9,9 @@ using triaxis.CommandLine.SourceGenerator;
 [TestFixture]
 public class ConfigureServicesGeneratorTests
 {
-    private static readonly MetadataReference[] s_baseReferences = BuildReferences();
-
-    private static MetadataReference[] BuildReferences()
-    {
-        // Reference the whole set of trusted platform assemblies so the test
-        // compilation can bind BCL types, Microsoft.Extensions.*, etc.
-        var refs = new List<MetadataReference>();
-        var tpa = (string?)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES");
-        if (tpa is not null)
-        {
-            foreach (var path in tpa.Split(Path.PathSeparator))
-            {
-                if (path.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
-                {
-                    refs.Add(MetadataReference.CreateFromFile(path));
-                }
-            }
-        }
-        refs.Add(MetadataReference.CreateFromFile(typeof(CommandAttribute).Assembly.Location));
-        refs.Add(MetadataReference.CreateFromFile(typeof(IServiceCollection).Assembly.Location));
-        // See ConfigureMethodGeneratorTests.BuildReferences — without netstandard the
-        // .NET Framework host can't fully bind triaxis.CommandLine's types.
-        try
-        {
-            refs.Add(MetadataReference.CreateFromFile(Assembly.Load("netstandard").Location));
-        }
-        catch (System.IO.FileNotFoundException)
-        {
-            // No netstandard available — modern .NET hosts already covered via TPA.
-        }
-        return refs.ToArray();
-    }
-
     private static string? RunGeneratorAndGetEntryPoint(string userSource, OutputKind outputKind = OutputKind.ConsoleApplication)
     {
-        var syntaxTree = CSharpSyntaxTree.ParseText(userSource);
-        var compilation = CSharpCompilation.Create(
-            assemblyName: "TestAssembly",
-            syntaxTrees: [syntaxTree],
-            references: s_baseReferences,
-            options: new CSharpCompilationOptions(outputKind));
+        var compilation = GeneratorTestCompilation.Create(userSource, "TestAssembly", outputKind);
 
         var runResult = CSharpGeneratorDriver
             .Create(new CommandTreeGenerator())
