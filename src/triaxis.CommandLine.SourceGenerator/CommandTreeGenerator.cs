@@ -210,7 +210,7 @@ public class CommandTreeGenerator : IIncrementalGenerator
                     {
                         // Chain the individual helpers directly (instead of calling
                         // UseDefaults) so that UseObjectOutput — and with it the
-                        // triaxis.CommandLine.ObjectOutput + YamlDotNet graph — is only
+                        // triaxis.CommandLine.ObjectOutput graph — is only
                         // referenced when a command actually produces output. That lets
                         // trimming drop the unused formatting stack entirely.
                         // Command discovery runs first so the recursive options added

@@ -19,6 +19,9 @@
     <PackageReference Include="Microsoft.Extensions.Configuration.EnvironmentVariables" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Json" />
     <PackageReference Include="Microsoft.Extensions.FileProviders.Physical" />
+    <!-- YAML configuration source + persistent editor. Previously inherited transitively
+         from ObjectOutput, which no longer needs a YAML library of its own. -->
+    <PackageReference Include="YamlDotNet" />
   </ItemGroup>
 
   <ItemGroup>
