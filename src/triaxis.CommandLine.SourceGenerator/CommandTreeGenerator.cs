@@ -35,6 +35,7 @@ public class CommandTreeGenerator : IIncrementalGenerator
                     && m.Parameters[0].Type.SpecialType == SpecialType.System_String) ?? false;
             var assemblyCommands = ExtractAssemblyCommands(c);
             return (AssemblyName: c.AssemblyName ?? "",
+                    IsExecutable: c.Options.OutputKind == OutputKind.ConsoleApplication,
                     HasUnsafeAccessor: hasUnsafeAccessor,
                     HasOperatingSystemIsOSPlatform: hasOperatingSystemIsOSPlatform,
                     AssemblyCommands: assemblyCommands);
@@ -53,17 +54,24 @@ public class CommandTreeGenerator : IIncrementalGenerator
             // Commands with diagnostics are still passed through to GenerateSource so
             // the tree keeps a node for them (improving IDE experience), but the code
             // generator skips emitting their *_Action bodies.
+            var diagnostics = ImmutableArray.CreateBuilder<string>();
             foreach (var command in commands.Where(c => !c.Diagnostics.IsDefaultOrEmpty))
             {
-                foreach (var diag in command.Diagnostics)
-                {
-                    var colon = diag.IndexOf(':');
-                    var id = colon > 0 ? diag.Substring(0, colon) : "TXCL000";
-                    var message = colon > 0 ? diag.Substring(colon + 1) : diag;
-                    var descriptor = new DiagnosticDescriptor(id, "Command generator validation", message,
-                        category: "triaxis.CommandLine", DiagnosticSeverity.Error, isEnabledByDefault: true);
-                    spc.ReportDiagnostic(Diagnostic.Create(descriptor, Location.None));
-                }
+                diagnostics.AddRange(command.Diagnostics);
+            }
+            if (info.IsExecutable)
+            {
+                AddRootNameCollisions(diagnostics, commands, info.AssemblyCommands, info.AssemblyName);
+            }
+
+            foreach (var diag in diagnostics)
+            {
+                var colon = diag.IndexOf(':');
+                var id = colon > 0 ? diag.Substring(0, colon) : "TXCL000";
+                var message = colon > 0 ? diag.Substring(colon + 1) : diag;
+                var descriptor = new DiagnosticDescriptor(id, "Command generator validation", message,
+                    category: "triaxis.CommandLine", DiagnosticSeverity.Error, isEnabledByDefault: true);
+                spc.ReportDiagnostic(Diagnostic.Create(descriptor, Location.None));
             }
 
             var source = GenerateSource(commands, info.AssemblyCommands, info.AssemblyName,
@@ -444,6 +452,50 @@ public class CommandTreeGenerator : IIncrementalGenerator
         }
 
         return builder.ToImmutable();
+    }
+
+    /// <summary>
+    /// System.CommandLine names the root command after the executable and indexes the root
+    /// together with its direct children in a single token map, so a top-level command (or
+    /// an alias of one) reusing the executable name throws "An item with the same key has
+    /// already been added" from the tokenizer at parse time. Reject it while the mistake is
+    /// still attributable to the <c>[Command]</c> attribute that caused it.
+    /// </summary>
+    private static void AddRootNameCollisions(ImmutableArray<string>.Builder diagnostics,
+        ImmutableArray<CommandModel> commands, ImmutableArray<AssemblyCommandModel> assemblyCommands,
+        string executableName)
+    {
+        if (executableName.Length == 0)
+        {
+            return;
+        }
+
+        foreach (var cmd in commands)
+        {
+            // The diagnostic has no source location (the models carry no syntax), so name
+            // the type in full rather than by its simple name.
+            Check($"Command '{cmd.TypeName.Replace("global::", "")}'", cmd.Path, cmd.Aliases,
+                "Declare [Command] with no path to make the class the root command itself, or pick a different name.");
+        }
+        foreach (var asmCmd in assemblyCommands)
+        {
+            Check($"Assembly-level command '{string.Join(" ", asmCmd.Path)}'", asmCmd.Path, asmCmd.Aliases,
+                "Pick a different name — an assembly-level [Command] can only describe a nested group, never the root.");
+        }
+
+        void Check(string subject, string[] path, string[]? aliases, string remedy)
+        {
+            if (path.Length > 0 && path[0] == executableName)
+            {
+                diagnostics.Add($"TXCL007:{subject} sits at top-level name '{executableName}', which is also the name of the executable. The root command already carries that name, so parsing fails. {remedy}");
+            }
+            // Aliases of a deeper command are attached to its leaf and can't reach the root
+            // level, so only a top-level (or root) command's aliases can collide.
+            else if (path.Length <= 1 && aliases is not null && Array.IndexOf(aliases, executableName) >= 0)
+            {
+                diagnostics.Add($"TXCL007:{subject} declares the alias '{executableName}', which is also the name of the executable. The root command already carries that name, so parsing fails. Drop the alias — the executable name already invokes the tool.");
+            }
+        }
     }
 
     private static CommandModel? ExtractCommandModel(GeneratorAttributeSyntaxContext ctx, System.Threading.CancellationToken ct)

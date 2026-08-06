@@ -139,7 +139,12 @@ public class MigrateCommand
 ```
 
 - The path can have one or more segments — nested segments become subcommands
-  (`mytool db migrate`).
+  (`mytool db migrate`). With **no** segments at all (`[Command]`) the class becomes the
+  root command — what runs when the tool is invoked with no verb.
+- A top-level command (or one of its aliases) must not reuse the executable's own name:
+  the root command is already named after the executable, so the two would collide while
+  parsing. The generator reports that as `TXCL007` — drop the path to make the class the
+  root command instead.
 - `[Command]` is `AllowMultiple = true`, so you can put several of them on the same class
   to expose it under multiple paths. It can **also** be applied at the **assembly** level
   to attach a description or aliases to an intermediate tree node that has no dedicated
