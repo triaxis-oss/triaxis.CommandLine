@@ -565,8 +565,8 @@ at compile time and no reflection is involved. Set
 `<EnableObjectOutputReflectionFallback>false</EnableObjectOutputReflectionFallback>` to
 drop the reflective fallback from a trimmed publish — measured at 7 trim warnings down to 0,
 with `System.ComponentModel.TypeConverter.dll` no longer shipped and
-`triaxis.Reflection.PropertyAccess.dll` trimmed to ~5 KB. Tuple and `DataTable` output
-need run-time shape discovery and are unavailable in that mode.
+`triaxis.Reflection.PropertyAccess.dll` trimmed to ~5 KB. `DataTable` output needs run-time
+shape discovery and is unavailable in that mode; tuples are generated and keep working.
 
 `Json` and `Yaml` are both emitted directly by the package over the same descriptor walk,
 so ObjectOutput carries no JSON or YAML dependency and the two formats agree on nested

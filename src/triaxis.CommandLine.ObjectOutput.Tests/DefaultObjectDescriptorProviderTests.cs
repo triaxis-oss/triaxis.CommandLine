@@ -81,15 +81,18 @@ public class DefaultObjectDescriptorProviderTests
         Assert.That(names, Is.EqualTo(new[] { "Col1", "Col2" }));
     }
 
-#if !NETFRAMEWORK
-    // TupleObjectDescriptor is only compiled on netstandard2.1+ (see TupleObjectDescriptor.cs).
+    // Runs on every target: TupleObjectDescriptor used to be compiled out of the
+    // netstandard2.0 asset because it needed ITuple, which silently rendered every tuple
+    // as an empty object on .NET Framework.
     [Test]
     public void GetDescriptor_ForTuple_ReturnsTupleDescriptor()
     {
-        var provider = new DefaultObjectDescriptorProvider<(Person Main, string Extra)>();
-        var descriptor = provider.GetDescriptor((new Person("A", 1), "extra"));
-        Assert.That(descriptor, Is.Not.Null);
-        Assert.That(descriptor.Fields, Is.Not.Empty);
+        var provider = new DefaultObjectDescriptorProvider<(Person Main, OrderedFields Extra)>();
+        var descriptor = provider.GetDescriptor((new Person("A", 1), new OrderedFields("a", "b")));
+
+        // both elements' members land in one list, and the Before/After anchors on the
+        // second element are resolved against that flattened list
+        Assert.That(descriptor.Fields.Select(f => f.Name),
+            Is.EqualTo(new[] { "Name", "Age", "AgeInMonths", "Header", "A", "B", "Footer" }));
     }
-#endif
 }

@@ -207,34 +207,84 @@ public class ObjectDescriptorGeneratorTests
         Assert.That(source, Does.Contain("typeof(global::Node)"));
     }
 
-    /// <summary>
-    /// A tuple's elements are fields, not properties, so describing the tuple itself
-    /// yields an empty descriptor that would then win the registry lookup and render every
-    /// row as "{}". TupleObjectDescriptor flattens the elements instead, so the generator
-    /// has to leave tuples alone.
-    /// </summary>
     [Test]
-    public void SkipsTuples()
+    public void FlattensTupleElements()
+    {
+        var source = RunGenerator("""
+            using System.Collections.Generic;
+            using triaxis.CommandLine;
+            using triaxis.CommandLine.ObjectOutput;
+
+            public record Forecast(string City, decimal Temperature);
+
+            public class Extension
+            {
+                [ObjectOutput(After = nameof(Forecast.City))] public string ReverseCity => "";
+                [ObjectOutput(After = nameof(Forecast.Temperature))] public decimal Negative => 0;
+            }
+
+            [Command("t")]
+            public class TupleCommand
+            {
+                public IEnumerable<(Forecast, Extension)> Execute() => [];
+            }
+            """);
+
+        Assert.That(source, Is.Not.Null);
+        Assert.That(source, Does.Contain(".Item1.City"), "an element's members are lifted onto the tuple");
+        Assert.That(source, Does.Contain(".Item2.ReverseCity"));
+
+        // ordering anchors have to reach across elements, which is the whole point of
+        // flattening rather than nesting
+        var order = new[] { "\"City\"", "\"ReverseCity\"", "\"Temperature\"", "\"Negative\"" }
+            .Select(n => source!.IndexOf(n, StringComparison.Ordinal))
+            .ToArray();
+
+        Assert.That(order, Is.All.GreaterThanOrEqualTo(0));
+        Assert.That(order, Is.Ordered, "After anchors must interleave the two elements");
+    }
+
+    [Test]
+    public void ScalarTupleElementBecomesOneNamedField()
     {
         var source = RunGenerator("""
             using System.Collections.Generic;
             using triaxis.CommandLine;
 
-            public record Forecast(string City, decimal Temperature);
-            public record Extra(string Note);
+            [Command("t")]
+            public class TupleCommand
+            {
+                public IEnumerable<(string City, int Count)> Execute() => [];
+            }
+            """);
+
+        Assert.That(source, Is.Not.Null, "a tuple of scalars is still describable");
+        Assert.That(source, Does.Contain("public string Name => \"City\";"));
+        Assert.That(source, Does.Contain("public string Name => \"Count\";"));
+        Assert.That(source, Does.Contain(").City;"), "named elements are accessed by their declared name");
+        Assert.That(source, Does.Not.Contain("\"Length\""),
+            "the reflective descriptor turns this into string.Length; the generated one must not");
+    }
+
+    [Test]
+    public void FlattensNestedTuples()
+    {
+        var source = RunGenerator("""
+            using System.Collections.Generic;
+            using triaxis.CommandLine;
+
+            public record Inner(string Deep);
 
             [Command("t")]
             public class TupleCommand
             {
-                public IEnumerable<(Forecast, Extra)> Execute() => [];
+                public IEnumerable<(string Top, (Inner Nested, int N) Sub)> Execute() => [];
             }
             """);
 
-        // Nothing is generated at all: the elements are only reachable through the tuple,
-        // and TupleObjectDescriptor resolves each element's descriptor itself rather than
-        // going through the registry, so generating for them would be dead code.
-        Assert.That(source ?? "", Does.Not.Contain("global::Forecast, global::Extra"),
-            "the tuple type itself must not get a descriptor");
+        Assert.That(source, Is.Not.Null);
+        Assert.That(source, Does.Contain(".Sub.Nested.Deep"));
+        Assert.That(source, Does.Contain(".Sub.N"));
     }
 
     [Test]

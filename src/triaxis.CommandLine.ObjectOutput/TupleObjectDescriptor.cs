@@ -1,10 +1,8 @@
-#if NETSTANDARD2_1_OR_GREATER
-
 namespace triaxis.CommandLine.ObjectOutput;
 
 using System.Collections.Generic;
 using System.Reflection;
-using System.Runtime.CompilerServices;
+using triaxis.Reflection;
 
 sealed class TupleObjectDescriptor<T> : IObjectDescriptor
 {
@@ -15,12 +13,12 @@ sealed class TupleObjectDescriptor<T> : IObjectDescriptor
     public TupleObjectDescriptor()
     {
         Fields = Enumerable.Concat(
-            typeof(T).GetProperties().Select(pi => (pi.PropertyType, pi.GetGetter())),
-            typeof(T).GetFields().Select(fi => (fi.FieldType, fi.GetGetter())))
+            typeof(T).GetProperties().Select(pi => (pi.PropertyType, (IPropertyGetter)new MemberValueGetter(pi))),
+            typeof(T).GetFields().Select(fi => (fi.FieldType, (IPropertyGetter)new MemberValueGetter(fi))))
             .Select(pair =>
             {
                 var (t, getter) = pair;
-                var subType = typeof(ITuple).IsAssignableFrom(t) ? typeof(TupleObjectDescriptor<>) : typeof(SimpleObjectDescriptor<>);
+                var subType = TupleTypes.IsTuple(t) ? typeof(TupleObjectDescriptor<>) : typeof(SimpleObjectDescriptor<>);
                 var subDescriptor = (IObjectDescriptor)subType.MakeGenericType(t).InvokeMember("Instance", BindingFlags.Public | BindingFlags.Static | BindingFlags.GetField, null, null, null);
                 return (getter, subDescriptor);
             })
@@ -29,5 +27,3 @@ sealed class TupleObjectDescriptor<T> : IObjectDescriptor
             )).Ordered();
     }
 }
-
-#endif
