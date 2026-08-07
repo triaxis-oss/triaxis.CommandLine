@@ -19,7 +19,7 @@ class DataColumnField<TValue> : IObjectField, IObjectField<TValue>, IPropertyGet
 
     public ObjectFieldVisibility Visibility => ObjectFieldVisibility.Standard;
     public Type Type => typeof(TValue);
-    public TypeConverter Converter => TypeDescriptor.GetConverter(Type);
+    public string? Format => null;
     public IPropertyGetter Accessor => this;
 
     public PropertyInfo Property => throw new NotImplementedException();

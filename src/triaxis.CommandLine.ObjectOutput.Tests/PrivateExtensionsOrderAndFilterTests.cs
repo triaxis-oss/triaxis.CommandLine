@@ -11,7 +11,7 @@ public class PrivateExtensionsOrderAndFilterTests
         public string Name { get; set; } = "";
         public ObjectFieldVisibility Visibility { get; set; }
         public Type Type { get; set; } = typeof(string);
-        public System.ComponentModel.TypeConverter Converter { get; set; } = new System.ComponentModel.StringConverter();
+        public string? Format { get; set; }
         public IPropertyGetter Accessor { get; set; } = null!;
         public string? Before { get; set; }
         public string? After { get; set; }

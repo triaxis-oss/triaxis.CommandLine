@@ -38,7 +38,7 @@ class TableObjectFormatterProvider : IObjectFormatterProvider
         public int Width { get; set; }
 
         public Type ValueType => _field.Type;
-        public TypeConverter TypeConverter => _field.Converter;
+        public string? Format => _field.Format;
 
         public string Title => _title;
         public bool PadLeft => ValueType.IsPrimitive && ValueType != typeof(string);
@@ -70,19 +70,25 @@ class TableObjectFormatterProvider : IObjectFormatterProvider
                 return b ? "*" : "";
             }
 
-            if (TypeConverter.ConvertToInvariantString(o) is { } s && !string.IsNullOrEmpty(s))
+            if (o is string str)
             {
-                return s;
+                return str;
             }
 
-            if (o is IEnumerable e && o is not string)
+            // invariant throughout, so a table does not change shape with the host locale
+            if (o is IFormattable f)
+            {
+                return f.ToString(Format, CultureInfo.InvariantCulture);
+            }
+
+            if (o is IEnumerable e)
             {
                 return string.Join(";", e.Cast<object?>().Select(FormatValue));
             }
 
             if (o is IConvertible conv)
             {
-                return conv.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                return conv.ToString(CultureInfo.InvariantCulture);
             }
 
             return o.ToString() ?? "";
