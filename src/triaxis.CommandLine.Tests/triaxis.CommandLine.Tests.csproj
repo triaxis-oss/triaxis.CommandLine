@@ -22,6 +22,8 @@
   <ItemGroup>
     <Compile Include="..\triaxis.CommandLine.SourceGenerator\CommandTreeGenerator.cs"
              Link="SourceGenerator\CommandTreeGenerator.cs" />
+    <Compile Include="..\triaxis.CommandLine.SourceGenerator\ObjectDescriptorGenerator.cs"
+             Link="SourceGenerator\ObjectDescriptorGenerator.cs" />
   </ItemGroup>
 
   <ItemGroup>

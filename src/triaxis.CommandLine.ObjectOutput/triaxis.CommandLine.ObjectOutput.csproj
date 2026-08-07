@@ -17,6 +17,21 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- ILLink only rewrites assemblies marked trimmable; everything else is copied
+         wholesale, which silently ignores the substitutions below. The netstandard TFMs
+         cannot use <IsTrimmable>, so the underlying attribute is emitted directly. -->
+    <AssemblyMetadata Include="IsTrimmable" Value="True" />
+    <EmbeddedResource Include="ILLink.Substitutions.xml">
+      <LogicalName>ILLink.Substitutions.xml</LogicalName>
+    </EmbeddedResource>
+    <!-- NuGet: pack the transitive targets that map the MSBuild property to the switch -->
+    <None Include="$(MSBuildThisFileDirectory)buildTransitive\triaxis.CommandLine.ObjectOutput.targets"
+          Pack="true"
+          PackagePath="buildTransitive"
+          Visible="false" />
+  </ItemGroup>
+
+  <ItemGroup>
     <InternalsVisibleTo Include="triaxis.CommandLine.ObjectOutput.Tests" />
   </ItemGroup>
 
