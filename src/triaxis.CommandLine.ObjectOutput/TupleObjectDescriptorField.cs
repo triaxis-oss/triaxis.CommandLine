@@ -19,7 +19,7 @@ class TupleObjectDescriptorField<TValue> : IObjectField, IObjectField<TValue>, I
     public string Name => _field.Name;
     public ObjectFieldVisibility Visibility => _field.Visibility;
     public Type Type => _field.Type;
-    public TypeConverter Converter => _field.Converter;
+    public string? Format => _field.Format;
     public IPropertyGetter<TValue> Accessor => this;
     IPropertyGetter IObjectField.Accessor => this;
 

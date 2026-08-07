@@ -15,7 +15,7 @@ class SimpleObjectDescriptorField<TValue> : IObjectField, IObjectField<TValue>, 
         Before = attr?.Before;
         After = attr?.After;
         Visibility = attr?.Visibility ?? (pd.IsBrowsable ? ObjectFieldVisibility.Standard : ObjectFieldVisibility.Extended);
-        Converter = pd.Converter;
+        Format = attr?.Format;
         Accessor = accessor;
     }
 
@@ -30,7 +30,7 @@ class SimpleObjectDescriptorField<TValue> : IObjectField, IObjectField<TValue>, 
 
     public Type Type => typeof(TValue);
 
-    public TypeConverter Converter { get; }
+    public string? Format { get; }
 
     public IPropertyGetter<TValue> Accessor { get; }
 

@@ -195,7 +195,7 @@ public interface IObjectField
     string Name { get; }
     ObjectFieldVisibility Visibility { get; }
     Type Type { get; }
-    TypeConverter Converter { get; }
+    string? Format { get; }
     IPropertyGetter Accessor { get; }
 }
 
@@ -204,6 +204,31 @@ public interface IObjectDescriptorProvider<T>
     IObjectDescriptor GetDescriptor(T? instance);
 }
 ```
+
+### Field formatting
+
+`Format` carries the format string from `[ObjectOutput(Format = "...")]` and is applied
+through `IFormattable.ToString(format, InvariantCulture)`:
+
+```csharp
+public record Reading(
+    [property: ObjectOutput(Format = "F1")] double Celsius,
+    [property: ObjectOutput(Format = "yyyy-MM-dd")] DateTime Taken);
+```
+
+It affects the textual formats (`Table`, `Wide`) only. `Json` and `Yaml` keep the
+canonical representation of the value's type, so a consumer parsing them still sees a
+number as a number and a date as a date.
+
+The invariant culture is always used, so a table does not change shape with the host
+locale.
+
+> **Breaking change in 2.6.** `IObjectField.Converter` (a `System.ComponentModel.TypeConverter`)
+> was replaced by `IObjectField.Format`. Resolving a converter requires `TypeDescriptor`,
+> which is annotated `RequiresUnreferencedCode` and cannot be made trim-safe or produced
+> at compile time. A custom `[TypeConverter]` on a property type is therefore no longer
+> consulted — use `Format`, or replace `TableObjectFormatterProvider` via
+> `ConfigureServices` for anything it cannot express.
 
 `DefaultObjectDescriptorProvider<T>` (in `triaxis.CommandLine.ObjectOutput`) builds a
 descriptor by reflecting over `T`. It understands:
