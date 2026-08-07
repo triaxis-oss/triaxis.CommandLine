@@ -113,8 +113,35 @@ A `[ModuleInitializer]` registers the lookup with `ObjectDescriptorRegistry` (in
 `triaxis.CommandLine`). `DefaultObjectDescriptorProvider<T>` and
 `RuntimeObjectDescriptor.For` both consult it first.
 
-Interfaces, abstract types, `object`, tuples and `DataTable` are deliberately not
-generated — their shape is only known at run time.
+Tuples are flattened at generation time — each element's members are lifted onto the
+tuple so ordering anchors reach across elements, and an element with no members becomes
+one field named after it (so `(string City, int Count)` gives City/Count, where the
+reflective descriptor gives a single `Length`). Interfaces, abstract types, `object` and
+`DataTable` are still left to run time.
+
+Cycle guard: register the descriptor in `collected` **before** recursing into member
+types, and keep the type in `visiting` until the recursion returns — releasing either
+early sends a self-referencing graph into infinite recursion.
+
+### netstandard2.0 / .NET Framework traps
+
+Run `dotnet test src/triaxis.CommandLine.sln -f net48` before pushing — it needs `mono`
+on Linux and catches things the other legs cannot:
+
+- `ITuple` is netstandard2.1+, so the tuple descriptor used to be `#if`'d out of the
+  ns2.0 asset and every tuple silently rendered as `{}` on .NET Framework.
+  `TupleTypes.IsTuple` matches the type name instead, so tuples work on every target.
+- `GetGetter()` (triaxis.Reflection.PropertyAccess 1.3.0, ns2.0 asset) **recurses into
+  itself** when handed a `FieldInfo` and overflows the stack. Tuple elements are fields,
+  so that path uses `MemberValueGetter` instead.
+- Generated code needs `[ModuleInitializer]`, which .NET Framework lacks — consumers
+  supply it via PolySharp, as this repo's own `.Tests` projects do. Do **not** emit a
+  polyfill from the generator: it collides with PolySharp's copy (CS0101).
+- `GeneratorTestCompilation` must reference everything the *generated* code binds, not
+  just the test source. Only `GeneratedSourceCompilesCleanly` notices when it doesn't.
+  Its polyfill probe requires a **public** definition — several netstandard libraries
+  (System.CommandLine included) embed `internal` copies of `IsExternalInit` that a
+  metadata lookup returns but test source cannot use.
 
 **Everything reflective must sit behind `ObjectOutputFeatures.ReflectionFallbackEnabled`.**
 Leaving one branch reachable (the tuple path originally was) keeps the whole reflective
@@ -130,8 +157,7 @@ away and flatters the result.) Requires `AssemblyMetadata("IsTrimmable", "True")
 assembly — ILLink copies non-trimmable assemblies wholesale and silently ignores their
 substitutions, and netstandard TFMs cannot use `<IsTrimmable>`.
 
-### YAML emitter
->>>>>>> 8446a78 (feat(objectoutput): source-generate object descriptors)
+### JSON and YAML emitters
 
 `JsonWriter` and `YamlWriter` share one descriptor walk, so the two formats agree below
 the top level; `JsonString.Quote` serves both, since a YAML double-quoted scalar accepts

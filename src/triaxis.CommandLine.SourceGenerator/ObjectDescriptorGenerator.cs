@@ -118,7 +118,7 @@ public class ObjectDescriptorGenerator : IIncrementalGenerator
             type = array.ElementType;
         }
 
-        return IsDescribable(type) ? type : null;
+        return CanDescribe(type) ? type : null;
     }
 
     private static void Describe(ITypeSymbol type, Dictionary<string, DescriptorModel> collected,
@@ -126,7 +126,7 @@ public class ObjectDescriptorGenerator : IIncrementalGenerator
     {
         ct.ThrowIfCancellationRequested();
 
-        if (!IsDescribable(type))
+        if (!CanDescribe(type))
         {
             return;
         }
@@ -139,40 +139,104 @@ public class ObjectDescriptorGenerator : IIncrementalGenerator
             return;
         }
 
-        var fields = new List<FieldModel>();
+        var nested = new List<ITypeSymbol>();
+        var fields = CollectFields(type, prefix: "", nested);
 
-        foreach (var property in CollectProperties(type))
+        // Registered before descending, so a member that points back at this type — or at
+        // anything already on the stack — terminates instead of recursing forever. A
+        // fieldless descriptor is worse than none: it would win the registry lookup and
+        // render the value as an empty mapping, where deferring to the run-time fallback
+        // still has a chance of describing it.
+        if (fields.Count > 0)
         {
-            var attr = property.GetAttributes()
-                .FirstOrDefault(a => a.AttributeClass?.ToDisplayString() == "triaxis.CommandLine.ObjectOutput.ObjectOutputAttribute");
+            collected[fqn] = new DescriptorModel(fqn, Order(fields).ToImmutableArray());
+        }
 
-            fields.Add(new FieldModel(
-                Name: property.Name,
-                Title: GetAttributeString(property, "System.ComponentModel.DisplayNameAttribute", "DisplayName") ?? property.Name,
-                TypeFqn: property.Type.ToDisplayString(FqnFormat),
-                Visibility: ResolveVisibility(attr, property),
-                Format: GetNamedArgument(attr, "Format") as string,
-                Before: GetNamedArgument(attr, "Before") as string,
-                After: GetNamedArgument(attr, "After") as string));
-
-            // nested values are rendered through their own descriptor, so the walk has to
-            // reach them too — including through collection members
-            var nested = property.Type is IArrayTypeSymbol arr ? arr.ElementType : UnwrapCollection(property.Type);
-            Describe(nested ?? property.Type, collected, visiting, ct);
+        foreach (var member in nested)
+        {
+            Describe(member, collected, visiting, ct);
         }
 
         visiting.Remove(fqn);
+    }
 
-        // A fieldless descriptor is worse than none: it would win the registry lookup and
-        // render the value as an empty mapping, where deferring to the run-time fallback
-        // still has a chance of describing it.
-        if (fields.Count == 0)
+    /// <summary>
+    /// Builds the field list for a type, flattening tuple elements into the same list so
+    /// ordering anchors can reach across elements the way <c>TupleObjectDescriptor</c>
+    /// does at run time.
+    /// </summary>
+    /// <param name="prefix">Member path accumulated from enclosing tuple elements.</param>
+    /// <param name="nested">Collects member types that need descriptors of their own.</param>
+    private static List<FieldModel> CollectFields(ITypeSymbol type, string prefix, List<ITypeSymbol> nested)
+    {
+        var fields = new List<FieldModel>();
+
+        if (type is INamedTypeSymbol { IsTupleType: true } tuple)
         {
-            return;
+            foreach (var element in tuple.TupleElements)
+            {
+                // element.Name is the declared name for a named tuple, "ItemN" otherwise;
+                // both are valid member accesses on the tuple type
+                var access = prefix + element.Name;
+
+                if (Flattens(element.Type))
+                {
+                    fields.AddRange(CollectFields(element.Type, access + ".", nested));
+                }
+                else
+                {
+                    // A scalar element has no members to lift, so it becomes one field
+                    // named after the element itself. The reflective descriptor instead
+                    // describes the scalar's own properties, which turns (string, int)
+                    // into a single "Length" column.
+                    fields.Add(MakeField(element.Name, element, element.Type, access));
+                    Collect(element.Type, nested);
+                }
+            }
+
+            return fields;
         }
 
-        collected[fqn] = new DescriptorModel(fqn, Order(fields).ToImmutableArray());
+        foreach (var property in CollectProperties(type))
+        {
+            fields.Add(MakeField(property.Name, property, property.Type, prefix + property.Name));
+            Collect(property.Type, nested);
+        }
+
+        return fields;
     }
+
+    /// Whether a tuple element contributes its own members rather than becoming one field.
+    private static bool Flattens(ITypeSymbol type)
+        => type is INamedTypeSymbol { IsTupleType: true }
+        || (IsDescribable(type) && CollectProperties(type).Any());
+
+    private static void Collect(ITypeSymbol memberType, List<ITypeSymbol> nested)
+    {
+        var element = memberType is IArrayTypeSymbol array ? array.ElementType : UnwrapCollection(memberType);
+        nested.Add(element ?? memberType);
+    }
+
+    private static FieldModel MakeField(string name, ISymbol declaration, ITypeSymbol type, string access)
+    {
+        var attr = declaration.GetAttributes()
+            .FirstOrDefault(a => a.AttributeClass?.ToDisplayString() == "triaxis.CommandLine.ObjectOutput.ObjectOutputAttribute");
+
+        return new FieldModel(
+            Name: name,
+            Title: GetAttributeString(declaration, "System.ComponentModel.DisplayNameAttribute", "DisplayName") ?? name,
+            TypeFqn: type.ToDisplayString(FqnFormat),
+            Access: access,
+            Visibility: ResolveVisibility(attr, declaration),
+            Format: GetNamedArgument(attr, "Format") as string,
+            Before: GetNamedArgument(attr, "Before") as string,
+            After: GetNamedArgument(attr, "After") as string);
+    }
+
+    /// Types this generator will emit a descriptor for — tuples included, unlike the
+    /// member-recursion test which only cares about ordinary described types.
+    private static bool CanDescribe(ITypeSymbol type)
+        => type is INamedTypeSymbol { IsTupleType: true } || IsDescribable(type);
 
     private static IEnumerable<IPropertySymbol> CollectProperties(ITypeSymbol type)
     {
@@ -250,7 +314,7 @@ public class ObjectDescriptorGenerator : IIncrementalGenerator
         return named.DeclaredAccessibility is Accessibility.Public or Accessibility.Internal;
     }
 
-    private static string ResolveVisibility(AttributeData? attr, IPropertySymbol property)
+    private static string ResolveVisibility(AttributeData? attr, ISymbol property)
     {
         const string prefix = "global::triaxis.CommandLine.ObjectOutput.ObjectFieldVisibility.";
 
@@ -460,7 +524,7 @@ public class ObjectDescriptorGenerator : IIncrementalGenerator
             w.WriteLine("// generated descriptors carry no PropertyInfo — the whole point is not to need one");
             w.WriteLine($"public PropertyInfo Property => throw new NotSupportedException(\"Generated descriptors do not expose PropertyInfo.\");");
             w.WriteLine();
-            w.WriteLine($"public {t} Get(object target) => (({owner.TypeFqn})target).{field.Name};");
+            w.WriteLine($"public {t} Get(object target) => (({owner.TypeFqn})target).{field.Access};");
             w.WriteLine("object? IPropertyGetter.Get(object target) => Get(target);");
         });
     }
@@ -498,10 +562,15 @@ public class ObjectDescriptorGenerator : IIncrementalGenerator
         public override int GetHashCode() => TypeFqn.GetHashCode();
     }
 
+    /// <param name="Access">
+    /// Member path from the described instance, e.g. <c>City</c> for a plain property or
+    /// <c>Item1.City</c> for a field lifted out of a tuple element.
+    /// </param>
     private sealed record FieldModel(
         string Name,
         string Title,
         string TypeFqn,
+        string Access,
         string Visibility,
         string? Format,
         string? Before,

@@ -454,6 +454,14 @@ public string Name => "City";
 public global::System.String Get(object target) => ((global::Forecast)target).City;
 ```
 
+Tuples are generated too: each element's members are lifted onto the tuple so
+`[ObjectOutput(After = ...)]` anchors can reach across elements, exactly as
+`TupleObjectDescriptor` does at run time. A tuple element with no members of its own
+becomes a single field named after the element — so `(string City, int Count)` yields
+`City` and `Count`. The reflective descriptor instead describes the scalar's own
+properties and turns that same tuple into one `Length` column, which the generated
+descriptor deliberately does not reproduce.
+
 Types whose shape is only knowable at run time are deliberately **not** generated —
 interfaces, abstract types, `object`, and `DataTable`. Those fall through to the
 reflective descriptor.
@@ -484,5 +492,5 @@ Only its reflection-emit machinery goes.
 
 With it off, a type that has no generated descriptor throws `NotSupportedException` naming
 the type, rather than silently producing wrong output after the trimmer has removed the
-properties it would have reflected over. Tuple and `DataTable` output both rely on run-time
-shape discovery, so they are unavailable in this mode.
+properties it would have reflected over. `DataTable` output relies on run-time shape discovery, so it is unavailable in this
+mode; tuples are generated and keep working.

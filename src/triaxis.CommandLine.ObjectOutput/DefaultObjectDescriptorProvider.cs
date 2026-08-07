@@ -1,7 +1,6 @@
 namespace triaxis.CommandLine.ObjectOutput;
 
 using System.Data;
-using System.Runtime.CompilerServices;
 
 public class DefaultObjectDescriptorProvider<T> : IObjectDescriptorProvider<T>
 {
@@ -28,12 +27,10 @@ public class DefaultObjectDescriptorProvider<T> : IObjectDescriptorProvider<T>
             return new DataTableDescriptor(t);
         }
 
-#if NETSTANDARD2_1_OR_GREATER
-        if (instance is ITuple)
+        if (instance is not null && TupleTypes.IsTuple(instance.GetType()))
         {
             return TupleObjectDescriptor<T>.Instance;
         }
-#endif
 
         return SimpleObjectDescriptor<T>.Instance;
     }
