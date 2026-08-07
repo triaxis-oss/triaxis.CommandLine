@@ -1,0 +1,14 @@
+<Project>
+  <!--
+    Maps the friendly MSBuild property onto the AppContext switch the trimmer substitutes.
+    Setting <EnableObjectOutputReflectionFallback>false</EnableObjectOutputReflectionFallback>
+    removes the reflective descriptor path from a trimmed publish, along with its trim
+    warnings. Types without a generated descriptor then throw instead of being reflected.
+  -->
+  <ItemGroup Condition=" '$(EnableObjectOutputReflectionFallback)' != '' ">
+    <RuntimeHostConfigurationOption
+        Include="triaxis.CommandLine.ObjectOutput.EnableReflectionFallback"
+        Value="$(EnableObjectOutputReflectionFallback)"
+        Trim="true" />
+  </ItemGroup>
+</Project>

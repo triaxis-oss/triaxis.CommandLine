@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Lets an application opt out of the reflective descriptor fallback. Without the
+  substitution the trimmer keeps the reflective path alive even when every descriptor
+  is generated, because it cannot prove the generated lookup always hits.
+
+  Enable with <EnableObjectOutputReflectionFallback>false</EnableObjectOutputReflectionFallback>,
+  which the package's .targets turns into the matching RuntimeHostConfigurationOption.
+-->
+<linker>
+  <assembly fullname="triaxis.CommandLine.ObjectOutput"
+            feature="triaxis.CommandLine.ObjectOutput.EnableReflectionFallback"
+            featurevalue="false">
+    <type fullname="triaxis.CommandLine.ObjectOutput.ObjectOutputFeatures">
+      <method signature="System.Boolean get_ReflectionFallbackEnabled()" body="stub" value="false" />
+    </type>
+  </assembly>
+</linker>

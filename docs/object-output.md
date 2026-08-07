@@ -434,3 +434,55 @@ resolve as floats rather than integers on the way back.
 > `IConfigureOptions<YamlDotNet.Serialization.SerializerBuilder>` no longer affects
 > output. Replace `YamlObjectFormatterProvider` via `ConfigureServices` if you need
 > different YAML.
+
+## 9. Generated descriptors and trimming
+
+`ObjectDescriptorGenerator` emits an `IObjectDescriptor` implementation for every type a
+command can output, walked transitively through nested members and collection element
+types. A module initializer registers them with `ObjectDescriptorRegistry`, which
+`DefaultObjectDescriptorProvider<T>` and the nested-value walk both consult first.
+
+Generated descriptors carry no reflection: field ordering (`Before` / `After`),
+visibility and `Format` are all resolved at generation time, so the emitted field array is
+already in final order and the accessor is a direct property read.
+
+```csharp
+// for: public record Forecast(string City, decimal Temperature);
+if (type == typeof(global::Forecast)) { return Descriptor_0.Instance; }
+...
+public string Name => "City";
+public global::System.String Get(object target) => ((global::Forecast)target).City;
+```
+
+Types whose shape is only knowable at run time are deliberately **not** generated —
+interfaces, abstract types, `object`, and `DataTable`. Those fall through to the
+reflective descriptor.
+
+### Removing the reflective fallback
+
+The fallback is on by default and nothing needs configuring. But merely *referencing* it
+keeps it alive: the trimmer cannot prove the generated lookup always hits, so it preserves
+the branch, warns, and ships the reflection machinery. Opt out with:
+
+```xml
+<EnableObjectOutputReflectionFallback>false</EnableObjectOutputReflectionFallback>
+```
+
+which the package's `.targets` turns into the `AppContext` switch that
+`ILLink.Substitutions.xml` stubs to `false`, making the branch dead. Measured on a trimmed
+`net10.0` publish:
+
+| | fallback on (default) | fallback off |
+| --- | --- | --- |
+| trim warnings | 7 | 0 |
+| `System.ComponentModel.TypeConverter.dll` | shipped | dropped |
+| `triaxis.Reflection.PropertyAccess.dll` | shipped in full | trimmed to ~5 KB |
+
+`triaxis.Reflection.PropertyAccess` cannot disappear completely: `IObjectField.Accessor` is
+typed as its `IPropertyGetter`, so every generated descriptor keeps that interface reachable.
+Only its reflection-emit machinery goes.
+
+With it off, a type that has no generated descriptor throws `NotSupportedException` naming
+the type, rather than silently producing wrong output after the trimmer has removed the
+properties it would have reflected over. Tuple and `DataTable` output both rely on run-time
+shape discovery, so they are unavailable in this mode.

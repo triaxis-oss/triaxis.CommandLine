@@ -25,15 +25,20 @@ static class GeneratorTestCompilation
     private static readonly MetadataReference[] s_references = BuildReferences();
 
     /// <summary>
-    /// <c>init</c> accessors and <c>required</c> members need compiler-recognised marker
-    /// types that .NET Framework's mscorlib doesn't carry. Test sources use both, so
-    /// without these the net48 leg binds those members differently from every other leg —
-    /// the same silent divergence this class exists to prevent.
+    /// <c>init</c> accessors, <c>required</c> members and <c>[ModuleInitializer]</c> need
+    /// compiler-recognised marker types that .NET Framework's mscorlib doesn't carry.
+    /// Generated code uses all three, so without these the net48 leg binds them
+    /// differently from every other leg — the same silent divergence this class exists to
+    /// prevent. A real .NET Framework consumer supplies them the same way, via PolySharp;
+    /// this repo's own test projects do exactly that.
     /// </summary>
     private const string ModernMemberPolyfill = """
         namespace System.Runtime.CompilerServices
         {
             internal static class IsExternalInit { }
+
+            [AttributeUsage(AttributeTargets.Method, Inherited = false)]
+            internal sealed class ModuleInitializerAttribute : Attribute { }
 
             [AttributeUsage(AttributeTargets.Class | AttributeTargets.Struct | AttributeTargets.Field
                 | AttributeTargets.Property, Inherited = false)]
@@ -47,9 +52,17 @@ static class GeneratorTestCompilation
         }
         """;
 
+    /// <remarks>
+    /// The probe has to require a <em>public</em> definition. Several netstandard
+    /// libraries — System.CommandLine among them — embed their own <c>internal</c> copies
+    /// of these markers, which a metadata-name lookup happily returns even though test
+    /// source cannot use them. Treating one of those as "already available" silently
+    /// disables the polyfill and every fixture then fails to compile.
+    /// </remarks>
     private static readonly bool s_needsModernMemberPolyfill =
-        CSharpCompilation.Create("probe", references: s_references)
-            .GetTypeByMetadataName("System.Runtime.CompilerServices.IsExternalInit") is null;
+        !CSharpCompilation.Create("probe", references: s_references)
+            .GetTypesByMetadataName("System.Runtime.CompilerServices.IsExternalInit")
+            .Any(t => t.DeclaredAccessibility == Accessibility.Public);
 
     /// <summary>
     /// A broken reference set breaks every fixture at once, and a test-runner log only
@@ -120,6 +133,13 @@ static class GeneratorTestCompilation
         AddIfManaged(typeof(object).Assembly.Location);
         AddIfManaged(typeof(Task).Assembly.Location);
         AddIfManaged(typeof(CommandAttribute).Assembly.Location);
+        // What the *generated* code binds against, as opposed to the test source: the
+        // command tree needs System.CommandLine and descriptors implement IPropertyGetter.
+        // On modern hosts TPA already carries both; .NET Framework has no TPA, so they
+        // have to be named or the generator tests compile against a reference set no real
+        // consumer has — and only a test that compiles generated output ever notices.
+        AddIfManaged(typeof(System.CommandLine.ParseResult).Assembly.Location);
+        AddIfManaged(typeof(triaxis.Reflection.IPropertyGetter).Assembly.Location);
         AddIfManaged(typeof(IServiceCollection).Assembly.Location);
         AddIfManaged(typeof(IHostBuilder).Assembly.Location);
         try

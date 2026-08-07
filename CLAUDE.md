@@ -99,7 +99,39 @@ a `CancellationToken` to the action. Commands accepting `CancellationToken` get
 cooperative cancellation. Commands that don't trigger `Environment.FailFast`
 (the registration is disposed after the command returns so it doesn't affect middleware).
 
-### JSON and YAML emitters
+### Generated object descriptors
+
+`ObjectDescriptorGenerator` (second `IIncrementalGenerator` in the SourceGenerator
+project, source-linked into `triaxis.CommandLine.Tests`) emits an `IObjectDescriptor`
+per command output type, walked transitively through nested members and collection
+element types. Ordering/visibility/format resolve at generation time, so the emitted
+field array is already final and accessors are direct property reads — no
+`TypeDescriptor`, no `MakeGenericType`, no `triaxis.Reflection`.
+
+A `[ModuleInitializer]` registers the lookup with `ObjectDescriptorRegistry` (in the
+**base** package, next to the interfaces, so generated code needs only
+`triaxis.CommandLine`). `DefaultObjectDescriptorProvider<T>` and
+`RuntimeObjectDescriptor.For` both consult it first.
+
+Interfaces, abstract types, `object`, tuples and `DataTable` are deliberately not
+generated — their shape is only known at run time.
+
+**Everything reflective must sit behind `ObjectOutputFeatures.ReflectionFallbackEnabled`.**
+Leaving one branch reachable (the tuple path originally was) keeps the whole reflective
+graph alive and the trimmer drops none of it. `EnableObjectOutputReflectionFallback=false`
+→ `.targets` → `RuntimeHostConfigurationOption` → `ILLink.Substitutions.xml` stubs the
+property to `false` → dead branch → measured 7 trim warnings to 0, with
+`System.ComponentModel.TypeConverter.dll` dropped entirely.
+`triaxis.Reflection.PropertyAccess.dll` still ships, trimmed to ~5 KB: `IObjectField.Accessor`
+is typed as its `IPropertyGetter`, so generated descriptors keep the interface alive. Dropping
+it too would mean moving that abstraction into the base package. (Measure with a probe that
+actually *reads* through `Accessor` — one that only looks at field names trims the assembly
+away and flatters the result.) Requires `AssemblyMetadata("IsTrimmable", "True")` on the ObjectOutput
+assembly — ILLink copies non-trimmable assemblies wholesale and silently ignores their
+substitutions, and netstandard TFMs cannot use `<IsTrimmable>`.
+
+### YAML emitter
+>>>>>>> 8446a78 (feat(objectoutput): source-generate object descriptors)
 
 `JsonWriter` and `YamlWriter` share one descriptor walk, so the two formats agree below
 the top level; `JsonString.Quote` serves both, since a YAML double-quoted scalar accepts
@@ -138,6 +170,8 @@ for logging — the level is baked into the logger at creation time.
   values for streaming enumeration (used by ObjectOutput)
 - `YamlWriter` / `JsonWriter` / `PlainScalar` / `JsonString` — in-house emitters, the YAML
   quoting rule, and the shared string escaper
+- `ObjectDescriptorRegistry` — where generated descriptors register (base package)
+- `ObjectDescriptorGenerator` — emits `IObjectDescriptor` per command output type
 - `VerbosityOptions` — public static option definitions for `--verbosity`/`-v`/`-q`
 - `IPersistentConfigurationProvider` — `IConfigurationProvider` + `Save` (`Set` is
   already on `IConfigurationProvider`); the writable-source contract.

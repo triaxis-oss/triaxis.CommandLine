@@ -7,10 +7,34 @@ public class DefaultObjectDescriptorProvider<T> : IObjectDescriptorProvider<T>
 {
     public IObjectDescriptor GetDescriptor(T? instance)
     {
-        return instance is DataTable t ? new DataTableDescriptor(t) :
+        if (ObjectDescriptorRegistry.TryGet(typeof(T)) is { } generated)
+        {
+            return generated;
+        }
+
+        // Every branch below discovers shape at run time, so they all have to sit behind
+        // the switch: leaving even one reachable — the tuple path did — keeps the whole
+        // reflective graph alive and the trimmer cannot drop any of it.
+        if (!ObjectOutputFeatures.ReflectionFallbackEnabled)
+        {
+            throw new NotSupportedException(
+                $"No generated object descriptor for '{typeof(T)}', and the reflective fallback is disabled. " +
+                "Return the type from a command so the source generator describes it, or re-enable " +
+                "<EnableObjectOutputReflectionFallback>.");
+        }
+
+        if (instance is DataTable t)
+        {
+            return new DataTableDescriptor(t);
+        }
+
 #if NETSTANDARD2_1_OR_GREATER
-            instance is ITuple ? TupleObjectDescriptor<T>.Instance :
+        if (instance is ITuple)
+        {
+            return TupleObjectDescriptor<T>.Instance;
+        }
 #endif
-            SimpleObjectDescriptor<T>.Instance;
+
+        return SimpleObjectDescriptor<T>.Instance;
     }
 }

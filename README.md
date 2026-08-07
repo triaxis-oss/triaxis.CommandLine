@@ -559,6 +559,15 @@ Supported return shapes:
 Use `[ObjectOutput]` to control field visibility (`Standard` / `Extended` / `Internal`) and to
 position computed/extension fields with `Before = nameof(...)` / `After = nameof(...)`.
 
+The source generator emits an `IObjectDescriptor` for every type a command outputs,
+walked transitively through nested members, so field ordering and formatting are resolved
+at compile time and no reflection is involved. Set
+`<EnableObjectOutputReflectionFallback>false</EnableObjectOutputReflectionFallback>` to
+drop the reflective fallback from a trimmed publish — measured at 7 trim warnings down to 0,
+with `System.ComponentModel.TypeConverter.dll` no longer shipped and
+`triaxis.Reflection.PropertyAccess.dll` trimmed to ~5 KB. Tuple and `DataTable` output
+need run-time shape discovery and are unavailable in that mode.
+
 `Json` and `Yaml` are both emitted directly by the package over the same descriptor walk,
 so ObjectOutput carries no JSON or YAML dependency and the two formats agree on nested
 shape and field order. A string is left unquoted only when it
