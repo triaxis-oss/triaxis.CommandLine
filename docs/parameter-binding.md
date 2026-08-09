@@ -74,6 +74,41 @@ Arity is always set explicitly based on the member type and `Required`:
 | collection | `true` / `required` | `OneOrMore` |
 | collection | `false` / default | `ZeroOrMore` (arguments) / `OneOrMore` (options) |
 
+#### Arguments on a command that also has subcommands
+
+A command may declare positional arguments *and* have subcommands — `tool <file>` next to
+`tool build` — but the two are mutually exclusive on any single command line. Only one of
+them can be what the user meant, so mixing them is a parse error:
+
+```
+$ tool a b build --force
+Unrecognized command or argument 'a'.
+Unrecognized command or argument 'b'.
+```
+
+System.CommandLine's tokenizer is arity-blind: a token matching a subcommand name switches
+to that subcommand no matter how many of the parent's positional arguments are still
+unfilled. Left alone it would silently bind `a b` to `tool` and hand only `--force` to
+`build` — two commands quietly sharing one command line. The tokenizer exposes no hook to
+change that, so `ToolBuilder.Parse` walks the finished tree and gives every command below a
+command with positional arguments a validator that reports the swallowed tokens as
+unrecognized. `tool a b` and `tool build --force` both still work.
+
+The help renderer takes the same view of the ancestor chain, so `tool build --help` used to
+advertise `<file>` as one of `build`'s own arguments:
+
+```
+Usage:
+  tool <file> build [options]      →      tool build [options]
+
+Arguments:
+  <file>                           →      (gone)
+```
+
+The same walk wraps the `HelpOption`'s action to hide the ancestors' arguments for the
+duration of the render — which also covers the help System.CommandLine prints after a parse
+error, since that reaches the same action. The parent's own help is unaffected.
+
 ## Writing parsed values back
 
 After the command instance is constructed, the generated action enumerates
