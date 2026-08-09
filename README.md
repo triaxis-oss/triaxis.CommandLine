@@ -35,15 +35,23 @@ cd MyTool
 dotnet add package triaxis.CommandLine.Tool
 ```
 
-Replace `Program.cs` with a one-liner:
+**Delete `Program.cs`.** If the project is an executable with no user-written entry point,
+the source generator synthesizes one — that is the canonical setup, and the one to prefer.
+It chains the individual helpers directly rather than calling `UseDefaults()`, which lets it
+omit the pieces your tool doesn't use, so the formatter stack can be trimmed out of a tool
+whose commands all return `void`/`int`. See
+[Source-generated entry point](#source-generated-entry-point).
+
+A hand-written entry point is still fine when you need to do something before the builder
+runs:
 
 ```csharp
 return Tool.CreateBuilder(args).UseDefaults().Run();
 ```
 
-Or **delete `Program.cs` entirely**: if the project is an executable and has no user-written
-entry point, the source generator synthesizes one that is equivalent to the line above. See
-[Source-generated entry point](#source-generated-entry-point) below.
+but it opts out of that tailoring: `UseDefaults()` pulls in the whole stack unconditionally.
+Chain the helpers yourself if you care —
+`UseSerilog().UseVerbosityOptions().UseObjectOutput().UseDefaultConfiguration().AddCommandsFromAssembly()`.
 
 Add a command class anywhere in the assembly:
 
@@ -74,10 +82,7 @@ dotnet run -- hello --help                # System.CommandLine generated help
 
 `UseDefaults()` composes `UseSerilog()`, `UseVerbosityOptions()`, `UseObjectOutput()`,
 `UseDefaultConfiguration()` and `AddCommandsFromAssembly()` — see [The `Tool`
-meta-package](#the-tool-meta-package) below. The source-generated entry point chains the
-individual helpers directly instead of calling `UseDefaults`, and omits `UseObjectOutput`
-when no command produces output, so the formatter
-stack can be trimmed.
+meta-package](#the-tool-meta-package) below.
 
 ## Building blocks
 
@@ -126,9 +131,11 @@ return await Tool.CreateBuilder(args)
 ### Commands
 
 A command is any class annotated with `[Command]` that exposes a public `Execute` or
-`ExecuteAsync` method. Command instances are built per invocation via
-`ActivatorUtilities.CreateInstance<T>(provider)`, so constructor injection works out of
-the box — the class does not have to be pre-registered.
+`ExecuteAsync` method. The generator emits a direct `new MyCommand(...)` per command,
+resolving each constructor parameter from the container, so constructor injection works
+out of the box without the class being pre-registered — and without reflective activation.
+Annotate a constructor with `[ActivatorUtilitiesConstructor]` to pick it when there is more
+than one.
 
 ```csharp
 [Command("db", "migrate", Description = "Apply pending migrations")]
@@ -152,7 +159,8 @@ public class MigrateCommand
 - Supported return types: `void`, `int`, `Task`, `Task<int>`, `ICommandInvocationResult`,
   `Task<ICommandInvocationResult>`, and — when `UseObjectOutput` is enabled — any `T`,
   `IEnumerable<T>`, `IAsyncEnumerable<T>`, `Task<T>`, `Task<IEnumerable<T>>`, and
-  `System.Data.DataTable`.
+  `System.Data.DataTable` (the last is unavailable under NativeAOT — see
+  [NativeAOT](#nativeaot)).
 - `CommandAttribute` properties: `Path`, `Aliases`, `Description`.
 - `[SupportedOSPlatform("windows"|"linux"|"macos"|...)]` on a command class (or on a
   base class) gates its registration: the command only appears when the current OS
@@ -164,6 +172,10 @@ source-generated — the `triaxis.CommandLine` package ships a Roslyn source gen
 `[ModuleInitializer]` that registers them all. `AddCommandsFromAssembly` throws if no
 generated registration is present, which in practice only happens if the assembly was
 compiled without a reference to the package.
+
+The parameterless overload takes commands from `Assembly.GetEntryAssembly()`. It used to
+use `Assembly.GetCallingAssembly()`, which throws under NativeAOT — the two agree for a
+tool registering its own commands. Pass the assembly explicitly from a library.
 
 #### Standalone commands (`Main` / `MainAsync`)
 
@@ -695,9 +707,8 @@ unreachable and the trimmer can drop it. Keep that in mind if you add more work 
 ### Source-generated entry point
 
 When the consuming project is an executable (`OutputType=Exe`) and has no user-written
-`Main`, the source generator emits one for you. You can therefore delete `Program.cs` from
-any tool that would otherwise contain nothing but the canonical one-liner — the generator
-produces an equivalent `Main` that chains
+`Main`, the source generator emits one for you. This is the setup to prefer, and the reason `Program.cs`
+is missing from the quick start — the generator produces a `Main` that chains
 `.UseSerilog().UseVerbosityOptions()[.UseObjectOutput()].UseDefaultConfiguration().AddCommandsFromAssembly(...).Run()`.
 The `.UseObjectOutput()` call is emitted only when at least one `[Command]` class has a
 return type other than `void`/`Task`/`int`/`Task<int>` — projects whose commands all
@@ -738,6 +749,56 @@ public class GreetCommand : LoggingCommand
 ```
 
 See [`examples/hello.cs`](./examples/hello.cs) for a runnable version.
+
+## NativeAOT
+
+Tools publish with `PublishAot` and run. Measured on `net10.0` / `linux-x64` with
+`InvariantGlobalization`:
+
+| | binary | trim/AOT warnings |
+| --- | --- | --- |
+| `Console.WriteLine` floor, for reference | 1.09 MiB | — |
+| commands, binding, DI, middleware (`void`/`int` returns) | 3.38 MiB | none |
+| + object output, records / structs / tuples | 4.31 MiB | 2 × IL2075 |
+
+These switches take the command-only tool to **2.97 MiB** and cost nothing but stack
+traces:
+
+```xml
+<OptimizationPreference>Size</OptimizationPreference>
+<UseSystemResourceKeys>true</UseSystemResourceKeys>
+<StackTraceSupport>false</StackTraceSupport>
+<EventSourceSupport>false</EventSourceSupport>
+<MetadataUpdaterSupport>false</MetadataUpdaterSupport>
+<IlcFoldIdenticalMethodBodies>true</IlcFoldIdenticalMethodBodies>
+```
+
+Most of what remains is not this library: of the command-only 3.38 MiB, `triaxis.CommandLine`
+itself accounts for 13.5 KiB. `Microsoft.Extensions.DependencyInjection` alone — hello world
+plus one injected service, no triaxis — already costs 2.13 MiB, including the 137 KiB of
+runtime type-loader and reflection infrastructure that `ServiceProvider` needs to
+constructor-inject registered services. The whole stack adds about 3 KiB on top of that.
+
+Set `<PublishAot>true</PublishAot>` and, for object output,
+`<EnableObjectOutputReflectionFallback>false</EnableObjectOutputReflectionFallback>`. The
+generated descriptors and handler registrations then cover every type your commands return,
+and the reflective machinery — which AOT cannot use for a value type — is compiled out.
+
+Leaving the fallback on is not fatal, but it keeps `MakeGenericType` reachable, which is
+`RequiresDynamicCode`: any command returning a **struct**, and therefore any command
+returning a **tuple**, fails at run time with *"Unable to create a generic service … because
+'T' is a ValueType"*. Turning the switch off replaces that with generated closed
+registrations and the problem disappears.
+
+Two things do not work under NativeAOT and fail with a clear exception naming the type:
+
+- `System.Data.DataTable` output — its shape exists only at run time, so no descriptor can
+  be generated for it.
+- A command whose output type the generator never saw (an `interface` or `object` return).
+
+The residual IL2075 warnings are trim analysis on the `GetInterfaces()` call that finds a
+result's element type. That works correctly under AOT — removing the warning would mean
+putting the element type on `ICommandInvocationResult`, a breaking change not worth it yet.
 
 ## Technical documentation
 

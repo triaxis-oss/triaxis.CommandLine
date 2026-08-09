@@ -140,6 +140,7 @@ static class GeneratorTestCompilation
         // consumer has — and only a test that compiles generated output ever notices.
         AddIfManaged(typeof(System.CommandLine.ParseResult).Assembly.Location);
         AddIfManaged(typeof(triaxis.Reflection.IPropertyGetter).Assembly.Location);
+        AddIfManaged(typeof(triaxis.CommandLine.ObjectOutput.DynamicObjectOutputHandler).Assembly.Location);
         AddIfManaged(typeof(IServiceCollection).Assembly.Location);
         AddIfManaged(typeof(IHostBuilder).Assembly.Location);
         try

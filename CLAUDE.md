@@ -143,9 +143,30 @@ on Linux and catches things the other legs cannot:
   (System.CommandLine included) embed `internal` copies of `IsExternalInit` that a
   metadata lookup returns but test source cannot use.
 
+### NativeAOT
+
+`PublishAot` works. The blockers were all *generic instantiation over value types*, which
+AOT cannot synthesise: an open-generic DI registration resolved via `MakeGenericType`
+failed for every struct output type — and therefore every tuple. The generator now emits
+closed `IObjectOutputHandler<T>` **and** `IObjectDescriptorProvider<T>` registrations
+(closing only the handler leaves its constructor dependency open, which fails the same
+way). Handler emission is gated on the ObjectOutput package being referenced; descriptors
+are not, since they need only the base package.
+
+`AddCommandsFromAssembly()` uses `Assembly.GetEntryAssembly()` — `GetCallingAssembly()`
+throws `PlatformNotSupportedException` under AOT, which broke the documented one-liner on
+its first call.
+
+Measured: 3.38 MiB for a command-only tool with zero warnings, 4.31 MiB with object output
+and 2 residual IL2075 (`GetInterfaces()` element-type lookup, works at run time).
+`DataTable` stays unavailable — its shape is only known at run time.
+
 **Everything reflective must sit behind `ObjectOutputFeatures.ReflectionFallbackEnabled`.**
 Leaving one branch reachable (the tuple path originally was) keeps the whole reflective
-graph alive and the trimmer drops none of it. `EnableObjectOutputReflectionFallback=false`
+graph alive and the trimmer drops none of it. That covers the open-generic DI registrations
+and the `DataTable` handler in `UseObjectOutput` too — rooting those kept
+`DataTableDescriptor`'s `MakeGenericType` alive and IL3050 non-zero even when every output
+type was generated. `EnableObjectOutputReflectionFallback=false`
 → `.targets` → `RuntimeHostConfigurationOption` → `ILLink.Substitutions.xml` stubs the
 property to `false` → dead branch → measured 7 trim warnings to 0, with
 `System.ComponentModel.TypeConverter.dll` dropped entirely.
