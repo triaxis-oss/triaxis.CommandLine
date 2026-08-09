@@ -386,39 +386,8 @@ sealed class YamlWriter
     }
 
     /// <summary>
-    /// Renders a YAML double-quoted scalar. The escape set is JSON's, minus JSON's
-    /// optional escaping of non-ASCII: literal non-ASCII is valid in both formats and
-    /// far more readable, and the result stays a valid JSON string either way.
+    /// Renders a YAML double-quoted scalar, whose escape set is a superset of JSON's — so
+    /// one string writer serves both formats.
     /// </summary>
-    public static string Quote(string s)
-    {
-        var sb = new StringBuilder(s.Length + 2);
-        sb.Append('"');
-
-        foreach (var c in s)
-        {
-            switch (c)
-            {
-                case '"': sb.Append("\\\""); break;
-                case '\\': sb.Append("\\\\"); break;
-                case '\n': sb.Append("\\n"); break;
-                case '\r': sb.Append("\\r"); break;
-                case '\t': sb.Append("\\t"); break;
-                case '\b': sb.Append("\\b"); break;
-                case '\f': sb.Append("\\f"); break;
-                default:
-                    if (c < 0x20 || c == 0x7F || (c >= 0x80 && c <= 0x9F) || c == '﻿')
-                    {
-                        sb.Append("\\u").Append(((int)c).ToString("x4", CultureInfo.InvariantCulture));
-                    }
-                    else
-                    {
-                        sb.Append(c);
-                    }
-                    break;
-            }
-        }
-
-        return sb.Append('"').ToString();
-    }
+    public static string Quote(string s) => JsonString.Quote(s);
 }

@@ -19,6 +19,9 @@
     <PackageReference Include="Microsoft.Extensions.Configuration.EnvironmentVariables" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Json" />
     <PackageReference Include="Microsoft.Extensions.FileProviders.Physical" />
+    <!-- Persistent JSON configuration editor. Previously inherited from the base package,
+         which no longer needs a JSON serializer of its own. -->
+    <PackageReference Include="System.Text.Json" />
     <!-- YAML configuration source + persistent editor. Previously inherited transitively
          from ObjectOutput, which no longer needs a YAML library of its own. -->
     <PackageReference Include="YamlDotNet" />
