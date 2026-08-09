@@ -1,4 +1,4 @@
-#!/usr/bin/env dotnet
+#!/usr/bin/env -S dotnet --
 #:project ../src/triaxis.CommandLine.Tool/triaxis.CommandLine.Tool.csproj
 
 using Microsoft.Extensions.Logging;

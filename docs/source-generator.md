@@ -809,7 +809,7 @@ feature. [`examples/hello.cs`](../examples/hello.cs) is a complete single-file t
 with no `.csproj`, no `Main`, and a shebang so the file is directly executable:
 
 ```csharp
-#!/usr/bin/env dotnet
+#!/usr/bin/env -S dotnet --
 #:package triaxis.CommandLine.Tool@*
 
 [Command("greet", Description = "Greets someone")]
