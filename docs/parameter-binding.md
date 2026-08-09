@@ -74,11 +74,12 @@ Arity is always set explicitly based on the member type and `Required`:
 | collection | `true` / `required` | `OneOrMore` |
 | collection | `false` / default | `ZeroOrMore` (arguments) / `OneOrMore` (options) |
 
-#### Arguments on a command that also has subcommands
+## What a subcommand does not inherit
 
-A command may declare positional arguments *and* have subcommands — `tool <file>` next to
-`tool build` — but the two are mutually exclusive on any single command line. Only one of
-them can be what the user meant, so mixing them is a parse error:
+A command may declare arguments and options of its own *and* have subcommands — `tool
+<file>` next to `tool build` — but only one of them can be what any single command line
+meant. A parent's own arguments and non-recursive options belong to the parent's action
+alone, so reaching a subcommand while any of them are set is a parse error:
 
 ```
 $ tool a b build --force
@@ -89,10 +90,30 @@ Unrecognized command or argument 'b'.
 System.CommandLine's tokenizer is arity-blind: a token matching a subcommand name switches
 to that subcommand no matter how many of the parent's positional arguments are still
 unfilled. Left alone it would silently bind `a b` to `tool` and hand only `--force` to
-`build` — two commands quietly sharing one command line. The tokenizer exposes no hook to
-change that, so `ToolBuilder.Parse` walks the finished tree and gives every command below a
-command with positional arguments a validator that reports the swallowed tokens as
-unrecognized. `tool a b` and `tool build --force` both still work.
+`build` — two commands quietly sharing one command line. Everything before that switch is
+read against the parent, which makes the parent's options bindable there too:
+
+```
+$ tool --dry-run build
+Unrecognized command or argument '--dry-run'.
+```
+
+That one is worth spelling out because it was silently *asymmetric*: `tool build --dry-run`
+has always been rejected (the option is not in `build`'s token map), while the same option
+moved one word to the left set a value on a command that never ran.
+
+The tokenizer exposes no hook to change any of it, so `ToolBuilder.Parse` walks the finished
+tree and gives every command below one that declares arguments or scoped options a validator
+that reports what was swallowed as unrecognized. `tool a b`, `tool --dry-run` and
+`tool build --force` all still work.
+
+Two kinds of option are deliberately exempt, because neither is a value binding the parent
+keeps to itself:
+
+- **Recursive options** (`AddRecursiveOption`, `--verbosity`, `--output`) are declared for
+  the whole subtree — being settable above the invoked command is the entire point.
+- **Action options** — `--help`, `--version`, and `[ActionOption]` methods — replace the
+  invocation rather than binding a value, so there is nothing for a subcommand to swallow.
 
 The help renderer takes the same view of the ancestor chain, so `tool build --help` used to
 advertise `<file>` as one of `build`'s own arguments:
@@ -107,7 +128,9 @@ Arguments:
 
 The same walk wraps the `HelpOption`'s action to hide the ancestors' arguments for the
 duration of the render — which also covers the help System.CommandLine prints after a parse
-error, since that reaches the same action. The parent's own help is unaffected.
+error, since that reaches the same action. The parent's own help is unaffected. Options
+needed no equivalent: help already lists only the command's own options plus the recursive
+ones it inherits.
 
 ## Writing parsed values back
 
