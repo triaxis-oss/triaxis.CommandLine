@@ -52,6 +52,11 @@ Each `[Command]` class gets one `internal static class {SafeName}` umbrella in
 nested action class per entry point — `Action` for the primary, plus one named
 after each `[ActionOption]` method (so the tree wiring reads as
 `new Greet.Action(...)` and an action option as `new Greet.MigrateAsync()`).
+`{SafeName}` folds every character that is not a letter or digit to `_` — a command name
+only has to survive the tokenizer, so it can hold `.`, `+`, or whitespace, and anything
+the identifier grammar rejects used to emit uncompilable C# (`class Group sub`) instead of
+a diagnostic. Names that can never be *typed* — empty, or containing whitespace, the usual
+sign that `[Command("group sub")]` was meant as a path — are rejected as `TXCL008`.
 The per-command lifecycle is split across three methods on the umbrella so the
 nested action class can stage them as needed:
 
