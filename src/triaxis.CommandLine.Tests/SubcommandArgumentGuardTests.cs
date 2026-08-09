@@ -11,7 +11,24 @@ public class ShadowState
     public string? ParentOpt { get; set; }
     public string? ChildOpt { get; set; }
     public bool Flag { get; set; }
+    public string[]? Values { get; set; }
     public string? Ran { get; set; }
+}
+
+[Command("collect")]
+public class CollectCommand
+{
+    [Inject]
+    public ShadowState State { get; set; } = null!;
+
+    [Argument]
+    public string[] Values { get; set; } = [];
+
+    public void Execute()
+    {
+        State.Ran = "collect";
+        State.Values = Values;
+    }
 }
 
 [Command("shadow")]
@@ -192,6 +209,74 @@ public class SubcommandArgumentGuardTests
         Assert.That(state.Ran, Is.EqualTo("parent"));
         Assert.That(state.ParentOpt, Is.EqualTo("x"));
         Assert.That(state.Flag, Is.True);
+    }
+
+    [Test]
+    public void UnknownOptions_AreRejected_InsteadOfBindingToAPositionalArgument()
+    {
+        var errors = CreateBuilder("collect", "--dyr-run").Parse().Errors;
+
+        Assert.That(errors.Select(e => e.Message),
+            Is.EqualTo(new[] { "Unrecognized command or argument '--dyr-run'." }));
+    }
+
+    [Test]
+    public void UnknownOptions_AreRejected_BetweenGenuineValues()
+    {
+        var errors = CreateBuilder("collect", "a", "-x", "b").Parse().Errors;
+
+        Assert.That(errors.Select(e => e.Message),
+            Is.EqualTo(new[] { "Unrecognized command or argument '-x'." }));
+    }
+
+    [Test]
+    public void UnknownOptions_AreRejected_OnSubcommandsToo()
+    {
+        var errors = CreateBuilder("shadow", "sub", "--typo").Parse().Errors;
+
+        Assert.That(errors.Select(e => e.Message),
+            Is.EqualTo(new[] { "Unrecognized command or argument '--typo'." }));
+    }
+
+    [Test]
+    public async Task AfterDoubleDash_OptionLikeValuesBind()
+    {
+        var state = new ShadowState();
+        var builder = CreateBuilder("collect", "--", "--typo", "-x");
+        builder.ConfigureServices(s => s.AddSingleton(state));
+
+        Assert.That(await builder.RunAsync(), Is.Zero);
+        Assert.That(state.Values, Is.EqualTo(new[] { "--typo", "-x" }));
+    }
+
+    [Test]
+    public void DoubleDash_ExemptsOnlyWhatFollowsIt()
+    {
+        var errors = CreateBuilder("collect", "--typo", "--", "-x").Parse().Errors;
+
+        Assert.That(errors.Select(e => e.Message),
+            Is.EqualTo(new[] { "Unrecognized command or argument '--typo'." }));
+    }
+
+    [Test]
+    public async Task NegativeNumbersAndLoneDash_AreNotOptions()
+    {
+        var state = new ShadowState();
+        var builder = CreateBuilder("collect", "-5", "-.5", "-");
+        builder.ConfigureServices(s => s.AddSingleton(state));
+
+        Assert.That(await builder.RunAsync(), Is.Zero);
+        Assert.That(state.Values, Is.EqualTo(new[] { "-5", "-.5", "-" }));
+    }
+
+    [Test]
+    public void OptionValuesStartingWithDash_AreStillAccepted()
+    {
+        // The check covers a command's positional arguments; an option's own value hangs
+        // off its OptionResult and is none of the guard's business.
+        var errors = CreateBuilder("shadow", "--parent-opt", "-x").Parse().Errors;
+
+        Assert.That(errors, Is.Empty);
     }
 
     [Test]

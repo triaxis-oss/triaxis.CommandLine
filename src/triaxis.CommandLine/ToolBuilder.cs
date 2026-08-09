@@ -176,7 +176,7 @@ class ToolBuilder : IToolBuilder, IHostBuilder
 
         // Installed here rather than while the tree is built so it also covers commands
         // added manually through GetCommand or straight onto RootCommand.
-        SubcommandArgumentGuard.Install(_root);
+        SubcommandArgumentGuard.Install(_root, _args);
 
         // Parse with invariant culture so numeric/date conversions are locale-independent
         var savedCulture = CultureInfo.CurrentCulture;
