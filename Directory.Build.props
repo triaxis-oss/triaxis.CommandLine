@@ -6,6 +6,9 @@
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
     <EmbedUntrackedSources>true</EmbedUntrackedSources>
     <PackageVersion>0.0.1-dev</PackageVersion>
+    <PackageProjectUrl>https://github.com/triaxis-oss/triaxis.CommandLine</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/triaxis-oss/triaxis.CommandLine</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
     <PackageLicenseFile>LICENSE.txt</PackageLicenseFile>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageIcon>icon.png</PackageIcon>
@@ -18,7 +21,6 @@
 
   <ItemGroup>
     <None Include="../../LICENSE.txt" Pack="true" PackagePath="$(PackageLicenseFile)" />
-    <None Include="../../README.md" Pack="true" PackagePath="\" />
     <None Include="$(BaseIntermediateOutputPath)/icon.png" Pack="true" PackagePath="$(PackageIcon)" />
   </ItemGroup>
 

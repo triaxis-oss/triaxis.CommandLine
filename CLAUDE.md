@@ -12,8 +12,24 @@ src/triaxis.CommandLine/               Base package (System.CommandLine + M.E.DI
 src/triaxis.CommandLine.ObjectOutput/  Output formatters (Table, JSON, YAML, Raw)
 src/triaxis.CommandLine.Serilog/       Serilog logging + verbosity options
 src/triaxis.CommandLine.Tool/          Opinionated all-in-one (UseDefaults)
-examples/                              Hello, ObjectOutput, and BindingShowcase examples
+docs/                                  The reference; docs/README.md is the index
+examples/                              Hello, ObjectOutput, BindingShowcase, WebHost, hello.cs
 ```
+
+## Docs
+
+`README.md` is the shop window — the pitch, the install, one example, and the table of
+links. Everything longer than a paragraph belongs in `docs/`, with
+`docs/getting-started.md` as the guided tour and the rest as deep dives; a change that
+grows the README instead of the page it belongs to is going the wrong way.
+
+Every package packs the root README, but as a **rewritten copy**: nuget.org resolves a
+relative link against the package page, so `Directory.Build.targets` absolutizes every
+relative link against `$(RepositoryUrl)/blob/$(ReadmeLinkRef)/` before packing
+(`ReadmeLinkRef` defaults to `main`; the release workflow passes the tag, so a published
+package's links keep pointing at the sources it was built from). Relative links in the
+README must therefore stay repo-relative and extension-complete — `docs/hosting.md`, not
+`./docs/hosting` — or they rewrite into 404s.
 
 ## Build & Test
 

@@ -1,745 +1,13 @@
 # triaxis.CommandLine
 
-An opinionated extension on top of [System.CommandLine](https://learn.microsoft.com/dotnet/standard/commandline/)
-for quickly bootstrapping modern .NET command line tools. It adds:
-
-- Attribute-based automatic command discovery via a source generator
-- Dependency injection via `Microsoft.Extensions.DependencyInjection`
-- Configuration via `Microsoft.Extensions.Configuration` (`appsettings.json`, env vars, overrides)
-- Structured logging via [Serilog](https://serilog.net/) with `-v` / `-q` / `--verbosity` flags
-- Object output formatting (`Table` / `Wide` / `Json` / `Yaml` / `Raw`) via a single `--output` flag
-- A middleware pipeline around command execution
-- Cooperative cancellation on Ctrl+C / SIGTERM
-- Standalone `Main` / `MainAsync` commands that own their own host (e.g. ASP.NET Core inside
-  a subcommand)
-
-## Packages
-
-| Package | Purpose |
-| --- | --- |
-| `triaxis.CommandLine` | Core `ToolBuilder`, attributes, command discovery, DI |
-| `triaxis.CommandLine.ObjectOutput` | `--output` formatters (Table/Wide/Json/Yaml/Raw/None) |
-| `triaxis.CommandLine.Serilog` | Serilog integration and `--verbosity` / `-v` / `-q` options |
-| `triaxis.CommandLine.Tool` | Opinionated all-in-one meta-package (`UseDefaults()`) |
-
-The core libraries target `netstandard2.0` and `netstandard2.1`, so they can be consumed from any
-modern .NET or .NET Framework host. Tools built on top typically target `net8.0` or newer.
-
-## Quick start
-
-Install the meta-package into a console project:
-
-```shell
-dotnet new console -n MyTool
-cd MyTool
-dotnet add package triaxis.CommandLine.Tool
-```
-
-**Delete `Program.cs`.** If the project is an executable with no user-written entry point,
-the source generator synthesizes one — that is the canonical setup, and the one to prefer.
-It chains the individual helpers directly rather than calling `UseDefaults()`, which lets it
-omit the pieces your tool doesn't use, so the formatter stack can be trimmed out of a tool
-whose commands all return `void`/`int`. See
-[Source-generated entry point](#source-generated-entry-point).
-
-A hand-written entry point is still fine when you need to do something before the builder
-runs:
+Write a class, get a command. An opinionated layer over
+[System.CommandLine](https://learn.microsoft.com/dotnet/standard/commandline/) that
+discovers commands with a source generator, binds their arguments and options, resolves
+their dependencies, and formats whatever they return — with no `Program.cs` of your own and
+no reflection at runtime.
 
 ```csharp
-return Tool.CreateBuilder(args).UseDefaults().Run();
-```
-
-but it opts out of that tailoring: `UseDefaults()` pulls in the whole stack unconditionally.
-Chain the helpers yourself if you care —
-`UseSerilog().UseVerbosityOptions().UseObjectOutput().UseDefaultConfiguration().AddCommandsFromAssembly()`.
-
-Add a command class anywhere in the assembly:
-
-```csharp
-[Command("hello", Description = "Greets the world, or someone")]
-public class HelloCommand : LoggingCommand
-{
-    [Option("--name", "-n", Description = "Name of the person to greet")]
-    public string Name { get; set; } = "World";
-
-    public Task ExecuteAsync(CancellationToken cancellationToken)
-    {
-        Logger.LogDebug("Greeting {Name}...", Name);
-        Console.WriteLine($"Hello {Name}!");
-        return Task.CompletedTask;
-    }
-}
-```
-
-Run it:
-
-```shell
-dotnet run -- hello
-dotnet run -- hello --name Alice
-dotnet run -- hello -n Alice -v           # -v raises log level to Debug
-dotnet run -- hello --help                # System.CommandLine generated help
-```
-
-`UseDefaults()` composes `UseSerilog()`, `UseVerbosityOptions()`, `UseObjectOutput()`,
-`UseDefaultConfiguration()` and `AddCommandsFromAssembly()` — see [The `Tool`
-meta-package](#the-tool-meta-package) below.
-
-## Building blocks
-
-### `ToolBuilder`
-
-`Tool.CreateBuilder(args)` returns an `IToolBuilder`:
-
-```csharp
-public interface IToolBuilder : IHostBuilder
-{
-    string[] Arguments { get; }
-    RootCommand RootCommand { get; }
-    IConfigurationManager Configuration { get; }
-
-    Command GetCommand(params string[] path);
-    IToolBuilder AddMiddleware(InvocationMiddleware middleware);
-    IToolBuilder ConfigureServices(Action<IServiceCollection> configure);
-    Func<IServiceProvider> GetServiceProviderAccessor();
-    ParseResult Parse();
-    IHostBuilder ApplyTo(IHostBuilder target);
-}
-```
-
-Because `IToolBuilder` extends `IHostBuilder`, you can use standard hosting APIs
-(`ConfigureAppConfiguration`, `ConfigureServices(HostBuilderContext, …)`, `Properties`,
-`IHostedService`) on the builder without casting.
-
-`Run` and `RunAsync` are extension methods that call `IHostBuilder.Build()` to produce a
-`ToolHost`, start hosted services, delegate to `ParseResult.Invoke` / `InvokeAsync`, stop
-hosted services, and dispose the service provider. System.CommandLine owns the actual
-parse, help, ctrl-c and error handling. See [docs/hosting.md](docs/hosting.md) for the full
-lifecycle.
-
-A fully manual setup without `UseDefaults` looks like:
-
-```csharp
-return await Tool.CreateBuilder(args)
-    .ConfigureServices(s => s.AddSingleton<IMyService, MyService>())
-    .UseSerilog()
-    .UseVerbosityOptions()
-    .UseObjectOutput()
-    .AddCommandsFromAssembly()
-    .RunAsync();
-```
-
-### Commands
-
-A command is any class annotated with `[Command]` that exposes a public `Execute` or
-`ExecuteAsync` method. The generator emits a direct `new MyCommand(...)` per command,
-resolving each constructor parameter from the container, so constructor injection works
-out of the box without the class being pre-registered — and without reflective activation.
-Annotate a constructor with `[ActivatorUtilitiesConstructor]` to pick it when there is more
-than one.
-
-```csharp
-[Command("db", "migrate", Description = "Apply pending migrations")]
-public class MigrateCommand
-{
-    public Task<int> ExecuteAsync(CancellationToken cancellationToken) { /* ... */ }
-}
-```
-
-- The path can have one or more segments — nested segments become subcommands
-  (`mytool db migrate`). With **no** segments at all (`[Command]`) the class becomes the
-  root command — what runs when the tool is invoked with no verb.
-- A top-level command (or one of its aliases) must not reuse the executable's own name:
-  the root command is already named after the executable, so the two would collide while
-  parsing. The generator reports that as `TXCL007` — drop the path to make the class the
-  root command instead.
-- `[Command]` is `AllowMultiple = true`, so you can put several of them on the same class
-  to expose it under multiple paths. It can **also** be applied at the **assembly** level
-  to attach a description or aliases to an intermediate tree node that has no dedicated
-  class (e.g. `[assembly: Command("db", Description = "Database operations")]`).
-- Supported return types: `void`, `int`, `Task`, `Task<int>`, `ICommandInvocationResult`,
-  `Task<ICommandInvocationResult>`, and — when `UseObjectOutput` is enabled — any `T`,
-  `IEnumerable<T>`, `IAsyncEnumerable<T>`, `Task<T>`, `Task<IEnumerable<T>>`, and
-  `System.Data.DataTable` (the last is unavailable under NativeAOT — see
-  [NativeAOT](#nativeaot)).
-- `CommandAttribute` properties: `Path`, `Aliases`, `Description`.
-- `[SupportedOSPlatform("windows"|"linux"|"macos"|...)]` on a command class (or on a
-  base class) gates its registration: the command only appears when the current OS
-  matches one of the listed platforms. Multiple attributes combine with a logical OR.
-
-Commands are discovered via `AddCommandsFromAssembly()`. Discovery is entirely
-source-generated — the `triaxis.CommandLine` package ships a Roslyn source generator under
-`analyzers/` that emits one `AsynchronousCommandLineAction` subclass per command plus a
-`[ModuleInitializer]` that registers them all. `AddCommandsFromAssembly` throws if no
-generated registration is present, which in practice only happens if the assembly was
-compiled without a reference to the package.
-
-The parameterless overload takes commands from `Assembly.GetEntryAssembly()`. It used to
-use `Assembly.GetCallingAssembly()`, which throws under NativeAOT — the two agree for a
-tool registering its own commands. Pass the assembly explicitly from a library.
-
-#### Standalone commands (`Main` / `MainAsync`)
-
-A `[Command]` class can declare a `Main` (sync) or `MainAsync` (async) method instead
-of `Execute`/`ExecuteAsync`.
-The generator emits an action that skips the DI container and middleware pipeline
-entirely and passes the `IToolBuilder` straight through, letting the command stand up
-its own host. `IToolBuilder.ApplyTo(IHostBuilder)` replays the tool's configuration
-sources and service registrations onto the alternate host. The tool's own deferred
-delegates (from `UseSerilog`, `UseDefaultConfiguration`, etc.) run in isolation against
-a scratch builder, so destructive operations inside those extensions cannot reach
-target-owned state. `ApplyTo` also seeds the build-time `InvocationContext` into the
-target's `IHostBuilder.Properties`, so `ctx.GetInvocationContext()` works for any
-deferred callback registered on the target side. The target controls precedence:
-anything registered before `ApplyTo` is overridden by the tool's layer; anything
-registered after overrides it.
-
-```csharp
-[Command("serve", Description = "Runs the greeter as an HTTP server.")]
-public class ServeCommand
-{
-    [Option("--port")] public int Port { get; set; } = 5000;
-
-    public async Task<int> MainAsync(IToolBuilder builder, CancellationToken ct)
-    {
-        var web = WebApplication.CreateBuilder();
-        web.Logging.ClearProviders();     // drop ASP.NET Core's defaults
-        builder.ApplyTo(web.Host);        // replay CLI-side config / services / Serilog
-        web.WebHost.UseUrls($"http://localhost:{Port}");
-
-        var app = web.Build();
-        app.MapGet("/", (IGreeter g) => g.Greet("World"));
-        await app.RunAsync(ct);
-        return 0;
-    }
-}
-```
-
-Recognized signatures are `Main([IToolBuilder,] [CancellationToken])` returning
-`void` or `int`, and `MainAsync([IToolBuilder,] [CancellationToken])` returning `Task`
-or `Task<int>`. Declaring a `CancellationToken` opts the command into System.CommandLine's
-process-termination handling: the `ct` above is wired to Ctrl+C / SIGTERM (the same token a
-`ToolHost` command gets), so `await app.RunAsync(ct)` shuts the host down cooperatively.
-Omit it and the command is invoked directly, with no framework cancellation machinery — it
-owns its lifecycle outright. Standalone commands can still use
-`[Argument]`/`[Option]`/`[Options]` binding, but cannot mix with `[Inject]` members or
-constructor DI — their whole point is that no service provider is constructed on the CLI
-side. See [`examples/WebHost`](./examples/WebHost) for a full walkthrough.
-
-### Arguments and options
-
-Bind parsed values to **fields or properties** using `[Argument]` (positional) or `[Option]`
-(named). Both derive from `CommandlineAttribute`, which exposes common metadata:
-
-| Property | Meaning |
-| --- | --- |
-| `Name` | Explicit name. Defaults to the member name converted to kebab-case (e.g. `MyOption` → `--my-option`, `MyArg` → `MY-ARG`). |
-| `Description` | Shown in `--help`. |
-| `Order` | Sort order for help and positional ordering. |
-
-`ArgumentAttribute` adds `Required`. `OptionAttribute` adds `Aliases` and `Required`. The
-`required` C# keyword on the member is also honoured automatically.
-
-```csharp
-[Command("copy")]
-public class CopyCommand
-{
-    [Argument(Description = "Source path", Required = true)]
-    public string Source { get; set; } = null!;
-
-    [Argument(Description = "Destination path", Required = true)]
-    public string Destination { get; set; } = null!;
-
-    [Option("--force", "-f", Description = "Overwrite existing files")]
-    public bool Force { get; set; }
-
-    [Option("--retries", Description = "Number of retries on transient errors")]
-    public int Retries { get; set; } = 3;
-
-    public void Execute() { /* ... */ }
-}
-```
-
-Run as:
-
-```shell
-mytool copy ./a.txt ./b.txt --force --retries 5
-```
-
-#### Grouping options
-
-Use `[Options]` on a property whose type holds further `[Option]`/`[Argument]` members to
-flatten a nested object into the command without writing the members inline:
-
-```csharp
-public class NetworkOptions
-{
-    [Option("--host")] public string Host { get; set; } = "localhost";
-    [Option("--port")] public int Port { get; set; } = 443;
-}
-
-[Command("ping")]
-public class PingCommand
-{
-    [Options] public NetworkOptions Network { get; set; } = new();
-    public int Execute() { /* ... */ return 0; }
-}
-```
-
-#### Alternate entry points (`[ActionOption]`)
-
-A command can have additional entry points triggered by their own flag. Mark a method
-with `[ActionOption]` and the generator exposes a boolean option that — when set —
-runs that method instead of the command's primary `ExecuteAsync`/`MainAsync`. The same
-arguments and options are still bound onto the command instance, so the alternate
-method observes the same state the primary would have:
-
-```csharp
-[Command("backup")]
-public class BackupCommand
-{
-    [Option("--target")] public string Target { get; set; } = "/var/backup";
-
-    public Task ExecuteAsync(CancellationToken ct) { /* default: take a backup */ }
-
-    [ActionOption("--list", "-l", Description = "List existing backups")]
-    public Task ListAsync(CancellationToken ct) { /* ... */ }
-
-    [ActionOption("--restore")]
-    public Task<int> RestoreAsync(CancellationToken ct) { /* ... */ }
-}
-```
-
-`backup` runs the primary; `backup --list` runs `ListAsync`; `backup --restore`
-runs `RestoreAsync`. On standalone commands the alternate method may also take an
-`IToolBuilder`, just like `MainAsync`.
-
-### Dependency injection
-
-Register services with `ConfigureServices`:
-
-```csharp
-Tool.CreateBuilder(args)
-    .UseDefaults()
-    .ConfigureServices((ctx, services) =>
-    {
-        services.AddHttpClient();
-        services.AddSingleton<IMyService, MyService>();
-        services.Configure<MyOptions>(ctx.Configuration.GetSection("My"));
-    })
-    .Run();
-```
-
-When you rely on the source-generated entry point (no hand-written `Main`), mark any
-static method with `[ConfigureServices]` and the generator folds it into the chain
-for you:
-
-```csharp
-public static class Startup
-{
-    [ConfigureServices]
-    public static void Register(IServiceCollection services)
-        => services.AddSingleton<IMyService, MyService>();
-}
-```
-
-The method must be `static`, return `void`, and take a single `IServiceCollection`
-parameter. Multiple hooks across the assembly are supported; the generator emits
-them in a stable ordinal order (by declaring type's fully-qualified name, then by
-method name).
-
-When a hook needs to customize the builder or host itself (add configuration sources,
-swap logging, replace the defaults), use `[Configure]` instead. It accepts any
-combination of `IToolBuilder` / `IHostBuilder` / `IServiceCollection`:
-
-```csharp
-public static class Startup
-{
-    [Configure]
-    public static void Setup(IToolBuilder builder, IServiceCollection services)
-    {
-        builder.UseDefaultLogging();
-        builder.UseDefaultConfiguration();
-        services.AddSingleton<IMyService, MyService>();
-    }
-}
-```
-
-Because a `[Configure]` hook owns builder setup, its presence makes the generated entry
-point **skip the opinionated logging and default-configuration helpers** (`UseSerilog`,
-`UseVerbosityOptions`, `UseDefaultConfiguration`) — restore them with `UseDefaultLogging()`
-(the combined `UseSerilog` + `UseVerbosityOptions` one-liner) and `UseDefaultConfiguration()`
-as shown, not `UseDefaults()`, which would re-register every command. Command discovery
-and `UseObjectOutput()` are still generated automatically (the latter whenever a `[Command]`
-returns a value), so a hook never needs to add those. `[ConfigureServices]` is unaffected
-and stays the right choice when you only register services.
-
-For any pre-container setup specific to a command — registering services, adding
-middleware, tweaking the host — declare a static `Configure` method on the command
-type. The generator wires it onto the command's action so it fires only when that
-command is actually invoked:
-
-```csharp
-[Command("greet")]
-public class GreetCommand
-{
-    [Inject] private IGreeter _greeter = null!;
-
-    public void Execute() => _greeter.Greet();
-
-    public static void Configure(IServiceCollection services)
-        => services.AddSingleton<IGreeter, ConsoleGreeter>();
-}
-```
-
-The method must be `static` and return `void`. It can take any of `IToolBuilder`,
-`IHostBuilder`, or `IServiceCollection` — including no parameters at all.
-
-Inside a command, take services through the constructor as usual, or use the `[Inject]`
-attribute on any field or property. `[Inject]` is particularly handy on reusable base
-classes (see `LoggingCommand`) so derived commands don't have to forward dependencies
-through their own constructors:
-
-```csharp
-[Command("fetch")]
-public class FetchCommand
-{
-    [Inject] private readonly IHttpClientFactory _http = null!;
-    [Inject] private readonly ILogger<FetchCommand> _logger = null!;
-    [Inject] private readonly IOptions<MyOptions> _options = null!;
-
-    public async Task ExecuteAsync(CancellationToken ct) { /* ... */ }
-}
-```
-
-An `ExecuteAsync(CancellationToken)` overload receives the Ctrl+C token supplied by
-System.CommandLine; the `Execute(CancellationToken)` signature is not recognized.
-
-### Configuration
-
-`IToolBuilder.Configuration` exposes an `IConfigurationManager` that is also registered into DI
-as `IConfiguration`. `UseDefaults()` — and its extracted `UseDefaultConfiguration()` helper
-— wire it up with:
-
-- `appsettings.json` next to the executable (optional)
-- An optional override file under `ApplicationData` / `LocalApplicationData`
-- Optional environment-variable prefix
-
-```csharp
-Tool.CreateBuilder(args)
-    .UseDefaults(
-        configOverridePath: "MyTool/appsettings.json",
-        environmentVariablePrefix: "MYTOOL_")
-    .Run();
-```
-
-Or, when you want finer control (e.g. to skip `UseObjectOutput` so the formatter stack
-can be trimmed), call the helpers directly — this is what the source-generated `Main` does:
-
-```csharp
-Tool.CreateBuilder(args)
-    .UseSerilog()
-    .UseVerbosityOptions()
-    .UseDefaultConfiguration(environmentVariablePrefix: "MYTOOL_")
-    .AddCommandsFromAssembly()
-    .Run();
-```
-
-To add your own configuration sources fluently, use `ConfigureConfiguration` — the
-configuration-side counterpart to `ConfigureServices`, so you don't have to cast to
-`IHostBuilder` or reach into the raw `IConfigurationManager`:
-
-```csharp
-Tool.CreateBuilder(args)
-    .ConfigureConfiguration(c => c.AddJsonFile("custom.json", optional: true))
-    .ConfigureConfiguration((ctx, c) =>
-    {
-        var env = ctx.GetInvocationContext().ParseResult.GetValue<string>("--environment");
-        c.AddJsonFile($"appsettings.{env}.json", optional: true);
-    })
-    .Run();
-```
-
-The single-argument overload runs immediately against `IToolBuilder.Configuration`; the
-two-argument overload is deferred until `Build()` and can branch on the parsed command
-line. See [Hosting integration](docs/hosting.md) for details.
-
-For environment-style overlays, `UseScopedConfiguration` groups sources into precedence
-scopes (`Builtin` < `Machine` < `User` < `EnvironmentVariables` < `Override`) and can
-remap a subtree onto the root (or any path). A less specific scope's overlay never
-overrides a more specific scope's explicit value:
-
-```csharp
-Tool.CreateBuilder(args)
-    .UseScopedConfiguration(cfg => cfg
-        .Add(ConfigurationScope.Builtin, c => c.AddJsonFile("appsettings.json", optional: true))
-        .Add(ConfigurationScope.User,    c => c.AddJsonFile(userPath, optional: true))
-        .Remap("Environments:Production"))
-    .Run();
-```
-
-Calling `UseScopedConfiguration` repeatedly (or alongside `UseDefaultConfiguration`)
-accumulates onto one shared builder and emits a single source, so scope precedence and
-scope-targeted `Update` keep working across calls rather than each call stacking a layer.
-
-`UseDefaultConfiguration` is built on this and accepts a `configure` hook for adding an
-`Override` source or `Remap` rules. The same machine/user probing is also exposed as
-composable `ScopedConfigurationBuilder` helpers — `AddBuiltinConfiguration`,
-`AddJsonOverrides`, `AddEnvironmentOverrides`, and the format-neutral `AddOverrides`
-engine (bring your own provider, e.g. YAML) — for hand-composed pipelines. See
-[Hosting integration](docs/hosting.md#scoped-configuration--subtree-remapping).
-
-Bind typed options in the usual way:
-
-```csharp
-.ConfigureServices((ctx, s) => s.Configure<MyOptions>(
-    ctx.Configuration.GetSection("MyOptions")));
-```
-
-### Logging and verbosity
-
-`UseSerilog()` registers an `ILoggerProvider` that creates a Serilog logger **lazily** after the
-command line has been parsed. That means:
-
-- `Serilog` section in `appsettings.json` is honoured (via `ReadFrom.Configuration`).
-- The minimum level is derived from `--verbosity` / `-v` / `-q` at startup with no
-  `LoggingLevelSwitch` needed.
-- The console sink detects `FORCE_COLOR` and terminal themes automatically.
-
-Verbosity flags added by `UseVerbosityOptions()` (and therefore `UseDefaults()`):
-
-| Flag | Effect |
-| --- | --- |
-| `--verbosity <Trace\|Debug\|Information\|Warning\|Error\|Critical>` | Set explicitly |
-| `-v`, `-vv` | Step up (`Debug`, then `Trace`) |
-| `-q`, `-qq` | Step down (`Warning`, then `Error`) |
-
-`appsettings.json` example:
-
-```json
-{
-  "Serilog": {
-    "MinimumLevel": "Information",
-    "WriteTo": [{ "Name": "Console" }]
-  }
-}
-```
-
-An optional `LoggingCommand` base class (in `triaxis.CommandLine.Tool`) provides a preconfigured
-`Logger` property and `CreateLogger(name)` helper.
-
-### Object output
-
-`UseObjectOutput()` (included in `UseDefaults()`) adds a recursive `--output` / `-o` option to
-the root command and a middleware that formats whatever the command returns.
-
-```csharp
-public record Forecast(string City, decimal Temperature)
-{
-    [ObjectOutput(ObjectFieldVisibility.Extended)]
-    public decimal TemperatureF => Temperature * 9 / 5 + 32;
-}
-
-[Command("forecast")]
-public class ForecastCommand
-{
-    public IEnumerable<Forecast> Execute() =>
-    [
-        new("Bratislava", 21.5m),
-        new("Prague",     19.0m),
-        new("Paris",      23.2m),
-    ];
-}
-```
-
-```shell
-mytool forecast                    # default table
-mytool forecast -o Wide            # includes [Extended] fields
-mytool forecast -o Json
-mytool forecast -o Yaml
-mytool forecast -o Raw             # ToString() per element
-mytool forecast -o None            # discard output
-```
-
-Supported return shapes:
-
-- `T`, `T[]`, `List<T>`, `IEnumerable<T>`, `IList<T>`
-- `IAsyncEnumerable<T>` (streams row-by-row)
-- `Task<T>`, `Task<IEnumerable<T>>`
-- `ValueTuple<A, B, ...>` — combines fields from each element side-by-side
-- `System.Data.DataTable` (sync or `Task<DataTable>`)
-
-Use `[ObjectOutput]` to control field visibility and to position computed/extension fields
-with `Before = nameof(...)` / `After = nameof(...)`. `Standard` shows everywhere, `Extended`
-needs `-o Wide`, `Internal` is hidden from tables but **still present in JSON and YAML**, and
-`Hidden` is dropped from the descriptor so no format emits it — except `-o Raw`, which is
-`ToString()` and never consults a descriptor. See
-[Field visibility](docs/object-output.md#field-visibility).
-
-The source generator emits an `IObjectDescriptor` for every type a command outputs,
-walked transitively through nested members, so field ordering and formatting are resolved
-at compile time and no reflection is involved. Set
-`<EnableObjectOutputReflectionFallback>false</EnableObjectOutputReflectionFallback>` to
-drop the reflective fallback from a trimmed publish — measured at 7 trim warnings down to 0,
-with `System.ComponentModel.TypeConverter.dll` no longer shipped and
-`triaxis.Reflection.PropertyAccess.dll` trimmed to ~5 KB. `DataTable` output needs run-time
-shape discovery and is unavailable in that mode; tuples are generated and keep working.
-
-`Json` and `Yaml` are both emitted directly by the package over the same descriptor walk,
-so ObjectOutput carries no JSON or YAML dependency and the two formats agree on nested
-shape and field order. A string is left unquoted only when it
-provably reads back unchanged under both YAML 1.1 and YAML 1.2 — so `yes`, `007`,
-`1:30:00` and `2026-08-06` come out quoted, while `hello world`, `--flag` and `::1` do
-not. Multi-line strings become literal block scalars. See
-[Object output](docs/object-output.md#8-yaml-output) for the details.
-
-For commands that emit multiple result sets, inject `IObjectOutputHandler` and call it directly:
-
-```csharp
-[Command("watch")]
-public class WatchCommand
-{
-    [Inject] private readonly IObjectOutputHandler _output = null!;
-
-    public async Task ExecuteAsync(CancellationToken ct)
-    {
-        while (!ct.IsCancellationRequested)
-        {
-            await _output.ProcessOutputAsync(GetForecasts().ToCommandInvocationResult(), ct);
-            await Task.Delay(1000, ct);
-        }
-    }
-}
-```
-
-### Middleware
-
-`AddMiddleware` wraps every command invocation in a chain. The first registered middleware is
-the outermost. Object output, for example, is implemented as a middleware that runs after
-`next()` to format the command's return value.
-
-```csharp
-builder.AddMiddleware(async (context, next) =>
-{
-    var sw = Stopwatch.StartNew();
-    try
-    {
-        await next(context);
-    }
-    finally
-    {
-        context.Services.GetRequiredService<ILogger<Program>>()
-            .LogInformation("Command {Command} finished in {Elapsed}",
-                context.CommandType.Name, sw.Elapsed);
-    }
-});
-```
-
-`InvocationContext` exposes `Services`, `ParseResult`, `CommandType`, `InvocationResult`,
-`ExitCode` and `GetCancellationToken()`.
-
-### Error handling
-
-Throw `CommandErrorException` from a command to report a user-facing failure. The default
-executor logs it and exits without a stack trace. The exit code defaults to `-1` and is
-configurable per throw via the `ExitCode` initializer:
-
-```csharp
-throw new CommandErrorException("File {Path} was not found", path);
-throw new CommandErrorException("Config {Path} invalid", path) { ExitCode = 78 };
-```
-
-Any other exception bubbles up to System.CommandLine's default handler, which prints the
-exception and returns a non-zero exit code — unless you register an exception mapper to
-give it the same clean treatment:
-
-```csharp
-builder.MapException<TimeoutException>(exitCode: 124);
-builder.MapException<HttpRequestException>(
-    ex => new CommandError(75, "Upstream call failed: {Reason}", ex.Message));
-```
-
-Mappers run in registration order; the built-in `CommandErrorException` handling stays as
-a final fallback. You can also replace the executor entirely by registering your own
-`ICommandExecutor` in `ConfigureServices`.
-
-### Cancellation
-
-Commands declared as `ExecuteAsync(CancellationToken)` receive the token that
-System.CommandLine raises on Ctrl+C / SIGTERM and get cooperative shutdown — including a
-configurable termination timeout. Commands that do not accept a token get a
-`Environment.FailFast(null)` callback registered on the token instead, so pressing Ctrl+C
-during a non-cancellable command terminates the process immediately. The registration is
-disposed as soon as the command body returns, so it never fires during middleware or
-result finalization.
-
-This applies to the `ToolHost` path. Standalone `Main`/`MainAsync` commands opt into the
-same Ctrl+C / SIGTERM token only by declaring a `CancellationToken` parameter; without one
-they skip System.CommandLine's invocation pipeline entirely (see
-[Standalone commands](#standalone-commands-main--mainasync)).
-
-## The Tool meta-package
-
-```csharp
-builder.UseDefaults(
-    configOverridePath: null,          // optional per-user override file
-    environmentVariablePrefix: null,   // optional env var prefix
-    commandsAssembly: null);           // defaults to the entry assembly
-```
-
-is equivalent to:
-
-```csharp
-builder
-    .UseSerilog()
-    .UseVerbosityOptions()
-    .UseObjectOutput()
-    .AddCommandsFromAssembly(commandsAssembly ?? Assembly.GetCallingAssembly())
-    .UseDefaultConfiguration(configOverridePath, environmentVariablePrefix);
-// UseDefaultConfiguration adds appsettings.json, the override file, and env vars
-```
-
-Use it when you want the opinionated defaults; compose the individual `Use*` extensions when
-you need finer control (for example when shipping a library of commands without Serilog, or
-when you want `triaxis.CommandLine.ObjectOutput` to be trimmable).
-
-The source-generated entry point does **not** call `UseDefaults`. Instead it chains the
-individual helpers and omits `.UseObjectOutput()` when every `[Command]` class returns
-`void`/`Task`/`int`/`Task<int>`, so the ObjectOutput graph becomes
-unreachable and the trimmer can drop it. Keep that in mind if you add more work to
-`UseDefaults`: it only runs for hand-written entry points that call it explicitly.
-
-### Source-generated entry point
-
-When the consuming project is an executable (`OutputType=Exe`) and has no user-written
-`Main`, the source generator emits one for you. This is the setup to prefer, and the reason `Program.cs`
-is missing from the quick start — the generator produces a `Main` that chains
-`.UseSerilog().UseVerbosityOptions()[.UseObjectOutput()].UseDefaultConfiguration().AddCommandsFromAssembly(...).Run()`.
-The `.UseObjectOutput()` call is emitted only when at least one `[Command]` class has a
-return type other than `void`/`Task`/`int`/`Task<int>` — projects whose commands all
-return one of those can trim `triaxis.CommandLine.ObjectOutput` out of
-the published binary. The generator falls back to `AddCommandsFromAssembly().Run()` when
-only the base `triaxis.CommandLine` package is referenced, without the `Tool`
-meta-package.
-
-Writing your own `Main` is always fine: if one already exists the generator skips
-entry-point emission, so you never get a "multiple entry points" error.
-
-The `UseDefaultConfiguration` parameters that the generator cannot infer on its own can
-be supplied via MSBuild properties:
-
-```xml
-<PropertyGroup>
-  <TriaxisCommandLineConfigOverridePath>MyTool/appsettings.json</TriaxisCommandLineConfigOverridePath>
-  <TriaxisCommandLineEnvironmentVariablePrefix>MYTOOL_</TriaxisCommandLineEnvironmentVariablePrefix>
-</PropertyGroup>
-```
-
-This composes naturally with .NET 10
-[file-based apps](https://learn.microsoft.com/dotnet/core/tutorials/file-based-apps).
-A complete tool in a single file, no project file, no `Main`:
-
-```csharp
-#!/usr/bin/env dotnet
+#!/usr/bin/env -S dotnet --
 #:package triaxis.CommandLine.Tool@*
 
 [Command("greet", Description = "Say hello")]
@@ -752,113 +20,83 @@ public class GreetCommand : LoggingCommand
 }
 ```
 
-See [`examples/hello.cs`](./examples/hello.cs) for a runnable version.
-
-## NativeAOT
-
-Tools publish with `PublishAot` and run. Measured on `net10.0` / `linux-x64` with
-`InvariantGlobalization`:
-
-| | binary | trim/AOT warnings |
-| --- | --- | --- |
-| `Console.WriteLine` floor, for reference | 1.09 MiB | — |
-| commands, binding, DI, middleware (`void`/`int` returns) | 3.38 MiB | none |
-| + object output, records / structs / tuples | 4.31 MiB | 2 × IL2075 |
-
-These switches take the command-only tool to **2.97 MiB** and cost nothing but stack
-traces:
-
-```xml
-<OptimizationPreference>Size</OptimizationPreference>
-<UseSystemResourceKeys>true</UseSystemResourceKeys>
-<StackTraceSupport>false</StackTraceSupport>
-<EventSourceSupport>false</EventSourceSupport>
-<MetadataUpdaterSupport>false</MetadataUpdaterSupport>
-<IlcFoldIdenticalMethodBodies>true</IlcFoldIdenticalMethodBodies>
+```shell
+./hello.cs greet --name Alice    # a whole tool in one file, no project, no Main
 ```
 
-Most of what remains is not this library: of the command-only 3.38 MiB, `triaxis.CommandLine`
-itself accounts for 13.5 KiB. `Microsoft.Extensions.DependencyInjection` alone — hello world
-plus one injected service, no triaxis — already costs 2.13 MiB, including the 137 KiB of
-runtime type-loader and reflection infrastructure that `ServiceProvider` needs to
-constructor-inject registered services. The whole stack adds about 3 KiB on top of that.
+That is the whole tool: `--help`, `--verbosity`, `--output`, Ctrl+C handling, DI and
+configuration come with it.
 
-Set `<PublishAot>true</PublishAot>` and, for object output,
-`<EnableObjectOutputReflectionFallback>false</EnableObjectOutputReflectionFallback>`. The
-generated descriptors and handler registrations then cover every type your commands return,
-and the reflective machinery — which AOT cannot use for a value type — is compiled out.
-
-Leaving the fallback on is not fatal, but it keeps `MakeGenericType` reachable, which is
-`RequiresDynamicCode`: any command returning a **struct**, and therefore any command
-returning a **tuple**, fails at run time with *"Unable to create a generic service … because
-'T' is a ValueType"*. Turning the switch off replaces that with generated closed
-registrations and the problem disappears.
-
-Two things do not work under NativeAOT and fail with a clear exception naming the type:
-
-- `System.Data.DataTable` output — its shape exists only at run time, so no descriptor can
-  be generated for it.
-- A command whose output type the generator never saw (an `interface` or `object` return).
-
-The residual IL2075 warnings are trim analysis on the `GetInterfaces()` call that finds a
-result's element type. That works correctly under AOT — removing the warning would mean
-putting the element type on `ICommandInvocationResult`, a breaking change not worth it yet.
-
-## Technical documentation
-
-Deeper dives into how the library is put together live under [`docs/`](./docs):
-
-- [Architecture overview](./docs/architecture.md)
-- [Parameter binding](./docs/parameter-binding.md)
-- [Command discovery and the source generator](./docs/source-generator.md)
-- [Dependency injection and `[Inject]`](./docs/dependency-injection.md)
-- [Hosting, `IHostBuilder`, and `ApplyTo`](./docs/hosting.md)
-- [Middleware and the command executor](./docs/middleware.md)
-- [Object output pipeline](./docs/object-output.md)
-
-## Examples
-
-Runnable examples live under [`examples/`](./examples):
-
-- [`examples/Hello`](./examples/Hello) — single command, DI and verbosity flags. Has no
-  `Program.cs` — the entry point is source-generated.
-- [`examples/ObjectOutput`](./examples/ObjectOutput) — every supported return shape
-  (`IEnumerable`, `IAsyncEnumerable`, `Task<IEnumerable>`, tuples, `DataTable`, manual
-  `IObjectOutputHandler`) and the `--output` formatter matrix.
-- [`examples/BindingShowcase`](./examples/BindingShowcase) — every parameter-binding
-  variant (public/private, required, init-only, `[Options]` grouping, nested
-  `[Options]`, collections, constructor injection, aliases, nested command paths) plus
-  the `[ConfigureServices]` hook.
-- [`examples/WebHost`](./examples/WebHost) — a standalone `MainAsync` subcommand that
-  runs an ASP.NET Core server while sharing the CLI's configuration, Serilog wiring,
-  and DI container via `IToolBuilder.ApplyTo(web.Host)`.
-- [`examples/hello.cs`](./examples/hello.cs) — a single-file .NET 10 "dotnet run app.cs"
-  tool (no `.csproj`, no `Main`, shebang-executable). MSBuild properties such as
-  `TriaxisCommandLineEnvironmentVariablePrefix` can be supplied via `#:property` if
-  the generated bootstrap needs them.
-
-Build and run:
+## Install
 
 ```shell
-dotnet build examples/Examples.sln
-dotnet run --project examples/Hello -- hello Alice
-dotnet run --project examples/ObjectOutput -- enumerable -o Json
-dotnet run --project examples/BindingShowcase -- ctor-inject --name Alice
-dotnet run --project examples/WebHost -- serve --port 5000
-dotnet run examples/hello.cs -- greet --name Alice
-./examples/hello.cs greet --name Alice        # after chmod +x
+dotnet new console -n MyTool && cd MyTool
+dotnet add package triaxis.CommandLine.Tool
 ```
+
+**Delete `Program.cs`.** With no entry point of its own, the project gets a generated one
+that wires up logging, configuration, object output and command discovery — and omits what
+your commands never use. Add a `[Command]` class anywhere in the assembly and run it.
+
+[Getting started](docs/getting-started.md) walks through the rest: commands and
+subcommands, argument and option binding, `[Inject]` and constructor DI, configuration
+files and scopes, and the `UseDefaults()` one-liner for a hand-written `Main`.
+
+| Package | Purpose |
+| --- | --- |
+| `triaxis.CommandLine` | Core `ToolBuilder`, attributes, command discovery, DI |
+| `triaxis.CommandLine.ObjectOutput` | `--output` formatters (Table/Wide/Json/Yaml/Raw/None) |
+| `triaxis.CommandLine.Serilog` | Serilog integration and `--verbosity` / `-v` / `-q` options |
+| `triaxis.CommandLine.Tool` | Opinionated all-in-one meta-package (`UseDefaults()`) |
+
+The libraries target `netstandard2.0` and `netstandard2.1`, so they run on any modern .NET
+or .NET Framework host. Tools built on top typically target `net8.0` or newer.
+
+## What you get
+
+| | |
+| --- | --- |
+| Commands | `[Command("db", "migrate")]` on a class with `Execute`/`ExecuteAsync`. Nested paths become subcommands, and a class can carry several. Discovery is source-generated. |
+| Binding | `[Argument]` and `[Option]` on fields or properties, public or private; `[Options]` flattens a nested object; `[ActionOption]` adds an alternate entry point behind its own flag. |
+| Dependency injection | Constructor parameters resolve from the container without registering the command, or use `[Inject]` on any member. `[ConfigureServices]` / `[Configure]` hooks register services without a hand-written `Main`. |
+| Configuration | `appsettings.json`, machine and per-user overrides, environment variables — layered into precedence scopes, with `Update(scope, …)` writing one layer back as a minimal edit. |
+| Logging | Serilog, created lazily *after* parsing, so `-v` / `-q` / `--verbosity` and the `Serilog` config section both apply with no level switch. |
+| Output | Return a record, a list, an `IAsyncEnumerable` or a tuple; `--output Table\|Wide\|Json\|Yaml\|Raw\|None` formats it. JSON and YAML are emitted in-house, so there is no serializer dependency. |
+| Middleware | `AddMiddleware(async (context, next) => …)` around every invocation, first registered outermost. |
+| Errors and Ctrl+C | `CommandErrorException` (and any type you map to it) exits cleanly with a logged message and your exit code; `ExecuteAsync(CancellationToken)` gets cooperative shutdown. |
+| Own host | A `Main`/`MainAsync` command skips the CLI's container and runs its own — ASP.NET Core inside a subcommand, sharing the tool's config and Serilog via `ApplyTo`. |
+| NativeAOT | `PublishAot` works: 3.38 MiB for a command-only tool, no trim warnings. |
+
+## Documentation
+
+| | |
+| --- | --- |
+| [Getting started](docs/getting-started.md) | packages, the first tool, commands, binding, DI and configuration in one pass |
+| [Architecture](docs/architecture.md) | the whole pipeline, from `Tool.CreateBuilder` to result finalization |
+| [Parameter binding](docs/parameter-binding.md) | attributes, naming, ordering, nested option groups, alternate entry points |
+| [Source generator](docs/source-generator.md) | what is emitted per command, the command tree, and the generated entry point |
+| [Dependency injection](docs/dependency-injection.md) | how the provider is assembled and how `[Inject]` is resolved |
+| [Hosting](docs/hosting.md) | `IHostBuilder` conformance, configuration scopes, `ToolHost`, standalone commands, `ApplyTo` |
+| [Middleware](docs/middleware.md) | the chain, `ICommandExecutor`, error mapping, cancellation |
+| [Logging](docs/logging.md) | Serilog wiring, verbosity flags, the default console sink, `LoggingCommand` |
+| [Object output](docs/object-output.md) | descriptors, formatters, the JSON and YAML emitters, trimming |
+| [NativeAOT](docs/nativeaot.md) | what it costs, what to switch off, and what does not work |
+
+Runnable projects for all of it live under [`examples/`](examples) — a hello-world tool,
+the binding showcase, the formatter matrix, an ASP.NET Core subcommand, and a single-file
+tool with no project at all.
 
 ## Building from source
 
 ```shell
 dotnet build src/triaxis.CommandLine.sln
 dotnet test  src/triaxis.CommandLine.sln
+dotnet test  src/triaxis.CommandLine.sln -f net48   # needs mono on Linux
 dotnet build examples/Examples.sln
 ```
 
 ## License
 
-This package is licensed under the [MIT License](./LICENSE.txt).
+This package is licensed under the [MIT License](LICENSE.txt).
 
 Copyright &copy; 2023 triaxis s.r.o.

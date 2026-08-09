@@ -60,9 +60,13 @@ jobs:
       - name: Determine version
         id: version
         run: |
+          # the packed readme outlives the commit it was built from, so a release points its
+          # links at its own tag; anything else points at main
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+            echo "readme_ref=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
           else
+            echo "readme_ref=main" >> "$GITHUB_OUTPUT"
             # v2.0.0-3-gabcdef -> 2.0.0-dev.3+gabcdef
             # v2.0.0-alpha.1-3-gabcdef -> 2.0.0-alpha.1.dev.3+gabcdef
             # abcdef (no tags) -> 0.0.0-dev.0+gabcdef
@@ -72,7 +76,7 @@ jobs:
           fi
       - run: dotnet restore
       - run: dotnet build --no-restore -c Release -p ContinuousIntegrationBuild=true
-      - run: dotnet pack --no-build -c Release -o ../pack -p PackageVersion=${{steps.version.outputs.version}}
+      - run: dotnet pack --no-build -c Release -o ../pack -p PackageVersion=${{steps.version.outputs.version}} -p ReadmeLinkRef=${{steps.version.outputs.readme_ref}}
       - uses: actions/upload-artifact@v6
         with:
           name: packages
