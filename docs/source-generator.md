@@ -487,6 +487,32 @@ The check compares ordinally (matching the tokenizer) and only runs for console
 executables — a library's assembly name says nothing about the executable that will
 eventually host its commands.
 
+### Unusable command names
+
+Every name — path segment or alias — is matched against a single command-line token, so
+one that is empty or contains whitespace can never be typed:
+
+| ID | Condition |
+|---|---|
+| `TXCL008` | A path segment or alias (class-level or assembly-level) is empty or contains whitespace. |
+
+```csharp
+// TXCL008: "group sub" is one name, not two segments
+[Command("group sub")]
+public class SubCommand { public void Execute() { } }
+
+// the fix — the path is params string[]
+[Command("group", "sub")]
+public class SubCommand { public void Execute() { } }
+```
+
+Nothing else about a name is restricted. A name only has to survive the tokenizer, so it
+may hold characters no C# identifier can — the umbrella class name folds anything that is
+not a letter or digit to `_` (and prefixes one when the name starts with a digit), so
+`dot.ted` and `7zip` both generate and compile. That folding is also what keeps `TXCL008`
+readable: without it a name with a space emits `internal static class Group sub` and the
+diagnostic arrives buried under syntax errors in generated code.
+
 ## Platform-gated commands
 
 Commands annotated with one or more

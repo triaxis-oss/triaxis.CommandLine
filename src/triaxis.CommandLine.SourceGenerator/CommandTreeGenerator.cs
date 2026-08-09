@@ -59,6 +59,7 @@ public class CommandTreeGenerator : IIncrementalGenerator
             {
                 diagnostics.AddRange(command.Diagnostics);
             }
+            AddUnusableNames(diagnostics, commands, info.AssemblyCommands);
             if (info.IsExecutable)
             {
                 AddRootNameCollisions(diagnostics, commands, info.AssemblyCommands, info.AssemblyName);
@@ -452,6 +453,48 @@ public class CommandTreeGenerator : IIncrementalGenerator
         }
 
         return builder.ToImmutable();
+    }
+
+    /// <summary>
+    /// A command name is matched against a single command-line token, so one containing
+    /// whitespace — or none at all — can never be typed. The most common way to write one
+    /// is <c>[Command("group sub")]</c>, meant as a path but taken as a single name;
+    /// the path is <c>params string[]</c>, so the segments go in separately.
+    /// </summary>
+    private static void AddUnusableNames(ImmutableArray<string>.Builder diagnostics,
+        ImmutableArray<CommandModel> commands, ImmutableArray<AssemblyCommandModel> assemblyCommands)
+    {
+        foreach (var cmd in commands)
+        {
+            // The diagnostic has no source location (the models carry no syntax), so name
+            // the type in full rather than by its simple name.
+            Check($"Command '{cmd.TypeName.Replace("global::", "")}'", cmd.Path, cmd.Aliases);
+        }
+        foreach (var asmCmd in assemblyCommands)
+        {
+            Check($"Assembly-level command '{string.Join(" ", asmCmd.Path)}'", asmCmd.Path, asmCmd.Aliases);
+        }
+
+        void Check(string subject, string[] path, string[]? aliases)
+        {
+            foreach (var segment in path)
+            {
+                Report(segment, "path segment",
+                    "The path is params string[] — pass each segment separately, as [Command(\"group\", \"sub\")].");
+            }
+            foreach (var alias in aliases ?? [])
+            {
+                Report(alias, "alias", "Pick an alias that can be typed as a single token.");
+            }
+
+            void Report(string name, string kind, string remedy)
+            {
+                if (name.Length == 0 || name.Any(char.IsWhiteSpace))
+                {
+                    diagnostics.Add($"TXCL008:{subject} declares the {kind} '{name}'. A command name is matched against one command-line token, so it cannot be empty or contain whitespace. {remedy}");
+                }
+            }
+        }
     }
 
     /// <summary>
@@ -2827,8 +2870,23 @@ public class CommandTreeGenerator : IIncrementalGenerator
         {
             return "_root";
         }
-        var segments = cmd.Path.Select(p => Capitalize(p.Replace("-", "_")));
+        var segments = cmd.Path.Select(p => Capitalize(ToIdentifier(p)));
         return string.Join("_", segments);
+
+        // A command name only has to survive the tokenizer, so it may hold characters no
+        // C# identifier can (`.`, `+`, and — until TXCL008 rejects them — whitespace).
+        // Folding them all to '_' keeps the emitted class name compilable whatever the
+        // name turns out to be; without it the generator answers a bad name with a wall
+        // of syntax errors pointing into generated code.
+        static string ToIdentifier(string segment)
+        {
+            var sb = new System.Text.StringBuilder(segment.Length + 1);
+            foreach (var c in segment)
+            {
+                sb.Append(char.IsLetterOrDigit(c) ? c : '_');
+            }
+            return sb.Length > 0 && char.IsDigit(sb[0]) ? "_" + sb : sb.ToString();
+        }
 
         static string Capitalize(string s)
             => s.Length == 0 || char.IsUpper(s[0]) ? s : char.ToUpperInvariant(s[0]) + s.Substring(1);
