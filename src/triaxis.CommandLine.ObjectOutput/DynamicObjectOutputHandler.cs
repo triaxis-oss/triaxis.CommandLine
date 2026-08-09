@@ -1,7 +1,5 @@
 namespace triaxis.CommandLine.ObjectOutput;
 
-using Microsoft.Extensions.DependencyInjection;
-
 public class DynamicObjectOutputHandler : IObjectOutputHandler
 {
     private readonly IServiceProvider _serviceProvider;
@@ -17,7 +15,11 @@ public class DynamicObjectOutputHandler : IObjectOutputHandler
             .Single(t => t.IsGenericType && t.GetGenericTypeDefinition() == typeof(ICommandInvocationResult<>))
             .GetGenericArguments()[0];
 
-        var typedHandler = (IObjectOutputHandler)_serviceProvider.GetRequiredService(typeof(IObjectOutputHandler<>).MakeGenericType(elementType));
+        var typedHandler = ToolBuilderObjectOutputExtensions.ResolveHandler(_serviceProvider, elementType)
+            ?? throw new InvalidOperationException(
+                $"No object output handler for '{elementType}'. Return the type from a command so the " +
+                "source generator emits one, or re-enable <EnableObjectOutputReflectionFallback>.");
+
         return typedHandler.ProcessOutputAsync(cir, cancellationToken);
     }
 }

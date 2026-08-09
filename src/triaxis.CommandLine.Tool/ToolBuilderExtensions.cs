@@ -26,7 +26,16 @@ public static class ToolBuilderExtensions
         // Run command discovery first so the recursive options added by
         // UseVerbosityOptions / UseObjectOutput are appended after every local
         // option in the root command's option list.
-        builder.AddCommandsFromAssembly(commandsAssembly ?? Assembly.GetCallingAssembly());
+        // GetCallingAssembly throws under NativeAOT; the parameterless overload falls back
+        // to the entry assembly, which is what a tool calling UseDefaults() means anyway.
+        if (commandsAssembly is null)
+        {
+            builder.AddCommandsFromAssembly();
+        }
+        else
+        {
+            builder.AddCommandsFromAssembly(commandsAssembly);
+        }
         builder.UseDefaultLogging();
         builder.UseObjectOutput();
         builder.UseDefaultConfiguration(configOverridePath, environmentVariablePrefix);

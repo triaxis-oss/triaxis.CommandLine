@@ -27,6 +27,12 @@ public class ObjectDescriptorGenerator : IIncrementalGenerator
 
     public void Initialize(IncrementalGeneratorInitializationContext context)
     {
+        // Handler registrations name DefaultObjectOutputHandler<>, which lives in the
+        // ObjectOutput package. Descriptors only need the base package, so they are always
+        // emitted; handlers only when the consumer actually references ObjectOutput.
+        var hasObjectOutput = context.CompilationProvider.Select(static (c, _) =>
+            c.GetTypeByMetadataName("triaxis.CommandLine.ObjectOutput.DefaultObjectOutputHandler`1") is not null);
+
         var models = context.SyntaxProvider
             .ForAttributeWithMetadataName(
                 "triaxis.CommandLine.CommandAttribute",
@@ -34,16 +40,18 @@ public class ObjectDescriptorGenerator : IIncrementalGenerator
                 transform: static (ctx, ct) => ExtractOutputTypes(ctx, ct))
             .Where(static m => !m.IsDefaultOrEmpty)
             .Collect()
-            .Select(static (batches, _) => Deduplicate(batches));
+            .Select(static (batches, _) => Deduplicate(batches))
+            .Combine(hasObjectOutput);
 
-        context.RegisterSourceOutput(models, static (spc, descriptors) =>
+        context.RegisterSourceOutput(models, static (spc, pair) =>
         {
+            var (descriptors, emitHandlers) = pair;
             if (descriptors.IsDefaultOrEmpty)
             {
                 return;
             }
 
-            spc.AddSource("ObjectDescriptors.g.cs", Generate(descriptors));
+            spc.AddSource("ObjectDescriptors.g.cs", Generate(descriptors, emitHandlers));
         });
     }
 
@@ -434,7 +442,7 @@ public class ObjectDescriptorGenerator : IIncrementalGenerator
 
     // --- emission
 
-    private static string Generate(ImmutableArray<DescriptorModel> descriptors)
+    private static string Generate(ImmutableArray<DescriptorModel> descriptors, bool emitHandlers)
     {
         var sw = new StringWriter();
         var w = new IndentedTextWriter(sw);
@@ -447,6 +455,8 @@ public class ObjectDescriptorGenerator : IIncrementalGenerator
         w.WriteLine("using System.Collections.Generic;");
         w.WriteLine("using System.Reflection;");
         w.WriteLine("using System.Runtime.CompilerServices;");
+        w.WriteLine("using Microsoft.Extensions.DependencyInjection;");
+        w.WriteLine("using Microsoft.Extensions.DependencyInjection.Extensions;");
         w.WriteLine("using triaxis.CommandLine.ObjectOutput;");
         w.WriteLine("using triaxis.Reflection;");
         w.WriteLine();
@@ -459,8 +469,18 @@ public class ObjectDescriptorGenerator : IIncrementalGenerator
                 w.Block("internal static void Register()", () =>
                 {
                     w.WriteLine("ObjectDescriptorRegistry.Register(TryGet);");
+                    if (emitHandlers)
+                    {
+                        w.WriteLine("ObjectOutputHandlerRegistry.Register(AddHandlers, TryGetHandler);");
+                    }
                 });
                 w.WriteLine();
+
+                if (emitHandlers)
+                {
+                    EmitHandlerRegistrations(w, descriptors);
+                    w.WriteLine();
+                }
 
                 w.Block("private static IObjectDescriptor? TryGet(Type type)", () =>
                 {
@@ -485,6 +505,38 @@ public class ObjectDescriptorGenerator : IIncrementalGenerator
 
         w.Flush();
         return sw.ToString();
+    }
+
+    /// <summary>
+    /// Closed handler registrations and dispatch, so resolving a handler never needs
+    /// <c>MakeGenericType</c> over the element type — the step NativeAOT cannot perform
+    /// for a value type, which is what broke struct and tuple output.
+    /// </summary>
+    private static void EmitHandlerRegistrations(IndentedTextWriter w, ImmutableArray<DescriptorModel> descriptors)
+    {
+        w.Block("private static void AddHandlers(IServiceCollection services)", () =>
+        {
+            foreach (var d in descriptors)
+            {
+                // the handler takes IObjectDescriptorProvider<T>, so closing only the
+                // handler still leaves an open generic for AOT to choke on
+                w.WriteLine($"services.TryAddSingleton<IObjectDescriptorProvider<{d.TypeFqn}>, DefaultObjectDescriptorProvider<{d.TypeFqn}>>();");
+                w.WriteLine($"services.TryAddTransient<IObjectOutputHandler<{d.TypeFqn}>, DefaultObjectOutputHandler<{d.TypeFqn}>>();");
+            }
+        });
+        w.WriteLine();
+
+        w.Block("private static IObjectOutputHandler? TryGetHandler(Type type, IServiceProvider services)", () =>
+        {
+            foreach (var d in descriptors)
+            {
+                w.Block($"if (type == typeof({d.TypeFqn}))", () =>
+                {
+                    w.WriteLine($"return services.GetService<IObjectOutputHandler<{d.TypeFqn}>>();");
+                });
+            }
+            w.WriteLine("return null;");
+        });
     }
 
     private static void EmitDescriptor(IndentedTextWriter w, DescriptorModel model, int index)

@@ -305,4 +305,33 @@ public class ObjectDescriptorGeneratorTests
 
         Assert.That(source, Is.Null, "an empty descriptor is worse than deferring to the fallback");
     }
+    /// <summary>
+    /// Resolving a handler used to close <c>IObjectOutputHandler&lt;T&gt;</c> with
+    /// <c>MakeGenericType</c> against an open-generic registration, which NativeAOT cannot
+    /// do for a value type — so every struct output type, and therefore every tuple,
+    /// failed at run time. The generator closes them instead.
+    /// </summary>
+    [Test]
+    public void EmitsClosedHandlerRegistrations_WhenObjectOutputIsReferenced()
+    {
+        var source = RunGenerator("""
+            using System.Collections.Generic;
+            using triaxis.CommandLine;
+
+            public record struct Reading(string Sensor, int Value);
+
+            [Command("readings")]
+            public class ReadingsCommand
+            {
+                public IEnumerable<Reading> Execute() => [];
+            }
+            """);
+
+        Assert.That(source, Is.Not.Null);
+        Assert.That(source, Does.Contain("ObjectOutputHandlerRegistry.Register(AddHandlers, TryGetHandler)"));
+        Assert.That(source, Does.Contain("services.TryAddTransient<IObjectOutputHandler<global::Reading>, DefaultObjectOutputHandler<global::Reading>>();"));
+        Assert.That(source, Does.Contain("services.TryAddSingleton<IObjectDescriptorProvider<global::Reading>, DefaultObjectDescriptorProvider<global::Reading>>();"),
+            "the handler takes IObjectDescriptorProvider<T>, so that generic has to be closed too");
+        Assert.That(source, Does.Contain("return services.GetService<IObjectOutputHandler<global::Reading>>();"));
+    }
 }

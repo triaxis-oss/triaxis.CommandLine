@@ -15,6 +15,10 @@
 
   <ItemGroup>
     <ProjectReference Include="..\triaxis.CommandLine\triaxis.CommandLine.csproj" />
+    <!-- Not used by the test source: it puts ObjectOutput in the generator test
+         compilation, so handler registrations are generated and compiled the way a real
+         consumer gets them. -->
+    <ProjectReference Include="..\triaxis.CommandLine.ObjectOutput\triaxis.CommandLine.ObjectOutput.csproj" />
   </ItemGroup>
 
   <!-- Compile the source-generator source file into the test assembly so generator

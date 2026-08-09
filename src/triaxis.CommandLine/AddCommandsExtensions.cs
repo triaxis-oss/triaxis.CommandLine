@@ -7,8 +7,22 @@ using System.Runtime.CompilerServices;
 
 public static partial class ToolBuilderExtensions
 {
+    /// <summary>
+    /// Registers the commands generated into the entry assembly.
+    /// </summary>
+    /// <remarks>
+    /// Uses <see cref="Assembly.GetEntryAssembly"/> rather than
+    /// <c>Assembly.GetCallingAssembly</c>, which throws
+    /// <see cref="PlatformNotSupportedException"/> under NativeAOT — this overload is the
+    /// documented one-liner, so that made every AOT-published tool fail on its first call.
+    /// The two agree for a tool that registers its own commands; anything else should name
+    /// the assembly explicitly.
+    /// </remarks>
     public static IToolBuilder AddCommandsFromAssembly(this IToolBuilder builder)
-        => builder.AddCommandsFromAssembly(Assembly.GetCallingAssembly());
+        => builder.AddCommandsFromAssembly(Assembly.GetEntryAssembly()
+            ?? throw new InvalidOperationException(
+                "There is no entry assembly to take commands from. Call " +
+                $"{nameof(AddCommandsFromAssembly)}(Assembly) with the assembly holding the commands."));
 
     public static IToolBuilder AddCommandsFromAssembly(this IToolBuilder builder, Assembly assembly)
     {

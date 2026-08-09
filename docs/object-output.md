@@ -93,21 +93,26 @@ private static async Task ObjectOutputMiddleware(InvocationContext context, Func
             i.IsGenericType && i.GetGenericTypeDefinition() == typeof(ICommandInvocationResult<>)) is { } tcir)
     {
         var objectType = tcir.GetGenericArguments()[0];
-        if (context.Services.GetService(typeof(IObjectOutputHandler<>).MakeGenericType(objectType))
-                is IObjectOutputHandler handler)
-        {
-            await handler.ProcessOutputAsync(cir, context.GetCancellationToken());
-        }
+        var handler = ResolveHandler(context.Services, objectType)
+            ?? throw new NotSupportedException($"No object output handler for '{objectType}'. …");
+
+        await handler.ProcessOutputAsync(cir, context.GetCancellationToken());
     }
 }
 ```
+
+`ResolveHandler` consults the generated closed registrations first
+(`ObjectOutputHandlerRegistry`) and only falls back to closing the generic with
+`MakeGenericType` when the reflection fallback is enabled — that fallback is what NativeAOT
+cannot perform for a value type.
 
 Steps:
 
 1. Run the command body (`next`). `context.InvocationResult` is populated as a side effect.
 2. Reflect the result's generic interface to find `T`.
-3. Resolve `IObjectOutputHandler<T>` from DI — the default transient registration is
-   `DefaultObjectOutputHandler<T>`, with a specialisation for `DataTable`.
+3. Resolve `IObjectOutputHandler<T>` — a generated closed registration where one exists,
+   otherwise the open-generic `DefaultObjectOutputHandler<T>`, with a specialisation for
+   `DataTable`.
 4. Hand the result to the handler, which streams it into the configured formatter.
 
 Because this runs **inside** the middleware chain, any middleware registered *before*
@@ -492,5 +497,11 @@ Only its reflection-emit machinery goes.
 
 With it off, a type that has no generated descriptor throws `NotSupportedException` naming
 the type, rather than silently producing wrong output after the trimmer has removed the
-properties it would have reflected over. `DataTable` output relies on run-time shape discovery, so it is unavailable in this
+properties it would have reflected over.
+
+The switch is also what makes object output work under **NativeAOT**. Handler resolution
+otherwise closes `IObjectOutputHandler<T>` with `MakeGenericType` against an open-generic
+registration, which AOT cannot do for a value type — so every struct output type, and every
+tuple, failed at run time. With the switch off, only the generated closed registrations
+remain and both work. `DataTable` output relies on run-time shape discovery, so it is unavailable in this
 mode; tuples are generated and keep working.
