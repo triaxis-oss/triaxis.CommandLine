@@ -26,6 +26,9 @@ sealed class SimpleObjectDescriptor<T> : IObjectDescriptor
                 var accessor = pi?.GetGetter() ?? Activator.CreateInstance(typeof(PropertyDescriptorGetter<>).MakeGenericType(pd.PropertyType), pd);
                 return (IObjectField)Activator.CreateInstance(typeof(SimpleObjectDescriptorField<>).MakeGenericType(pd.PropertyType), pd, accessor);
             })
+            // dropped here rather than filtered per format, so nothing downstream — the
+            // data formats included, which do not filter at all — can emit them
+            .Where(f => f.Visibility != ObjectFieldVisibility.Hidden)
             .Ordered();
     }
 

@@ -113,6 +113,14 @@ A `[ModuleInitializer]` registers the lookup with `ObjectDescriptorRegistry` (in
 `triaxis.CommandLine`). `DefaultObjectDescriptorProvider<T>` and
 `RuntimeObjectDescriptor.For` both consult it first.
 
+`ObjectFieldVisibility` has four levels. `Standard`/`Extended`/`Internal` are *filters* the
+table formatter applies (`Wide` filters at `<= Extended`, so `Internal` never reaches any
+table) — the field stays in `Fields`, which is why `Internal` still appears in JSON/YAML.
+`Hidden` is different: the field is dropped when the descriptor is built, in both
+`SimpleObjectDescriptor` and the generator, so nothing descriptor-driven can emit it and
+`Filter`'s "everything was filtered, show it all" fallback cannot resurrect it. `Raw` is
+`ToString()` and consults no descriptor, so a record still leaks a `Hidden` member there.
+
 Tuples are flattened at generation time — each element's members are lifted onto the
 tuple so ordering anchors reach across elements, and an element with no members becomes
 one field named after it (so `(string City, int Count)` gives City/Count, where the
