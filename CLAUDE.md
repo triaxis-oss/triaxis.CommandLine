@@ -80,6 +80,29 @@ the model and creates fresh `Command`/`Argument<T>`/`Option<T>` instances direct
 the target tree, avoiding parent-tracking issues with System.CommandLine's
 `ChildSymbolList`.
 
+### SubcommandArgumentGuard
+
+S.CL's tokenizer descends into a subcommand as soon as a token matches its name, with no
+regard for the parent's unfilled argument arity — `tool a b sub c d` binds `a b` to `tool`
+and leaves `c d` for `sub`, silently splitting one command line across two commands. Its
+help renderer agrees, walking `c.Parents` in both `GetUsage` and `GetCommandArgumentRows`,
+so the parent's arguments show up in the subcommand's usage line and arguments section.
+Neither offers a hook (`ValidTokens()`, `ParseOperation`, and `HelpBuilder` are internal;
+`HelpAction` is sealed), so `ToolBuilder.Parse` corrects both from the outside:
+
+- **Parsing** — every command below one that declares positional arguments gets a validator
+  reporting the swallowed tokens as unrecognized. Only the innermost command's `Validators`
+  run (`CommandResult.Validate(isInnermostCommand)`), hence the walk up `SymbolResult.Parent`.
+- **Help** — every `HelpOption.Action` in the tree is wrapped in a `ScopedHelpAction` that
+  sets `Hidden` on the ancestors' arguments around the inner action's render (both help
+  sections already filter on `Hidden`). This also covers the help printed after a parse
+  error — `ParseErrorAction.WriteHelp` resolves the same `HelpOption.Action`. The wrap has
+  to reach unshadowed ancestors too, the root above all, since that is where the recursive
+  `HelpOption` lives.
+
+Installed at parse time, not in `ApplyTo`, so manually built commands (`GetCommand`, direct
+`RootCommand` edits) are covered and construction order is irrelevant.
+
 ### ICommandExecutor / DefaultCommandExecutor
 
 Registered in DI. Runs the middleware chain around command execution, then calls
@@ -215,6 +238,8 @@ for logging — the level is baked into the logger at creation time.
 - `IToolBuilder` — public interface for the builder (Run, RunAsync, AddMiddleware, ConfigureServices)
 - `ToolBuilder` — concrete builder, owns `IServiceCollection`, `IConfigurationManager`
 - `CommandTreeNode` — lightweight model describing the command tree, merged via `ApplyTo(Command)`
+- `SubcommandArgumentGuard` — keeps a parent command's positional arguments out of its
+  subcommands, both when parsing and when rendering their help
 - `ArgumentDefinition<T>` / `OptionDefinition<T>` — type-safe descriptors that `Create()` fresh S.CL symbols
 - Generated `{SafeName}.Action` — `AsynchronousCommandLineAction` nested in the
   per-command umbrella static class
