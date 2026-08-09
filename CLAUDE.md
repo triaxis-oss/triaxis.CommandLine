@@ -99,9 +99,11 @@ a `CancellationToken` to the action. Commands accepting `CancellationToken` get
 cooperative cancellation. Commands that don't trigger `Environment.FailFast`
 (the registration is disposed after the command returns so it doesn't affect middleware).
 
-### YAML emitter
+### JSON and YAML emitters
 
-`YamlWriter` writes block-style YAML 1.2 directly — no YAML library. It walks nested
+`JsonWriter` and `YamlWriter` share one descriptor walk, so the two formats agree below
+the top level; `JsonString.Quote` serves both, since a YAML double-quoted scalar accepts
+JSON's escape set. `YamlWriter` writes block-style YAML 1.2 directly — no YAML library. It walks nested
 values through `IObjectDescriptor` (via `RuntimeObjectDescriptor.For` until the source
 generator supplies descriptors), so `[ObjectOutput]` ordering applies at every depth,
 not just the root. Line breaks are written as literal `\n`, never `TextWriter.NewLine`,
@@ -134,7 +136,8 @@ for logging — the level is baked into the logger at creation time.
 - `ICommandExecutor` / `DefaultCommandExecutor` — runs middleware chain + finalization
 - `ICommandInvocationResult` / `ICommandInvocationResult<T>` — wraps command return
   values for streaming enumeration (used by ObjectOutput)
-- `YamlWriter` / `PlainScalar` — in-house block-style YAML emitter and its quoting rule
+- `YamlWriter` / `JsonWriter` / `PlainScalar` / `JsonString` — in-house emitters, the YAML
+  quoting rule, and the shared string escaper
 - `VerbosityOptions` — public static option definitions for `--verbosity`/`-v`/`-q`
 - `IPersistentConfigurationProvider` — `IConfigurationProvider` + `Save` (`Set` is
   already on `IConfigurationProvider`); the writable-source contract.
@@ -172,8 +175,9 @@ for logging — the level is baked into the logger at creation time.
 ## Dependencies
 
 - **Base**: System.CommandLine, M.E.DependencyInjection, M.E.Configuration, M.E.Logging
-- **ObjectOutput**: + M.E.Options, M.E.DI.Abstractions (no third-party YAML/JSON library;
-  `YamlWriter` emits YAML directly and JSON goes through in-box System.Text.Json)
+  (System.Text.Json moved to Tool — nothing in the base package used it)
+- **ObjectOutput**: + M.E.Options, M.E.DI.Abstractions — no JSON or YAML dependency at all,
+  both formats are emitted directly
 - **Serilog**: + Serilog, Serilog.Extensions.Logging, Serilog.Sinks.Console,
   Serilog.Settings.Configuration
 - **Tool**: + M.E.Configuration.Json, M.E.Configuration.EnvironmentVariables,

@@ -559,8 +559,9 @@ Supported return shapes:
 Use `[ObjectOutput]` to control field visibility (`Standard` / `Extended` / `Internal`) and to
 position computed/extension fields with `Before = nameof(...)` / `After = nameof(...)`.
 
-`Yaml` is emitted directly by the package rather than through a YAML library, so
-ObjectOutput carries no third-party dependency. A string is left unquoted only when it
+`Json` and `Yaml` are both emitted directly by the package over the same descriptor walk,
+so ObjectOutput carries no JSON or YAML dependency and the two formats agree on nested
+shape and field order. A string is left unquoted only when it
 provably reads back unchanged under both YAML 1.1 and YAML 1.2 — so `yes`, `007`,
 `1:30:00` and `2026-08-06` come out quoted, while `hello world`, `--flag` and `::1` do
 not. Multi-line strings become literal block scalars. See

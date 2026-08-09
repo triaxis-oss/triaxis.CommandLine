@@ -12,13 +12,15 @@ class JsonObjectFormatterProvider : IObjectFormatterProvider
         private readonly IObjectDescriptor _descriptor;
         private readonly TextWriter _output;
         private readonly bool _collection;
-        private string? _separator;
+        private readonly JsonWriter _writer;
+        private bool _needsSeparator;
 
         public Formatter(IObjectDescriptor descriptor, TextWriter output, bool collection)
         {
             _descriptor = descriptor;
             _output = output;
             _collection = collection;
+            _writer = new JsonWriter(output, RuntimeObjectDescriptor.For);
 
             if (_collection)
             {
@@ -28,17 +30,21 @@ class JsonObjectFormatterProvider : IObjectFormatterProvider
 
         public ValueTask OutputElementAsync(T value)
         {
-            var val = value is null ? null : _descriptor!.Fields.GetValuesDictionary(value);
-            if (_separator is { } sep)
+            if (_needsSeparator)
             {
-                _output.Write(sep);
+                _output.Write(',');
+            }
+            _needsSeparator = true;
+
+            if (value is null)
+            {
+                _output.Write("null");
             }
             else
             {
-                _separator = ",";
+                _writer.WriteElement(_descriptor, value);
             }
-            var json = System.Text.Json.JsonSerializer.Serialize(val);
-            _output.Write(json);
+
             return default;
         }
 
@@ -48,7 +54,8 @@ class JsonObjectFormatterProvider : IObjectFormatterProvider
             {
                 _output.Write(']');
             }
-            _output.WriteLine();
+
+            _output.Write('\n');
             return default;
         }
     }

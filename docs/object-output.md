@@ -265,7 +265,7 @@ The shipped providers:
 | Provider | Format | Behaviour |
 | --- | --- | --- |
 | `TableObjectFormatterProvider` | `Table`, `Wide` | Columnar text with borders and padding; sizes columns dynamically. Respects `TableOutputOptions.Wide` for extended fields. |
-| `JsonObjectFormatterProvider` | `Json` | Streams via `Utf8JsonWriter`; writes an array for collections, an object for scalars. |
+| `JsonObjectFormatterProvider` | `Json` | Compact JSON written directly by `JsonWriter`, over the same descriptor walk as YAML; an array for collections, an object for scalars. |
 | `YamlObjectFormatterProvider` | `Yaml` | Block-style YAML written directly by `YamlWriter`; no third-party YAML library. See [YAML output](#8-yaml-output). |
 | `RawObjectFormatterProvider` | `Raw` | Writes `element?.ToString()` per row. Useful for piping into other shell tools. |
 | `DiscardObjectFormatterProvider` | `None` | Consumes elements and throws them away — still drives the enumeration so side effects run. |
