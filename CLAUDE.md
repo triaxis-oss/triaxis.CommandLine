@@ -105,15 +105,24 @@ the target tree, avoiding parent-tracking issues with System.CommandLine's
 
 S.CL's tokenizer descends into a subcommand as soon as a token matches its name, with no
 regard for the parent's unfilled argument arity — `tool a b sub c d` binds `a b` to `tool`
-and leaves `c d` for `sub`, silently splitting one command line across two commands. Its
+and leaves `c d` for `sub`, silently splitting one command line across two commands.
+Everything before that switch is read against the parent, so its non-recursive options bind
+there too — `tool --parent x sub` sets an option `sub` never declared, while `tool sub
+--parent x` is correctly rejected (the option is not in `sub`'s `ValidTokens()`). Its
 help renderer agrees, walking `c.Parents` in both `GetUsage` and `GetCommandArgumentRows`,
-so the parent's arguments show up in the subcommand's usage line and arguments section.
-Neither offers a hook (`ValidTokens()`, `ParseOperation`, and `HelpBuilder` are internal;
-`HelpAction` is sealed), so `ToolBuilder.Parse` corrects both from the outside:
+so the parent's arguments show up in the subcommand's usage line and arguments section
+(options it already scopes correctly, so help needed no option-side fix).
+None of it offers a hook (`ValidTokens()`, `ParseOperation`, and `HelpBuilder` are internal;
+`HelpAction` is sealed), so `ToolBuilder.Parse` corrects it from the outside:
 
-- **Parsing** — every command below one that declares positional arguments gets a validator
-  reporting the swallowed tokens as unrecognized. Only the innermost command's `Validators`
-  run (`CommandResult.Validate(isInnermostCommand)`), hence the walk up `SymbolResult.Parent`.
+- **Parsing** — every command below one that declares positional arguments or *scoped*
+  options gets a validator reporting the swallowed tokens as unrecognized. Only the
+  innermost command's `Validators` run (`CommandResult.Validate(isInnermostCommand)`), hence
+  the walk up `SymbolResult.Parent`. Scoped means neither `Recursive` (declared for the
+  subtree on purpose) nor carrying an `Action` (`--help`, `--version`, `[ActionOption]` —
+  they replace the invocation instead of binding a value). Options are matched on
+  `OptionResult.Implicit`/`IdentifierToken`, **not** `Tokens` — an `OptionResult`'s tokens
+  are its *values*, so a zero-arity flag has none and a token count check misses it.
 - **Help** — every `HelpOption.Action` in the tree is wrapped in a `ScopedHelpAction` that
   sets `Hidden` on the ancestors' arguments around the inner action's render (both help
   sections already filter on `Hidden`). This also covers the help printed after a parse
@@ -259,8 +268,8 @@ for logging — the level is baked into the logger at creation time.
 - `IToolBuilder` — public interface for the builder (Run, RunAsync, AddMiddleware, ConfigureServices)
 - `ToolBuilder` — concrete builder, owns `IServiceCollection`, `IConfigurationManager`
 - `CommandTreeNode` — lightweight model describing the command tree, merged via `ApplyTo(Command)`
-- `SubcommandArgumentGuard` — keeps a parent command's positional arguments out of its
-  subcommands, both when parsing and when rendering their help
+- `SubcommandArgumentGuard` — keeps a parent command's own arguments and scoped options out
+  of its subcommands, both when parsing and when rendering their help
 - `ArgumentDefinition<T>` / `OptionDefinition<T>` — type-safe descriptors that `Create()` fresh S.CL symbols
 - Generated `{SafeName}.Action` — `AsynchronousCommandLineAction` nested in the
   per-command umbrella static class

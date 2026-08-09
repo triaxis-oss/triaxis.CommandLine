@@ -8,6 +8,9 @@ public class ShadowState
     public string? First { get; set; }
     public string? Second { get; set; }
     public string? Third { get; set; }
+    public string? ParentOpt { get; set; }
+    public string? ChildOpt { get; set; }
+    public bool Flag { get; set; }
     public string? Ran { get; set; }
 }
 
@@ -23,11 +26,22 @@ public class ShadowParentCommand
     [Argument]
     public string? Second { get; set; }
 
+    [Option("--parent-opt")]
+    public string? ParentOpt { get; set; }
+
+    [Option("--flag")]
+    public bool Flag { get; set; }
+
+    [ActionOption("--migrate")]
+    public void Migrate() => State.Ran = "migrate";
+
     public void Execute()
     {
         State.Ran = "parent";
         State.First = First;
         State.Second = Second;
+        State.ParentOpt = ParentOpt;
+        State.Flag = Flag;
     }
 }
 
@@ -40,10 +54,14 @@ public class ShadowChildCommand
     [Argument]
     public string? Third { get; set; }
 
+    [Option("--child-opt")]
+    public string? ChildOpt { get; set; }
+
     public void Execute()
     {
         State.Ran = "child";
         State.Third = Third;
+        State.ChildOpt = ChildOpt;
     }
 }
 
@@ -104,6 +122,76 @@ public class SubcommandArgumentGuardTests
             "Unrecognized command or argument 'c'.",
             "Unrecognized command or argument 'a'.",
         }));
+    }
+
+    [Test]
+    public void ParentOptions_AreRejected_WhenSubcommandIsInvoked()
+    {
+        // Written after the subcommand ("shadow sub --parent-opt x") S.CL rejects this
+        // itself; written before, it used to bind to the parent and stay silent.
+        var errors = CreateBuilder("shadow", "--parent-opt", "x", "sub", "c").Parse().Errors;
+
+        Assert.That(errors.Select(e => e.Message),
+            Is.EqualTo(new[] { "Unrecognized command or argument '--parent-opt'." }));
+    }
+
+    [Test]
+    public void ParentFlags_AreRejected_EvenThoughTheyCarryNoValueTokens()
+    {
+        var errors = CreateBuilder("shadow", "--flag", "sub", "c").Parse().Errors;
+
+        Assert.That(errors.Select(e => e.Message),
+            Is.EqualTo(new[] { "Unrecognized command or argument '--flag'." }));
+    }
+
+    [Test]
+    public void RecursiveOptions_AreStillAcceptedAboveTheInvokedCommand()
+    {
+        var marker = new Option<string>("--marker") { Recursive = true };
+        var builder = CreateBuilder("--marker", "m", "shadow", "sub", "c");
+        builder.AddRecursiveOption(marker);
+
+        var parseResult = builder.Parse();
+
+        Assert.That(parseResult.Errors, Is.Empty);
+        Assert.That(parseResult.GetValue(marker), Is.EqualTo("m"));
+    }
+
+    [Test]
+    public async Task ActionOptions_AreNotRejected_TheyBindNoValue()
+    {
+        var state = new ShadowState();
+        var builder = CreateBuilder("shadow", "--migrate", "sub", "c");
+        builder.ConfigureServices(s => s.AddSingleton(state));
+
+        Assert.That(builder.Parse().Errors, Is.Empty);
+        Assert.That(await builder.RunAsync(), Is.Zero);
+        Assert.That(state.Ran, Is.EqualTo("migrate"));
+    }
+
+    [Test]
+    public async Task SubcommandOptions_StillBind()
+    {
+        var state = new ShadowState();
+        var builder = CreateBuilder("shadow", "sub", "c", "--child-opt", "y");
+        builder.ConfigureServices(s => s.AddSingleton(state));
+
+        Assert.That(await builder.RunAsync(), Is.Zero);
+        Assert.That(state.Ran, Is.EqualTo("child"));
+        Assert.That(state.ChildOpt, Is.EqualTo("y"));
+    }
+
+    [Test]
+    public async Task Parent_StillRunsWithItsOwnOptions()
+    {
+        var state = new ShadowState();
+        var builder = CreateBuilder("shadow", "--parent-opt", "x", "--flag");
+        builder.ConfigureServices(s => s.AddSingleton(state));
+
+        Assert.That(await builder.RunAsync(), Is.Zero);
+        Assert.That(state.Ran, Is.EqualTo("parent"));
+        Assert.That(state.ParentOpt, Is.EqualTo("x"));
+        Assert.That(state.Flag, Is.True);
     }
 
     [Test]

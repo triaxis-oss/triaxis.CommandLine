@@ -6,28 +6,31 @@ using System.CommandLine.Invocation;
 using System.CommandLine.Parsing;
 
 /// <summary>
-/// Keeps a parent command's positional arguments out of its subcommands — both when
+/// Keeps a parent command's own arguments and options out of its subcommands — both when
 /// parsing a command line and when rendering a subcommand's help.
 /// </summary>
 /// <remarks>
 /// System.CommandLine's tokenizer is arity-blind: any token matching a subcommand name
 /// switches to that subcommand regardless of how many of the parent's positional arguments
 /// are still unfilled, so <c>tool a b sub c d</c> silently binds <c>a b</c> to the parent
-/// and leaves only <c>c d</c> for <c>sub</c>. Its help renderer takes the same view,
-/// listing the whole ancestor chain's arguments in the subcommand's usage line and
-/// arguments section. Neither offers a hook, so both are corrected from the outside:
-/// a validator on every command below one that declares positional arguments reports
-/// the swallowed tokens as unrecognized, and the help action hides the ancestors'
-/// arguments for the duration of the render.
+/// and leaves only <c>c d</c> for <c>sub</c>. Anything appearing before that switch is read
+/// against the parent, which makes its non-recursive options bindable there too —
+/// <c>tool --parent x sub</c> sets an option the invoked command does not declare, while
+/// the same option written after the subcommand is correctly rejected. Its help renderer
+/// takes the same view of the ancestor chain's arguments, listing them in the subcommand's
+/// usage line and arguments section (options it already scopes correctly). None of it
+/// offers a hook, so it is all corrected from the outside: a validator on every command
+/// below one that declares arguments or scoped options reports what was swallowed as
+/// unrecognized, and the help action hides the ancestors' arguments for the render.
 /// </remarks>
 static class SubcommandArgumentGuard
 {
     public static void Install(Command root)
-        => Install(root, ancestorHasArguments: false);
+        => Install(root, ancestorIsShadowed: false);
 
-    private static void Install(Command command, bool ancestorHasArguments)
+    private static void Install(Command command, bool ancestorIsShadowed)
     {
-        if (ancestorHasArguments)
+        if (ancestorIsShadowed)
         {
             // Only the innermost command's validators run, hence the walk up the
             // ancestor chain inside Validate.
@@ -45,12 +48,28 @@ static class SubcommandArgumentGuard
             }
         }
 
-        var childrenAreShadowed = ancestorHasArguments || command.Arguments.Count > 0;
+        var childrenAreShadowed = ancestorIsShadowed || Shadows(command);
         foreach (var subcommand in command.Subcommands)
         {
             Install(subcommand, childrenAreShadowed);
         }
     }
+
+    /// <summary>
+    /// Whether <paramref name="command"/> declares anything a subcommand's command line
+    /// could bind by accident.
+    /// </summary>
+    private static bool Shadows(Command command)
+        => command.Arguments.Count > 0 || command.Options.Any(IsScoped);
+
+    /// <summary>
+    /// A recursive option is declared for the whole subtree, so binding it below its owner
+    /// is the entire point. An option carrying an <see cref="Option.Action"/> binds no
+    /// value — it replaces the invocation (<c>--help</c>, <c>--version</c>, an
+    /// <c>[ActionOption]</c> method) — so there is nothing for a subcommand to swallow.
+    /// </summary>
+    private static bool IsScoped(Option option)
+        => !option.Recursive && option.Action is null;
 
     private static void Validate(CommandResult result)
     {
@@ -69,6 +88,17 @@ static class SubcommandArgumentGuard
                     {
                         result.AddError($"Unrecognized command or argument '{token.Value}'.");
                     }
+                }
+            }
+
+            foreach (var option in ancestorCommand.Command.Options)
+            {
+                // The identifier is the misplaced thing; its value tokens are only there
+                // because it was, so one error per option keeps the report readable.
+                if (IsScoped(option) &&
+                    result.GetResult(option) is { Implicit: false, IdentifierToken: { } token })
+                {
+                    result.AddError($"Unrecognized command or argument '{token.Value}'.");
                 }
             }
         }
