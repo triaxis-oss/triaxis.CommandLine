@@ -197,7 +197,10 @@ public class ObjectDescriptorGenerator : IIncrementalGenerator
                     // named after the element itself. The reflective descriptor instead
                     // describes the scalar's own properties, which turns (string, int)
                     // into a single "Length" column.
-                    fields.Add(MakeField(element.Name, element, element.Type, access));
+                    if (MakeField(element.Name, element, element.Type, access) is { } scalarField)
+                    {
+                        fields.Add(scalarField);
+                    }
                     Collect(element.Type, nested);
                 }
             }
@@ -207,8 +210,11 @@ public class ObjectDescriptorGenerator : IIncrementalGenerator
 
         foreach (var property in CollectProperties(type))
         {
-            fields.Add(MakeField(property.Name, property, property.Type, prefix + property.Name));
-            Collect(property.Type, nested);
+            if (MakeField(property.Name, property, property.Type, prefix + property.Name) is { } field)
+            {
+                fields.Add(field);
+                Collect(property.Type, nested);
+            }
         }
 
         return fields;
@@ -225,17 +231,24 @@ public class ObjectDescriptorGenerator : IIncrementalGenerator
         nested.Add(element ?? memberType);
     }
 
-    private static FieldModel MakeField(string name, ISymbol declaration, ITypeSymbol type, string access)
+    /// Returns null for a Hidden field, which is dropped rather than emitted.
+    private static FieldModel? MakeField(string name, ISymbol declaration, ITypeSymbol type, string access)
     {
         var attr = declaration.GetAttributes()
             .FirstOrDefault(a => a.AttributeClass?.ToDisplayString() == "triaxis.CommandLine.ObjectOutput.ObjectOutputAttribute");
+
+        var visibility = ResolveVisibility(attr, declaration);
+        if (visibility == HiddenVisibility)
+        {
+            return null;
+        }
 
         return new FieldModel(
             Name: name,
             Title: GetAttributeString(declaration, "System.ComponentModel.DisplayNameAttribute", "DisplayName") ?? name,
             TypeFqn: type.ToDisplayString(FqnFormat),
             Access: access,
-            Visibility: ResolveVisibility(attr, declaration),
+            Visibility: visibility,
             Format: GetNamedArgument(attr, "Format") as string,
             Before: GetNamedArgument(attr, "Before") as string,
             After: GetNamedArgument(attr, "After") as string);
@@ -322,18 +335,22 @@ public class ObjectDescriptorGenerator : IIncrementalGenerator
         return named.DeclaredAccessibility is Accessibility.Public or Accessibility.Internal;
     }
 
-    private static string ResolveVisibility(AttributeData? attr, ISymbol property)
-    {
-        const string prefix = "global::triaxis.CommandLine.ObjectOutput.ObjectFieldVisibility.";
+    private const int HiddenVisibility = 3;
 
+    private static readonly string[] s_visibilityNames = ["Standard", "Extended", "Internal", "Hidden"];
+
+    /// Resolved value rather than the emitted name, so <see cref="Describe"/> can drop a
+    /// Hidden field instead of emitting one no format is allowed to print.
+    private static int ResolveVisibility(AttributeData? attr, ISymbol property)
+    {
         if (GetNamedArgument(attr, "Visibility") is int explicitValue)
         {
-            return prefix + explicitValue switch { 1 => "Extended", 2 => "Internal", _ => "Standard" };
+            return Clamp(explicitValue);
         }
 
         if (attr?.ConstructorArguments.Length == 1 && attr.ConstructorArguments[0].Value is int positional)
         {
-            return prefix + positional switch { 1 => "Extended", 2 => "Internal", _ => "Standard" };
+            return Clamp(positional);
         }
 
         // [Browsable(false)] demotes a member, matching PropertyDescriptor.IsBrowsable
@@ -341,11 +358,16 @@ public class ObjectDescriptorGenerator : IIncrementalGenerator
             .FirstOrDefault(a => a.AttributeClass?.ToDisplayString() == "System.ComponentModel.BrowsableAttribute");
         if (browsable?.ConstructorArguments.Length == 1 && browsable.ConstructorArguments[0].Value is false)
         {
-            return prefix + "Extended";
+            return 1;
         }
 
-        return prefix + "Standard";
+        return 0;
+
+        static int Clamp(int value) => value >= 0 && value < 4 ? value : 0;
     }
+
+    private static string FormatVisibility(int visibility)
+        => "global::triaxis.CommandLine.ObjectOutput.ObjectFieldVisibility." + s_visibilityNames[visibility];
 
     private static object? GetNamedArgument(AttributeData? attr, string name)
         => attr?.NamedArguments.FirstOrDefault(a => a.Key == name).Value.Value;
@@ -567,7 +589,7 @@ public class ObjectDescriptorGenerator : IIncrementalGenerator
         {
             w.WriteLine($"public string Name => {FormatLiteral(field.Name)};");
             w.WriteLine($"public string Title => {FormatLiteral(field.Title)};");
-            w.WriteLine($"public ObjectFieldVisibility Visibility => {field.Visibility};");
+            w.WriteLine($"public ObjectFieldVisibility Visibility => {FormatVisibility(field.Visibility)};");
             w.WriteLine($"public Type Type => typeof({t});");
             w.WriteLine($"public string? Format => {(field.Format is null ? "null" : FormatLiteral(field.Format))};");
             w.WriteLine("public IPropertyGetter Accessor => this;");
@@ -623,7 +645,7 @@ public class ObjectDescriptorGenerator : IIncrementalGenerator
         string Title,
         string TypeFqn,
         string Access,
-        string Visibility,
+        int Visibility,
         string? Format,
         string? Before,
         string? After);

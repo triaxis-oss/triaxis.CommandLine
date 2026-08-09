@@ -568,8 +568,12 @@ Supported return shapes:
 - `ValueTuple<A, B, ...>` — combines fields from each element side-by-side
 - `System.Data.DataTable` (sync or `Task<DataTable>`)
 
-Use `[ObjectOutput]` to control field visibility (`Standard` / `Extended` / `Internal`) and to
-position computed/extension fields with `Before = nameof(...)` / `After = nameof(...)`.
+Use `[ObjectOutput]` to control field visibility and to position computed/extension fields
+with `Before = nameof(...)` / `After = nameof(...)`. `Standard` shows everywhere, `Extended`
+needs `-o Wide`, `Internal` is hidden from tables but **still present in JSON and YAML**, and
+`Hidden` is dropped from the descriptor so no format emits it — except `-o Raw`, which is
+`ToString()` and never consults a descriptor. See
+[Field visibility](docs/object-output.md#field-visibility).
 
 The source generator emits an `IObjectDescriptor` for every type a command outputs,
 walked transitively through nested members, so field ordering and formatting are resolved

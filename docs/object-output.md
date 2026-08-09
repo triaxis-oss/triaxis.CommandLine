@@ -210,6 +210,35 @@ public interface IObjectDescriptorProvider<T>
 }
 ```
 
+### Field visibility
+
+`[ObjectOutput(ObjectFieldVisibility.X)]` controls which formats show a field:
+
+| | `Table` | `Wide` | `Json` / `Yaml` | `Raw` |
+| --- | --- | --- | --- | --- |
+| `Standard` (default) | shown | shown | shown | `ToString()` |
+| `Extended` | hidden | shown | shown | `ToString()` |
+| `Internal` | hidden | hidden | **shown** | `ToString()` |
+| `Hidden` | absent | absent | absent | `ToString()` |
+
+`[Browsable(false)]` is equivalent to `Extended`.
+
+The first three are *filters* applied by the table formatter — the field is still in
+`IObjectDescriptor.Fields`, and the data formats do not filter at all, which is why
+`Internal` still appears in JSON and YAML. `Internal` means "not worth a column", not
+"secret".
+
+`Hidden` is different in kind: the field never enters `Fields`, so no format built on a
+descriptor can emit it, including a custom `IObjectFormatter`. Use it for values that must
+not appear in output at all.
+
+> **`Raw` bypasses descriptors entirely.** It writes `element?.ToString()`, so a `record`
+> with a `Hidden` member still prints it through the compiler-generated `ToString`.
+> Override `ToString` on any type where that matters.
+
+A type whose fields are *all* hidden produces an empty descriptor, and the source generator
+emits nothing for it — the run-time fallback then describes it, and finds nothing to show.
+
 ### Field formatting
 
 `Format` carries the format string from `[ObjectOutput(Format = "...")]` and is applied

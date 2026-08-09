@@ -334,4 +334,56 @@ public class ObjectDescriptorGeneratorTests
             "the handler takes IObjectDescriptorProvider<T>, so that generic has to be closed too");
         Assert.That(source, Does.Contain("return services.GetService<IObjectOutputHandler<global::Reading>>();"));
     }
+
+    [Test]
+    public void OmitsHiddenFields()
+    {
+        var source = RunGenerator("""
+            using System.Collections.Generic;
+            using triaxis.CommandLine;
+            using triaxis.CommandLine.ObjectOutput;
+
+            public class Row
+            {
+                public string Shown { get; set; } = "";
+                [ObjectOutput(ObjectFieldVisibility.Internal)] public string Internal { get; set; } = "";
+                [ObjectOutput(ObjectFieldVisibility.Hidden)] public string Secret { get; set; } = "";
+            }
+
+            [Command("rows")]
+            public class RowsCommand
+            {
+                public IEnumerable<Row> Execute() => [];
+            }
+            """);
+
+        Assert.That(source, Is.Not.Null);
+        Assert.That(source, Does.Contain("\"Shown\""));
+        Assert.That(source, Does.Contain("\"Internal\""), "Internal stays — it is hidden from tables, not from the data formats");
+        Assert.That(source, Does.Not.Contain("\"Secret\""), "Hidden must not reach the descriptor at all");
+        Assert.That(source, Does.Not.Contain(".Secret;"));
+    }
+
+    [Test]
+    public void GeneratesNothing_WhenEveryFieldIsHidden()
+    {
+        var source = RunGenerator("""
+            using System.Collections.Generic;
+            using triaxis.CommandLine;
+            using triaxis.CommandLine.ObjectOutput;
+
+            public class Row
+            {
+                [ObjectOutput(ObjectFieldVisibility.Hidden)] public string Secret { get; set; } = "";
+            }
+
+            [Command("rows")]
+            public class RowsCommand
+            {
+                public IEnumerable<Row> Execute() => [];
+            }
+            """);
+
+        Assert.That(source, Is.Null, "an all-hidden type leaves no fields, so no descriptor is emitted");
+    }
 }

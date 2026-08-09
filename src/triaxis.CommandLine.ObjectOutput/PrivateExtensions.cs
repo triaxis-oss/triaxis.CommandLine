@@ -9,8 +9,12 @@ static class PrivateExtensions
     public static IEnumerable<T> Filter<T>(this IEnumerable<T> fields, ObjectFieldVisibility maxVisibility)
         where T : IObjectField
     {
-        var std = fields.Where(f => f.Visibility <= maxVisibility);
-        return std.Any() ? std : fields;    // if all fields would be filtered out, return the full set
+        // Hidden never comes back, even through the fallback below: a descriptor built
+        // elsewhere may still carry such a field, and the whole point of the level is that
+        // no format prints it.
+        var visible = fields.Where(f => f.Visibility != ObjectFieldVisibility.Hidden);
+        var std = visible.Where(f => f.Visibility <= maxVisibility);
+        return std.Any() ? std : visible;   // if all fields would be filtered out, return the full set
     }
 
     public static T[] Ordered<T>(this IEnumerable<T> fields)
