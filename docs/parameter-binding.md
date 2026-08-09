@@ -74,7 +74,12 @@ Arity is always set explicitly based on the member type and `Required`:
 | collection | `true` / `required` | `OneOrMore` |
 | collection | `false` / default | `ZeroOrMore` (arguments) / `OneOrMore` (options) |
 
-## What a subcommand does not inherit
+## What positional arguments will not swallow
+
+A positional argument takes the values meant for it and nothing else. System.CommandLine
+would otherwise let two things through, both silently, and both are rejected instead.
+
+### A parent command's own inputs
 
 A command may declare arguments and options of its own *and* have subcommands — `tool
 <file>` next to `tool build` — but only one of them can be what any single command line
@@ -102,10 +107,7 @@ That one is worth spelling out because it was silently *asymmetric*: `tool build
 has always been rejected (the option is not in `build`'s token map), while the same option
 moved one word to the left set a value on a command that never ran.
 
-The tokenizer exposes no hook to change any of it, so `ToolBuilder.Parse` walks the finished
-tree and gives every command below one that declares arguments or scoped options a validator
-that reports what was swallowed as unrecognized. `tool a b`, `tool --dry-run` and
-`tool build --force` all still work.
+`tool a b`, `tool --dry-run` and `tool build --force` all still work.
 
 Two kinds of option are deliberately exempt, because neither is a value binding the parent
 keeps to itself:
@@ -114,6 +116,30 @@ keeps to itself:
   the whole subtree — being settable above the invoked command is the entire point.
 - **Action options** — `--help`, `--version`, and `[ActionOption]` methods — replace the
   invocation rather than binding a value, so there is nothing for a subcommand to swallow.
+
+### Unrecognized options
+
+A token the parser matches as neither command nor option falls through to the next unfilled
+positional argument, whatever it looks like — so a mistyped option quietly became a value:
+
+```
+$ tool build --dyr-run          # used to build a file named "--dyr-run"
+Unrecognized command or argument '--dyr-run'.
+```
+
+Anything starting with `-` is therefore rejected rather than bound. Two spellings are not
+options and keep working: a lone `-` (stdin, by convention) and a negative number (`-5`,
+`-.5`). The check applies to positional arguments only — an option's own value hangs off
+its `OptionResult`, so `--parent-opt -x` still passes `-x` through.
+
+To pass a genuine value that starts with `-`, use the standard `--` separator. Everything
+after it is literal:
+
+```
+$ tool build -- --dyr-run       # a file named "--dyr-run"
+```
+
+### Help
 
 The help renderer takes the same view of the ancestor chain, so `tool build --help` used to
 advertise `<file>` as one of `build`'s own arguments:
@@ -126,11 +152,13 @@ Arguments:
   <file>                           →      (gone)
 ```
 
-The same walk wraps the `HelpOption`'s action to hide the ancestors' arguments for the
-duration of the render — which also covers the help System.CommandLine prints after a parse
-error, since that reaches the same action. The parent's own help is unaffected. Options
-needed no equivalent: help already lists only the command's own options plus the recursive
-ones it inherits.
+The tokenizer and the help renderer expose no hook for any of this, so `ToolBuilder.Parse`
+corrects both from the outside on the finished command tree: a validator on every command
+reports what was swallowed, and the `HelpOption`'s action is wrapped to hide the ancestors'
+arguments for the duration of the render — which also covers the help System.CommandLine
+prints after a parse error, since that reaches the same action. The parent's own help is
+unaffected. Options needed no equivalent: help already lists only the command's own options
+plus the recursive ones it inherits.
 
 ## Writing parsed values back
 
