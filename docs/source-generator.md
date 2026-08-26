@@ -411,6 +411,14 @@ accessor's parameter is the **declaring** type rather than the bound one; passin
 instance converts at the call site. `modreq(IsExternalInit)` does not stand in the way — the
 init-only restriction is the C# compiler's, not the runtime's.
 
+A settable property with explicit accessor bodies takes the same route, for the same reason:
+there is no field to write. Whether a property is auto-implemented is read from its
+declaration, and a type in a **referenced assembly** has none to read — so there the
+generator probes metadata for the `<Name>k__BackingField` symbol instead of assuming one
+exists. Note that only public and protected members cross that boundary at all: every real
+build imports metadata with `MetadataImportOptions.Public`, so an `internal` or `private`
+member of a referenced type is invisible to the generator and never binds.
+
 This is zero-reflection, zero-boxing, and JIT-friendly.
 
 The accessor signature uses the member's originally declared type — including `Nullable<T>`

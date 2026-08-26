@@ -1354,11 +1354,15 @@ public class CommandTreeGenerator : IIncrementalGenerator
     /// </summary>
     private static bool IsAutoProperty(IPropertySymbol property)
     {
-        // Properties from metadata have no syntax to inspect; assume auto so we keep
-        // the existing backing-field code path for compiled inputs.
+        // Properties from a referenced assembly have no syntax to inspect — but the
+        // synthesized field is right there in metadata, so probe for it. Assuming an
+        // auto-property instead sent every computed property behind an assembly boundary
+        // to a field that was never emitted.
         if (property.DeclaringSyntaxReferences.Length == 0)
         {
-            return true;
+            return property.ContainingType
+                .GetMembers("<" + property.Name + ">k__BackingField")
+                .Any(m => m is IFieldSymbol);
         }
 
         foreach (var syntaxRef in property.DeclaringSyntaxReferences)
