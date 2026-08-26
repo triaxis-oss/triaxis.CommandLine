@@ -368,9 +368,8 @@ without any `if (provider is null)` branching in the generated body.
 - **`[Inject]`** is inlined as `instance.Member = provider.GetRequiredService<TService>();`
   (or an accessor-wrapped variant for non-public members).
 - **`required` / `init`** members are set in the object initializer via
-  `parseResult.GetValue<T>(name)`; non-required init-only members use field accessors
-  for auto-properties, or a `set_` method accessor when the property has explicit
-  accessor bodies (no compiler-synthesized backing field).
+  `parseResult.GetValue<T>(name)`; non-required init-only members are written through a
+  `set_` method accessor on the type that declares them.
 
 ## Reaching non-public members
 
@@ -396,14 +395,21 @@ private static extern ref string __access_Name(HelloCommand instance);
 private static extern string __access_get_Name(HelloCommand instance);
 ```
 
-Properties with explicit accessor bodies (i.e. a user-written `get`/`init` block) have
-no synthesized `<Name>k__BackingField`, so the generator switches to a `set_` method
-accessor — reads still go through the public getter:
+Init-only properties are written through a `set_` method accessor instead — reads still go
+through the public getter:
 
 ```csharp
 [UnsafeAccessor(UnsafeAccessorKind.Method, Name = "set_Path")]
-private static extern void __access_Path(CustomInitCommand instance, string value);
+private static extern void __access_Path(BackupOptions instance, string value);
 ```
+
+A property with a user-written `init` block has no `<Name>k__BackingField` to write at all,
+and the field of an auto-property is private to the declaring type — so a field accessor
+would break the moment the property is inherited. `UnsafeAccessorKind.Field` resolves
+against the exact type it is given and never walks the hierarchy, which is why the
+accessor's parameter is the **declaring** type rather than the bound one; passing a derived
+instance converts at the call site. `modreq(IsExternalInit)` does not stand in the way — the
+init-only restriction is the C# compiler's, not the runtime's.
 
 This is zero-reflection, zero-boxing, and JIT-friendly.
 

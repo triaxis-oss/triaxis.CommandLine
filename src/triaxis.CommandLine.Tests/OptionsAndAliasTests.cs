@@ -128,6 +128,51 @@ public class EndpointCommand
     }
 }
 
+public record LogFilterOptions
+{
+    [Option("--logs")]
+    public string[]? Logs { get; init; }
+
+    private readonly string? _since;
+
+    [Option("--since")]
+    public string? Since
+    {
+        get => _since;
+        init => _since = value?.Trim();
+    }
+}
+
+public record LogTailOptions : LogFilterOptions
+{
+    [Option("--follow")]
+    public bool Follow { get; init; }
+
+    private readonly string? _target;
+
+    [Option("--target")]
+    public string? Target
+    {
+        get => _target;
+        init => _target = value?.Trim();
+    }
+}
+
+[Command("logtail")]
+public class LogTailCommand
+{
+    public static LogTailOptions? LastOptions;
+
+    [Options]
+    public LogTailOptions Options { get; set; } = new();
+
+    public Task ExecuteAsync()
+    {
+        LastOptions = Options;
+        return Task.CompletedTask;
+    }
+}
+
 [TestFixture]
 public class OptionsAndAliasTests
 {
@@ -137,6 +182,7 @@ public class OptionsAndAliasTests
         DbPingCommand.LastConfig = null;
         EndpointCommand.LastConfig = null;
         SetUserPasswordCommand.LastOptions = null;
+        LogTailCommand.LastOptions = null;
     }
 
     private static IToolBuilder CreateBuilder(string[] args)
@@ -257,6 +303,36 @@ public class OptionsAndAliasTests
         Assert.That(SetUserPasswordCommand.LastOptions, Is.Not.Null);
         Assert.That(SetUserPasswordCommand.LastOptions!.LoginName, Is.EqualTo("alice"));
         Assert.That(SetUserPasswordCommand.LastOptions.Password, Is.EqualTo("s3cret"));
+    }
+
+    [Test]
+    public async Task InheritedInitOnlyMembers_BindOnTheDerivedOptionsType()
+    {
+        // Regression: an init-only member used to bind through an [UnsafeAccessor] to
+        // `<Name>k__BackingField` typed to the *bound* type. That field lives on the
+        // declaring type, and UnsafeAccessorKind.Field never walks the hierarchy, so
+        // an inherited init-only member threw MissingFieldException at bind time.
+        var builder = CreateBuilder(["logtail", "--logs", "a.log", "--logs", "b.log", "--follow"]);
+        var exit = await builder.RunAsync();
+
+        Assert.That(exit, Is.EqualTo(0));
+        Assert.That(LogTailCommand.LastOptions, Is.Not.Null);
+        Assert.That(LogTailCommand.LastOptions!.Logs, Is.EqualTo(new[] { "a.log", "b.log" }));
+        Assert.That(LogTailCommand.LastOptions.Follow, Is.True);
+    }
+
+    [Test]
+    public async Task ComputedInitOnlyMembers_BindThroughTheirSetter()
+    {
+        // Regression: a computed `init` accessor has no backing field at all, on the
+        // declaring type or anywhere else — binding must call the setter.
+        var builder = CreateBuilder(["logtail", "--since", " 10m ", "--target", " svc-a "]);
+        var exit = await builder.RunAsync();
+
+        Assert.That(exit, Is.EqualTo(0));
+        Assert.That(LogTailCommand.LastOptions, Is.Not.Null);
+        Assert.That(LogTailCommand.LastOptions!.Since, Is.EqualTo("10m"));
+        Assert.That(LogTailCommand.LastOptions.Target, Is.EqualTo("svc-a"));
     }
 
     [Test]

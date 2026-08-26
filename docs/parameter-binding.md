@@ -197,8 +197,8 @@ Key points:
    default falls through when the user doesn't provide a value. Priming is
    unconditional, which is what makes a pre-initialized container with placeholder
    values (`[Options] private readonly Foo _opts = new() { Req = null! }`) work:
-   the create-if-null branch never runs, but the prime does, and its backing-field
-   accessor can write through `init`-only setters.
+   the create-if-null branch never runs, but the prime does, and its accessor calls
+   the `init`-only setter directly.
 4. **Non-public members** use `UnsafeAccessor` (net8.0+) or cached
    `FieldInfo`/`PropertyInfo` — see [source-generator.md](source-generator.md#reaching-non-public-members).
 
