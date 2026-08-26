@@ -1309,7 +1309,7 @@ public class CommandTreeGenerator : IIncrementalGenerator
                         if (memberType is INamedTypeSymbol nestedType)
                         {
                             var segment = new AccessPathSegment(
-                                member.Name, memberTypeFqn, declaredTypeFqn, isField, isPublic, hasSetter, hasBackingField, isMemberRequired, declaringTypeFqn);
+                                member.Name, memberTypeFqn, declaredTypeFqn, isField, isPublic, hasSetter, isInitOnly, hasBackingField, isMemberRequired, declaringTypeFqn);
                             var newPath = (accessPath ?? Array.Empty<AccessPathSegment>()).Append(segment).ToArray();
                             for (var current = nestedType; current is not null; current = current.BaseType)
                             {
@@ -1933,14 +1933,14 @@ public class CommandTreeGenerator : IIncrementalGenerator
         {
             memberAccessors[MemberKey(member)] = EmitAccessor(
                 w, member.DeclaringTypeFqn, member.MemberName, member.DeclaredTypeFqn,
-                member.IsField, member.IsPublic, member.HasSetter, member.HasBackingField,
+                member.IsField, member.IsPublic, member.HasSetter, member.IsInitOnly, member.HasBackingField,
                 $"__access_{GetMemberFieldName(member)}", hasUnsafeAccessor);
         }
         foreach (var member in injects.Where(m => m.AccessPath.Length == 0))
         {
             memberAccessors[MemberKey(member)] = EmitAccessor(
                 w, member.DeclaringTypeFqn, member.MemberName, member.DeclaredTypeFqn,
-                member.IsField, member.IsPublic, member.HasSetter, member.HasBackingField,
+                member.IsField, member.IsPublic, member.HasSetter, member.IsInitOnly, member.HasBackingField,
                 $"__access_{GetMemberFieldName(member)}", hasUnsafeAccessor);
         }
 
@@ -1957,18 +1957,20 @@ public class CommandTreeGenerator : IIncrementalGenerator
                 }
                 pathAccessors[key] = EmitAccessor(
                     w, seg.OwnerTypeFqn, seg.MemberName, seg.DeclaredTypeFqn,
-                    seg.IsField, seg.IsPublic, seg.HasSetter, seg.HasBackingField,
+                    seg.IsField, seg.IsPublic, seg.HasSetter, seg.IsInitOnly, seg.HasBackingField,
                     $"__access_path_{seg.MemberName}", hasUnsafeAccessor);
             }
         }
 
-        // Accessors for members on nested [Options] types that need backing field access
+        // Accessors for members on nested [Options] types that need backing field access.
+        // Bound on the declaring type, not the [Options] type: the two differ whenever the
+        // member is inherited, and a non-public member of a base type is out of reach from
+        // the derived one.
         foreach (var member in args.Concat(opts).Where(m => m.AccessPath.Length > 0))
         {
-            var lastSeg = member.AccessPath[member.AccessPath.Length - 1];
             memberAccessors[MemberKey(member)] = EmitAccessor(
-                w, lastSeg.MemberTypeFqn, member.MemberName, member.DeclaredTypeFqn,
-                member.IsField, member.IsPublic, member.HasSetter, member.HasBackingField,
+                w, member.DeclaringTypeFqn, member.MemberName, member.DeclaredTypeFqn,
+                member.IsField, member.IsPublic, member.HasSetter, member.IsInitOnly, member.HasBackingField,
                 $"__access_{GetMemberFieldName(member)}", hasUnsafeAccessor);
         }
 
@@ -2453,13 +2455,16 @@ public class CommandTreeGenerator : IIncrementalGenerator
     /// <summary>
     /// Emits the minimal accessor declaration needed for a member/segment and returns an
     /// <see cref="Accessor"/> describing how to read/write it inline at call sites.
-    /// <paramref name="memberTypeFqn"/> must be the originally declared type (e.g. "int?"
-    /// rather than the unwrapped "int") so that the [UnsafeAccessor] signature matches the
-    /// actual backing field/property and reflection casts produce the correct value.
+    /// <paramref name="ownerTypeFqn"/> must be the type that <em>declares</em> the member,
+    /// not the type being bound: an [UnsafeAccessor] resolves against the exact type it is
+    /// given, and passing a derived instance to a base-typed parameter converts at the call
+    /// site anyway. <paramref name="memberTypeFqn"/> must be the originally declared type
+    /// (e.g. "int?" rather than the unwrapped "int") so that the [UnsafeAccessor] signature
+    /// matches the actual backing field/property and reflection casts produce the correct value.
     /// </summary>
     private static Accessor EmitAccessor(IndentedTextWriter w, string ownerTypeFqn,
         string memberName, string memberTypeFqn,
-        bool isField, bool isPublic, bool hasSetter, bool hasBackingField,
+        bool isField, bool isPublic, bool hasSetter, bool isInitOnly, bool hasBackingField,
         string identifier, bool hasUnsafeAccessor)
     {
         // Public settable — no accessor declaration needed, access directly.
@@ -2468,11 +2473,46 @@ public class CommandTreeGenerator : IIncrementalGenerator
             return new Accessor(AccessorKind.Direct, "", memberName, memberTypeFqn);
         }
 
-        // Public read-only or init-only property without a synthesized backing field
-        // (i.e. the property has explicit accessor bodies). The field-based path below
-        // would emit a reference to <Name>k__BackingField, which the compiler never
-        // produced — so go through the property's set_ method via UnsafeAccessor (or
-        // reflection). Reads still go through the public getter.
+        // Init-only property — write through its `set_` accessor rather than a backing
+        // field: a computed `init` has no field at all, and the field of an auto-property
+        // is private to the declaring type, so a field accessor breaks as soon as the
+        // property is inherited. The setter also frees the generator from the compiler's
+        // backing-field naming convention. modreq(IsExternalInit) does not stop either
+        // UnsafeAccessorKind.Method or PropertyInfo.SetValue — the restriction is the C#
+        // compiler's, not the runtime's.
+        if (isInitOnly)
+        {
+            if (hasUnsafeAccessor)
+            {
+                if (!isPublic)
+                {
+                    w.WriteLine($"[UnsafeAccessor(UnsafeAccessorKind.Method, Name = {FormatString("get_" + memberName)})]");
+                    w.WriteLine($"private static extern {memberTypeFqn} {identifier}_get({ownerTypeFqn} instance);");
+                    w.WriteLine($"[UnsafeAccessor(UnsafeAccessorKind.Method, Name = {FormatString("set_" + memberName)})]");
+                    w.WriteLine($"private static extern void {identifier}_set({ownerTypeFqn} instance, {memberTypeFqn} value);");
+                    w.WriteLine();
+                    return new Accessor(AccessorKind.UnsafeGetterSetter, identifier, memberName, memberTypeFqn);
+                }
+
+                w.WriteLine($"[UnsafeAccessor(UnsafeAccessorKind.Method, Name = {FormatString("set_" + memberName)})]");
+                w.WriteLine($"private static extern void {identifier}({ownerTypeFqn} instance, {memberTypeFqn} value);");
+                w.WriteLine();
+                return new Accessor(AccessorKind.DirectReadUnsafeSetter, identifier, memberName, memberTypeFqn);
+            }
+
+            var visibility = isPublic ? "BindingFlags.Public" : "BindingFlags.NonPublic";
+            w.WriteLine($"private static readonly PropertyInfo {identifier} = typeof({ownerTypeFqn}).GetProperty({FormatString(memberName)}, BindingFlags.Instance | {visibility})!;");
+            w.WriteLine();
+            return new Accessor(
+                isPublic ? AccessorKind.DirectReadReflectionSetter : AccessorKind.ReflectionPropertyGetterSetter,
+                identifier, memberName, memberTypeFqn);
+        }
+
+        // Public read-only property without a synthesized backing field (i.e. the property
+        // has explicit accessor bodies). The field-based path below would emit a reference
+        // to <Name>k__BackingField, which the compiler never produced — so go through the
+        // property's set_ method via UnsafeAccessor (or reflection). Reads still go through
+        // the public getter.
         if (isPublic && !isField && !hasSetter && !hasBackingField)
         {
             if (hasUnsafeAccessor)
@@ -3109,6 +3149,7 @@ record AccessPathSegment(
     bool IsField,
     bool IsPublic,
     bool HasSetter,
+    bool IsInitOnly,
     bool HasBackingField,
     bool IsMemberRequired,
     string OwnerTypeFqn);
