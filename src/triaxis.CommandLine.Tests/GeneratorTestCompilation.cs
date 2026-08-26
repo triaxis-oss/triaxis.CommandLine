@@ -197,7 +197,8 @@ static class GeneratorTestCompilation
     /// compilation, and whatever the test asserts about it is worthless.
     /// </summary>
     internal static CSharpCompilation Create(string source, string assemblyName = "TestAssembly",
-        OutputKind outputKind = OutputKind.ConsoleApplication)
+        OutputKind outputKind = OutputKind.ConsoleApplication,
+        params MetadataReference[] extraReferences)
     {
         _ = s_canaryReported;
         SyntaxTree[] trees = s_needsModernMemberPolyfill
@@ -207,7 +208,7 @@ static class GeneratorTestCompilation
         var compilation = CSharpCompilation.Create(
             assemblyName: assemblyName,
             syntaxTrees: trees,
-            references: s_references,
+            references: [.. s_references, .. extraReferences],
             options: new CSharpCompilationOptions(outputKind));
 
         var errors = compilation.GetDiagnostics()
@@ -221,5 +222,28 @@ static class GeneratorTestCompilation
         }
 
         return compilation;
+    }
+
+    /// <summary>
+    /// Compiles <paramref name="source"/> to an in-memory assembly and hands it back as a
+    /// reference, so a fixture can put types behind the metadata boundary. That boundary is
+    /// what makes the difference: a symbol from a referenced assembly carries no syntax, so
+    /// anything the generator decides by inspecting declarations has to fall back on
+    /// metadata — and only a test that references a real assembly exercises that fallback.
+    /// </summary>
+    internal static MetadataReference CreateReference(string source, string assemblyName)
+    {
+        var compilation = Create(source, assemblyName, OutputKind.DynamicallyLinkedLibrary);
+        var peStream = new MemoryStream();
+        var result = compilation.Emit(peStream);
+        if (!result.Success)
+        {
+            Assert.Fail($"The referenced test assembly '{assemblyName}' does not compile:"
+                + Environment.NewLine
+                + string.Join(Environment.NewLine,
+                    result.Diagnostics.Where(d => d.Severity == DiagnosticSeverity.Error).Select(d => "  " + d)));
+        }
+
+        return MetadataReference.CreateFromImage(peStream.ToArray());
     }
 }
