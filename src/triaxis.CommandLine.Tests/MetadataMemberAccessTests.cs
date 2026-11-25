@@ -36,6 +36,10 @@ public class MetadataMemberAccessTests
             [Option("--follow")]
             public bool Follow { get; init; }
 
+            // A protected setter crosses the boundary, so it is visible but not assignable.
+            [Option("--depth")]
+            public int Depth { get; protected set; }
+
             public int LimitValue => _limit;
         }
         """;

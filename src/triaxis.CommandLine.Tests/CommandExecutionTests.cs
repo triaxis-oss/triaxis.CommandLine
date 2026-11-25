@@ -170,6 +170,46 @@ public class CascadeInitPropsCommand
     }
 }
 
+public class RestrictedSetterOptions
+{
+    [Option("--zone")]
+    public string Zone { get; private set; } = "default-zone";
+}
+
+public class InternalSetterOptions
+{
+    [Option("--region")]
+    public string Region { get; set; } = "default-region";
+}
+
+[Command("restricted-setters")]
+public class RestrictedSettersCommand
+{
+    private string _mode = "default-mode";
+
+    [Argument("path", Required = false)]
+    public string Path { get; private set; } = "default-path";
+
+    [Option("--mode")]
+    public string Mode { get => _mode; private set => _mode = value; }
+
+    [Options]
+    public RestrictedSetterOptions Placement { get; private set; } = new();
+
+    [Options]
+    public InternalSetterOptions Location { get; internal set; } = null!;
+
+    [Inject]
+    public EchoState State { get; set; } = null!;
+
+    public Task ExecuteAsync()
+    {
+        State.WasRun = true;
+        State.Name = $"{Path}:{Mode}:{Placement.Zone}:{Location.Region}";
+        return Task.CompletedTask;
+    }
+}
+
 [Command("custom-init-props")]
 public class CustomInitPropsCommand
 {
@@ -594,6 +634,18 @@ public class CommandExecutionTests
         Assert.That(exitCode, Is.EqualTo(0));
         Assert.That(state.WasRun, Is.True);
         Assert.That(state.Name, Is.EqualTo("/tmp:True"));
+    }
+
+    [Test]
+    public async Task Run_RestrictedSetters_BoundWhenSpecified()
+    {
+        var state = new EchoState();
+        var builder = CreateBuilder(["restricted-setters", "/tmp", "--mode", "fast", "--zone", "eu", "--region", "us"], state);
+
+        var exitCode = await builder.RunAsync();
+
+        Assert.That(exitCode, Is.EqualTo(0));
+        Assert.That(state.Name, Is.EqualTo("/tmp:fast:eu:us"));
     }
 
     [Test]
