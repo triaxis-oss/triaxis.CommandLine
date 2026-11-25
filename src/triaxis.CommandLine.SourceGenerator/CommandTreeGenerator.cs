@@ -638,7 +638,7 @@ public class CommandTreeGenerator : IIncrementalGenerator
             {
                 break;
             }
-            CollectMembers(current, members, ct);
+            CollectMembers(current, members, ctx.SemanticModel.Compilation, ct);
         }
 
         var (executeMethod, isStandalone) = DetectEntryPoint(typeSymbol);
@@ -1207,7 +1207,7 @@ public class CommandTreeGenerator : IIncrementalGenerator
         return null;
     }
 
-    private static void CollectMembers(INamedTypeSymbol typeSymbol, List<MemberModel> members,
+    private static void CollectMembers(INamedTypeSymbol typeSymbol, List<MemberModel> members, Compilation compilation,
         System.Threading.CancellationToken ct, AccessPathSegment[]? accessPath = null)
     {
         foreach (var member in typeSymbol.GetMembers())
@@ -1257,7 +1257,10 @@ public class CommandTreeGenerator : IIncrementalGenerator
                 var memberTypeFqn = memberType.ToDisplayString(FqnFormat);
                 var isField = member is IFieldSymbol;
                 var isPublic = member.DeclaredAccessibility == Accessibility.Public;
-                var hasSetter = member is IFieldSymbol || (member is IPropertySymbol prop && prop.SetMethod is { IsInitOnly: false });
+                // a public member is assigned directly, so only a setter generated code can reach counts; non-public ones go through accessors
+                var hasSetter = member is IFieldSymbol
+                    || member is IPropertySymbol { SetMethod: { IsInitOnly: false } setter }
+                        && (!isPublic || compilation.IsSymbolAccessibleWithin(setter, compilation.Assembly));
                 var isInitOnly = member is IPropertySymbol { SetMethod.IsInitOnly: true };
                 // Auto-properties (and fields) have a synthesized `<X>k__BackingField`; properties with
                 // a custom getter/setter body do not, so accessor emission must fall back to calling
@@ -1317,7 +1320,7 @@ public class CommandTreeGenerator : IIncrementalGenerator
                                 {
                                     break;
                                 }
-                                CollectMembers(current, members, ct, newPath);
+                                CollectMembers(current, members, compilation, ct, newPath);
                             }
                         }
                         break;

@@ -419,6 +419,10 @@ exists. Note that only public and protected members cross that boundary at all: 
 build imports metadata with `MetadataImportOptions.Public`, so an `internal` or `private`
 member of a referenced type is invisible to the generator and never binds.
 
+A public property whose setter the generated code cannot reach (`{ get; private set; }`)
+binds as get-only: reads use the public getter, writes go to the backing field, or through
+`set_` when there is none.
+
 This is zero-reflection, zero-boxing, and JIT-friendly.
 
 The accessor signature uses the member's originally declared type — including `Nullable<T>`

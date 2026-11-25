@@ -240,7 +240,8 @@ So even if you don't initialize the `[Options]` property yourself, the generator
 on demand — provided the type has a parameterless constructor (or an initializer with
 `required` members set via `parseResult.GetValue`). You can nest `[Options]` as deeply as
 you like; the access path grows by one entry per level. The `[Options]` property itself can
-be `required`, `init`-only, or both.
+be `required`, `init`-only, or both. A property whose setter the generated code cannot reach
+(`{ get; private set; }`) is never created on demand, so give it an initializer.
 
 The generator walks the full inheritance hierarchy of the `[Options]` type, so
 `[Option]` and `[Argument]` members declared in base classes are included
