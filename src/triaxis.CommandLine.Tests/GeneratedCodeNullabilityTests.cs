@@ -123,4 +123,57 @@ public class GeneratedCodeNullabilityTests
             }
             """);
     }
+
+    [Test]
+    public void AnnotatedTypeArgumentsSurvive()
+    {
+        AssertCompilesCleanly("""
+            using System.Collections.Generic;
+            using triaxis.CommandLine;
+
+            public record Resource(string Name, IReadOnlyDictionary<string, object?> Properties);
+
+            [Command("list")]
+            public class ListCommand
+            {
+                public IEnumerable<Resource> Execute() => [];
+            }
+            """);
+    }
+
+    [Test]
+    public void Descriptors()
+    {
+        AssertCompilesCleanly("""
+            using System.Collections.Generic;
+            using triaxis.CommandLine;
+
+            public record Address(string City, string? Street);
+
+            public record Person(string Name, string? Nickname, Address? Home, List<string?> Aliases);
+
+            public class Page<T>
+            {
+                public List<T> Items { get; set; } = [];
+            }
+
+            [Command("people")]
+            public class PeopleCommand
+            {
+                public IEnumerable<Person?> Execute() => [];
+            }
+
+            [Command("pairs")]
+            public class PairsCommand
+            {
+                public IEnumerable<(string Name, List<string?> Tags, Address? Home)> Execute() => [];
+            }
+
+            [Command("pages")]
+            public class PagesCommand
+            {
+                public Page<Address?> Execute() => new();
+            }
+            """);
+    }
 }
