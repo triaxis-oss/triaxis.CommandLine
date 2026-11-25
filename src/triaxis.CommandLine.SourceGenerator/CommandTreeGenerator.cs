@@ -1311,8 +1311,10 @@ public class CommandTreeGenerator : IIncrementalGenerator
                     {
                         if (memberType is INamedTypeSymbol nestedType)
                         {
+                            // `new T?()` is CS8628
+                            var instanceTypeFqn = nestedType.WithNullableAnnotation(NullableAnnotation.NotAnnotated).ToDisplayString(FqnFormat);
                             var segment = new AccessPathSegment(
-                                member.Name, memberTypeFqn, declaredTypeFqn, isField, isPublic, hasSetter, isInitOnly, hasBackingField, isMemberRequired, declaringTypeFqn);
+                                member.Name, instanceTypeFqn, declaredTypeFqn, isField, isPublic, hasSetter, isInitOnly, hasBackingField, isMemberRequired, declaringTypeFqn);
                             var newPath = (accessPath ?? Array.Empty<AccessPathSegment>()).Append(segment).ToArray();
                             for (var current = nestedType; current is not null; current = current.BaseType)
                             {

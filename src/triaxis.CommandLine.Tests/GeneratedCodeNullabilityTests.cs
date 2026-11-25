@@ -60,6 +60,38 @@ public class GeneratedCodeNullabilityTests
     }
 
     [Test]
+    public void NullableOptionsMembers()
+    {
+        AssertCompilesCleanly("""
+            using triaxis.CommandLine;
+
+            public class Region
+            {
+                [Option("--zone")]
+                public string Zone { get; set; } = "default";
+            }
+
+            public class Account
+            {
+                [Option("--owner")]
+                public required string Owner { get; init; }
+            }
+
+            [Command("place")]
+            public class PlaceCommand
+            {
+                [Options]
+                public Region? Primary { get; set; }
+
+                [Options]
+                public required Account? Billing { get; init; }
+
+                public void Execute() { }
+            }
+            """);
+    }
+
+    [Test]
     public void CommandMembers()
     {
         AssertCompilesCleanly("""
