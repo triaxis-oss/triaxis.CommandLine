@@ -1,5 +1,6 @@
 namespace triaxis.CommandLine.Tests;
 
+using System.Collections.Immutable;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using Microsoft.CodeAnalysis;
@@ -23,6 +24,11 @@ using Microsoft.Extensions.Hosting;
 static class GeneratorTestCompilation
 {
     private static readonly MetadataReference[] s_references = BuildReferences();
+
+    // Roslyn keeps the `nullable` group internal; the command-line parser is the only public way to expand it
+    private static readonly ImmutableDictionary<string, ReportDiagnostic> s_nullableWarningsAsErrors =
+        CSharpCommandLineParser.Default.Parse(["/warnaserror:nullable"], AppContext.BaseDirectory, sdkDirectory: null)
+            .CompilationOptions.SpecificDiagnosticOptions;
 
     /// <summary>
     /// <c>init</c> accessors, <c>required</c> members and <c>[ModuleInitializer]</c> need
@@ -49,6 +55,13 @@ static class GeneratorTestCompilation
             {
                 public string FeatureName { get; } = featureName;
             }
+        }
+
+        namespace System.Diagnostics.CodeAnalysis
+        {
+            // a record with a required member puts it on its synthesized copy constructor
+            [AttributeUsage(AttributeTargets.Constructor, Inherited = false)]
+            internal sealed class SetsRequiredMembersAttribute : Attribute { }
         }
         """;
 
@@ -196,8 +209,9 @@ static class GeneratorTestCompilation
     /// entry point; anything else means the generator is being fed a degraded
     /// compilation, and whatever the test asserts about it is worthless.
     /// </summary>
+    /// <param name="nullable">Without it a referenced assembly carries no annotations to warn about.</param>
     internal static CSharpCompilation Create(string source, string assemblyName = "TestAssembly",
-        OutputKind outputKind = OutputKind.ConsoleApplication,
+        OutputKind outputKind = OutputKind.ConsoleApplication, bool nullable = false,
         params MetadataReference[] extraReferences)
     {
         _ = s_canaryReported;
@@ -205,11 +219,19 @@ static class GeneratorTestCompilation
             ? [CSharpSyntaxTree.ParseText(source), CSharpSyntaxTree.ParseText(ModernMemberPolyfill)]
             : [CSharpSyntaxTree.ParseText(source)];
 
+        var options = new CSharpCompilationOptions(outputKind);
+        if (nullable)
+        {
+            options = options
+                .WithNullableContextOptions(NullableContextOptions.Enable)
+                .WithSpecificDiagnosticOptions(s_nullableWarningsAsErrors);
+        }
+
         var compilation = CSharpCompilation.Create(
             assemblyName: assemblyName,
             syntaxTrees: trees,
             references: [.. s_references, .. extraReferences],
-            options: new CSharpCompilationOptions(outputKind));
+            options: options);
 
         var errors = compilation.GetDiagnostics()
             .Where(d => d.Severity == DiagnosticSeverity.Error && d.Id != "CS5001")
@@ -231,9 +253,9 @@ static class GeneratorTestCompilation
     /// anything the generator decides by inspecting declarations has to fall back on
     /// metadata — and only a test that references a real assembly exercises that fallback.
     /// </summary>
-    internal static MetadataReference CreateReference(string source, string assemblyName)
+    internal static MetadataReference CreateReference(string source, string assemblyName, bool nullable = false)
     {
-        var compilation = Create(source, assemblyName, OutputKind.DynamicallyLinkedLibrary);
+        var compilation = Create(source, assemblyName, OutputKind.DynamicallyLinkedLibrary, nullable);
         var peStream = new MemoryStream();
         var result = compilation.Emit(peStream);
         if (!result.Success)

@@ -115,7 +115,7 @@ internal static class Hello
         {
             if (__result is OptionResult { Implicit: false } __or) switch (__or.Option.Name)
             {
-                case "--name": instance.Name = __or.GetValueOrDefault<string>(); break;
+                case "--name": instance.Name = __or.GetValueOrDefault<string>()!; break;
             }
         }
     }

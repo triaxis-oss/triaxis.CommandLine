@@ -174,11 +174,11 @@ foreach (var __result in parseResult.CommandResult.Children)
 {
     if (__result is ArgumentResult { Tokens.Count: > 0 } __ar) switch (__ar.Argument.Name)
     {
-        case "SOURCE": instance.Source = __ar.GetValueOrDefault<string>(); break;
+        case "SOURCE": instance.Source = __ar.GetValueOrDefault<string>()!; break;
     }
     if (__result is OptionResult { Implicit: false } __or) switch (__or.Option.Name)
     {
-        case "--name": instance.Name = __or.GetValueOrDefault<string>(); break;
+        case "--name": instance.Name = __or.GetValueOrDefault<string>()!; break;
     }
 }
 ```
@@ -233,7 +233,7 @@ generator creates the nested object if null and binds values through it:
 // roughly, for Connection.Host:
 var __opts_Connection = instance.Connection ?? (instance.Connection = new ConnectionOptions());
 // then in the foreach/switch:
-case "--host": __opts_Connection.Host = __or.GetValueOrDefault<string>(); break;
+case "--host": __opts_Connection.Host = __or.GetValueOrDefault<string>()!; break;
 ```
 
 So even if you don't initialize the `[Options]` property yourself, the generator creates it
